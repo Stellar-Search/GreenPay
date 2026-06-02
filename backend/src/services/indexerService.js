@@ -9,13 +9,12 @@ const { v4: uuid } = require("uuid");
 const { computeBadges } = require("./store");
 
 let lastProcessedLedger = 0;
+let lastReconciledLedger = 0;
 let isRunning = false;
+let isReconciling = false;
 let io = null;
 let projectWallets = new Map(); // wallet_address -> project_id
 
-/**
- * Fetch all active project wallets and cache them.
- */
 async function updateProjectWallets() {
   try {
     const result = await pool.query("SELECT id, wallet_address FROM projects WHERE status = 'active'");
@@ -26,6 +25,78 @@ async function updateProjectWallets() {
     console.log(`[Indexer] Updated cache with ${projectWallets.size} project wallets.`);
   } catch (err) {
     console.error("[Indexer] Failed to update project wallets cache:", err.message);
+  }
+}
+
+async function reconcileDonations() {
+  if (isReconciling || projectWallets.size === 0) return;
+  isReconciling = true;
+
+  const client = await pool.connect();
+  try {
+    let startLedger = lastReconciledLedger;
+    if (startLedger === 0) {
+      const latestResult = await stellarServer.ledgers().order("desc").limit(1).call();
+      startLedger = parseInt(latestResult.records[0].sequence) - 1000;
+    }
+    const currentLedgerResult = await stellarServer.ledgers().order("desc").limit(1).call();
+    const currentLedger = parseInt(currentLedgerResult.records[0].sequence);
+
+    for (const [walletAddress, projectId] of projectWallets) {
+      let payments;
+      try {
+        payments = await stellarServer.payments()
+          .forAccount(walletAddress)
+          .startLedger(startLedger + 1)
+          .limit(200)
+          .call();
+      } catch (e) {
+        console.error(`[Reconciler] Failed to query payments for ${walletAddress}:`, e.message);
+        continue;
+      }
+
+      for (const payment of payments.records) {
+        if (payment.asset_type !== "native") continue;
+        const result = await client.query(
+          "SELECT id FROM donations WHERE transaction_hash = $1",
+          [payment.transaction_hash]
+        );
+        if (result.rows.length > 0) continue;
+
+        const txHash = payment.transaction_hash;
+        const donorAddress = payment.from;
+        const amountXLM = parseFloat(payment.amount);
+
+        try {
+          await client.query("BEGIN");
+          const donationId = uuid();
+          await client.query(
+            `INSERT INTO donations (id, project_id, donor_address, amount_xlm, amount, currency, transaction_hash, created_at)
+             VALUES ($1, $2, $3, $4, $5, 'XLM', $6, NOW())`,
+            [donationId, projectId, donorAddress, amountXLM, amountXLM, txHash]
+          );
+          await client.query(
+            `UPDATE projects
+             SET raised_xlm = raised_xlm + $1,
+                 donor_count = (SELECT COUNT(DISTINCT donor_address) FROM donations WHERE project_id = $2),
+                 updated_at = NOW()
+             WHERE id = $2`,
+            [amountXLM, projectId]
+          );
+          await client.query("COMMIT");
+          console.log(`[Reconciler] Found missing donation: ${amountXLM} XLM to project ${projectId}`);
+        } catch (e) {
+          await client.query("ROLLBACK");
+          console.error("[Reconciler] Failed to record donation:", e.message);
+        }
+      }
+    }
+    lastReconciledLedger = currentLedger;
+  } catch (err) {
+    console.error("[Reconciler] Error during reconciliation:", err.message);
+  } finally {
+    client.release();
+    isReconciling = false;
   }
 }
 
@@ -48,6 +119,9 @@ async function startIndexer(socketIo) {
   await updateProjectWallets();
   // Refresh cache every 10 minutes
   setInterval(updateProjectWallets, 10 * 60 * 1000);
+
+  // Run reconciliation every 15 minutes
+  setInterval(reconcileDonations, 15 * 60 * 1000).unref();
 
   console.log("[Indexer] Starting Horizon operations stream...");
 
@@ -207,5 +281,6 @@ function getStatus() {
 
 module.exports = {
   startIndexer,
-  getStatus
+  getStatus,
+  reconcileDonations
 };
