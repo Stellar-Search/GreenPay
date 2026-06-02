@@ -12,7 +12,7 @@
     "@anthropic-ai/sdk": "^0.91.1",
     "@stellar/stellar-sdk": "^12.0.0",
     "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
+    "dotenv": "^17.4.2",
     "express": "^4.19.2",
     "express-rate-limit": "^7.3.1",
     "helmet": "^7.1.0",
