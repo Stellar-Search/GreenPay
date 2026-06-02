@@ -7,6 +7,7 @@
     "dev:docker": "nodemon --legacy-watch --watch src src/server.js",
     "start": "node src/server.js",
     "lint": "eslint src/**/*.js",
+    "docs": "typedoc --options typedoc.json",
     "test": "jest --runInBand"
   },
   "dependencies": {
@@ -20,6 +21,8 @@
     "express": "^4.19.2",
     "express-rate-limit": "^7.3.1",
     "helmet": "^7.1.0",
+    "iconv-lite": "^0.7.2",
+    "jsonwebtoken": "^9.0.3",
     "morgan": "^1.10.0",
     "pg": "^8.20.0",
     "socket.io": "^4.8.3",
@@ -30,10 +33,13 @@
   },
   "devDependencies": {
     "eslint": "^8.57.0",
+    "eslint-plugin-security": "^3.0.0",
+    "eslint-plugin-sql-injection": "^1.0.1",
     "jest": "^30.3.0",
     "nodemon": "^3.1.2",
     "socket.io-client": "^4.8.3",
-    "supertest": "^7.0.0"
+    "supertest": "^7.0.0",
+    "typedoc": "^0.28.0"
   },
   "engines": {
     "node": ">=18.0.0"
