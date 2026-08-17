@@ -1,90 +1,157 @@
 import { Horizon, TransactionBuilder, Networks, Asset, BASE_FEE, Account } from "@stellar/stellar-sdk";
-import { showStatus } from "./status";
-import { getProjectById } from "./api";
-import { signTransaction } from "@stellar/freighter-api";
+import { showStatus, getActiveProject, getActiveJob, getActiveDonation, setActiveDonation, getFreighterPublicKey, getFreighterNetwork, signTransaction, isFreighterAvailable } from "./utils";
+import { submitDonation, submitJobPayment, fetchProject, fetchJob, fetchDonation } from "./api";
 
-const server = new Horizon.Server("https://horizon-testnet.stellar.org");
+const STALE_SEQUENCE_ERRORS = [
+  "tx_bad_seq",
+  "The transaction sequence number is incorrect",
+  "sequence number",
+  "bad sequence",
+];
 
-interface DonationParams {
-  projectId: string;
-  amountXlm: string;
-  donorPublicKey: string;
+function isStaleSequenceError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return STALE_SEQUENCE_ERRORS.some((needle) => message.toLowerCase().includes(needle.toLowerCase()));
 }
 
-async function buildDonationTransaction(
-  projectId: string,
-  amountXlm: string,
-  donorPublicKey: string
-): Promise<{ tx: string; sequence: string }> {
-  const project = await getProjectById(projectId);
-  if (!project) {
-    throw new Error("Project not found");
-  }
-
-  const account = await server.loadAccount(donorPublicKey);
-  const sequence = account.sequenceNumber();
-
-  const tx = new TransactionBuilder(account, {
+async function buildDonationTransaction(server: Horizon.Server, source: string, destination: string, amount: string, memo: string) {
+  const account = await server.loadAccount(source);
+  const transaction = new TransactionBuilder(account, {
     fee: BASE_FEE,
-    networkPassphrase: Networks.TESTNET,
+    networkPassphrase: Networks.PUBLIC,
   })
-    .addOperation(
-      Asset.native().operation({
-        type: "payment",
-        destination: project.walletAddress,
-        amount: amountXlm,
-      })
-    )
+    .addOperation(TransactionBuilder.operation.payment({
+      destination,
+      asset: Asset.native(),
+      amount,
+    }))
+    .addMemo(TransactionBuilder.memo.text(memo))
     .setTimeout(30)
     .build();
-
-  return { tx: tx.toXDR(), sequence };
+  return transaction;
 }
 
-function isBadSequenceError(err: unknown): boolean {
-  if (err && typeof err === "object" && "response" in err) {
-    const response = (err as { response?: { data?: { status?: number; title?: string; detail?: string } } }).response;
-    if (response?.data?.status === 400 && response.data.title === "Transaction Failed") {
-      const detail = response.data.detail || "";
-      return detail.includes("bad sequence number") || detail.includes("tx_bad_seq");
-    }
-  }
-  return false;
-}
-
-export async function donate({ projectId, amountXlm, donorPublicKey }: DonationParams): Promise<void> {
+export async function donate(projectId: string, amountXlm: string, memo: string) {
   try {
-    const { tx, sequence } = await buildDonationTransaction(projectId, amountXlm, donorPublicKey);
+    const publicKey = await getFreighterPublicKey();
+    if (!publicKey) {
+      showStatus("Please connect Freighter first.", "error");
+      return;
+    }
 
-    showStatus("Please approve the transaction in Freighter...");
-    const signedTx = await signTransaction(tx, {
-      networkPassphrase: Networks.TESTNET,
-      accountToSign: donorPublicKey,
-    });
+    const network = await getFreighterNetwork();
+    if (network !== "PUBLIC") {
+      showStatus("Please switch Freighter to the public network.", "error");
+      return;
+    }
 
+    const server = new Horizon.Server("https://horizon.stellar.org");
+    const project = await fetchProject(projectId);
+    if (!project) {
+      showStatus("Project not found.", "error");
+      return;
+    }
+
+    const destination = project.walletAddress;
+    const source = publicKey;
+
+    let transaction = await buildDonationTransaction(server, source, destination, amountXlm, memo);
+
+    // Sign and submit with stale-sequence recovery
+    let signedTransaction = await signTransaction(transaction.toXDR(), network);
     try {
-      await server.submitTransaction(signedTx);
-      showStatus("Donation submitted successfully!");
-    } catch (submitErr) {
-      if (isBadSequenceError(submitErr)) {
-        showStatus(
-          "Your account sequence number changed while waiting for approval. " +
-            "Please review and re-sign the transaction with the updated sequence."
-        );
-        const { tx: rebuiltTx } = await buildDonationTransaction(projectId, amountXlm, donorPublicKey);
-        showStatus("Please approve the rebuilt transaction in Freighter...");
-        const reSignedTx = await signTransaction(rebuiltTx, {
-          networkPassphrase: Networks.TESTNET,
-          accountToSign: donorPublicKey,
-        });
-        await server.submitTransaction(reSignedTx);
-        showStatus("Donation submitted successfully after rebuilding!");
+      await server.submitTransaction(signedTransaction);
+    } catch (submitError) {
+      if (isStaleSequenceError(submitError)) {
+        showStatus("Your account sequence number changed while waiting for approval. Rebuilding transaction with the latest sequence...", "info");
+        // Reload account and rebuild transaction with fresh sequence
+        transaction = await buildDonationTransaction(server, source, destination, amountXlm, memo);
+        signedTransaction = await signTransaction(transaction.toXDR(), network);
+        await server.submitTransaction(signedTransaction);
       } else {
-        throw submitErr;
+        throw submitError;
       }
     }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    showStatus(`Donation failed: ${message}`);
+
+    // Record donation in backend
+    await submitDonation({
+      projectId,
+      amountXlm: parseFloat(amountXlm),
+      donorAddress: source,
+      txHash: signedTransaction.hash().toString("hex"),
+    });
+
+    showStatus("Donation successful!", "success");
+  } catch (error) {
+    console.error("Donation failed:", error);
+    showStatus(`Donation failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+  }
+}
+
+export async function payJob(jobId: string, amountXlm: string) {
+  try {
+    const publicKey = await getFreighterPublicKey();
+    if (!publicKey) {
+      showStatus("Please connect Freighter first.", "error");
+      return;
+    }
+
+    const network = await getFreighterNetwork();
+    if (network !== "PUBLIC") {
+      showStatus("Please switch Freighter to the public network.", "error");
+      return;
+    }
+
+    const server = new Horizon.Server("https://horizon.stellar.org");
+    const job = await fetchJob(jobId);
+    if (!job) {
+      showStatus("Job not found.", "error");
+      return;
+    }
+
+    const destination = job.escrowAddress;
+    const source = publicKey;
+
+    let transaction = await buildDonationTransaction(server, source, destination, amountXlm, `job-${jobId}`);
+
+    let signedTransaction = await signTransaction(transaction.toXDR(), network);
+    try {
+      await server.submitTransaction(signedTransaction);
+    } catch (submitError) {
+      if (isStaleSequenceError(submitError)) {
+        showStatus("Your account sequence number changed while waiting for approval. Rebuilding transaction with the latest sequence...", "info");
+        transaction = await buildDonationTransaction(server, source, destination, amountXlm, `job-${jobId}`);
+        signedTransaction = await signTransaction(transaction.toXDR(), network);
+        await server.submitTransaction(signedTransaction);
+      } else {
+        throw submitError;
+      }
+    }
+
+    await submitJobPayment({
+      jobId,
+      amountXlm: parseFloat(amountXlm),
+      payerAddress: source,
+      txHash: signedTransaction.hash().toString("hex"),
+    });
+
+    showStatus("Job payment successful!", "success");
+  } catch (error) {
+    console.error("Job payment failed:", error);
+    showStatus(`Job payment failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+  }
+}
+
+export async function checkDonationStatus(donationId: string) {
+  try {
+    const donation = await fetchDonation(donationId);
+    if (!donation) {
+      showStatus("Donation not found.", "error");
+      return;
+    }
+    showStatus(`Donation status: ${donation.status}`, "info");
+  } catch (error) {
+    console.error("Failed to check donation status:", error);
+    showStatus(`Failed to check donation status: ${error instanceof Error ? error.message : String(error)}`, "error");
   }
 }
