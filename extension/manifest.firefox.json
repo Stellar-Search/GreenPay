@@ -13,10 +13,7 @@
     "default_popup": "popup.html",
     "default_title": "GreenPay"
   },
-  "permissions": [
-    "storage",
-    "activeTab"
-  ],
+  "permissions": ["storage", "activeTab"],
   "background": {
     "scripts": ["background.js"]
   }
