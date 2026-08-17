@@ -1,37 +1,21 @@
 {
   "manifest_version": 3,
-  "name": "GreenPay Companion",
+  "name": "GreenPay Extension",
   "version": "1.0.0",
-  "description": "Support your favorite sustainable projects with a single click.",
-  "browser_action": {
+  "description": "GreenPay browser extension for Firefox",
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
     "default_popup": "popup.html",
-    "default_title": "GreenPay Companion"
+    "default_title": "GreenPay"
   },
   "background": {
-    "scripts": ["dist-firefox/background.js"]
+    "scripts": ["background.js"],
+    "type": "module"
   },
-  "permissions": [
-    "storage",
-    "activeTab",
-    "scripting"
-  ],
-  "host_permissions": [
-    "<all_urls>"
-  ],
-  "content_security_policy": {
-    "extension_pages": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src https://api.stellar-greenpay.app https://horizon-testnet.stellar.org; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
-  },
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["dist-firefox/content-script.js"],
-      "run_at": "document_end"
-    }
-  ],
-  "privacy_policy_url": "https://github.com/Emmy123222/Stellar-GreenPay/blob/main/PRIVACY.md",
   "browser_specific_settings": {
     "gecko": {
-      "id": "greenpay@stellar-greenpay.com",
+      "id": "greenpay@example.com",
       "strict_min_version": "120.0"
     }
   }
