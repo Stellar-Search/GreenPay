@@ -2,26 +2,22 @@
   "manifest_version": 3,
   "name": "GreenPay Extension",
   "version": "1.0.0",
-  "description": "GreenPay browser extension for donations and project tracking.",
-  "permissions": ["storage", "activeTab"],
-  "host_permissions": ["<all_urls>"],
-  "action": {
-    "default_popup": "popup.html",
-    "default_title": "GreenPay"
-  },
-  "background": {
-    "service_worker": "background.js"
-  },
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"]
-    }
-  ],
+  "description": "GreenPay browser extension for Firefox",
   "browser_specific_settings": {
     "gecko": {
       "id": "greenpay@example.com",
       "strict_min_version": "120.0"
     }
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "GreenPay"
+  },
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "background": {
+    "scripts": ["background.js"]
   }
 }
