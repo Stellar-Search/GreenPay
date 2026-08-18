@@ -8,7 +8,7 @@
 #   - GPU model preference: t4 (cost-effective for inference)
 #   - Minimum VRAM: 16 GiB (sufficient for 7B quantised models)
 #   - Network zone: no preference (latency-optimised by NUMA scoring)
-#   - NUMA preference: single-NUMA (inference prefers low-latency memory)
+#   - NUMA preference: requested GPU should fit within one aligned NUMA domain
 #
 # Scale: Horizontal Pod Autoscaler driven by GPU utilisation metrics from
 # the NVIDIA DCGM exporter.
@@ -34,7 +34,7 @@ spec:
         app.kubernetes.io/component: ml-inference
       annotations:
         # ── GreenPay scheduler annotations ──────────────────────────────────
-        # Workload type: inference → NUMA scorer prefers single-NUMA nodes.
+        # Workload type: inference uses GPU request-aware NUMA locality scoring.
         greenpay.io/workload-type: "ml-inference"
         # Require NVIDIA GPU (T4 or better).
         greenpay.io/gpu-vendor-req: "nvidia"

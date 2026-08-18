@@ -7,6 +7,7 @@ COPY package*.json ./
 RUN npm ci
 
 COPY . .
+RUN mkdir -p public
 RUN npm run build
 
 # 2. Production Runner Stage
@@ -15,6 +16,8 @@ FROM node:20-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV production
+ENV HOSTNAME 0.0.0.0
+ENV PORT 3000
 
 # Copy package files and install only production dependencies
 COPY package*.json ./
@@ -27,4 +30,4 @@ COPY --from=builder /app/public ./public
 
 EXPOSE 3000
 
-CMD ["npm", "run", "start"]
+CMD ["npx", "next", "start", "--hostname", "0.0.0.0", "--port", "3000"]

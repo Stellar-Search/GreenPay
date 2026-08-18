@@ -16,6 +16,17 @@ jest.mock('expo-router', () => ({
 jest.mock('expo-status-bar', () => ({ StatusBar: () => null }));
 
 import HomeScreen from '../app/index';
+import { ThemeProvider } from '../app/theme';
+
+// app/index.tsx reads theme colors via useTheme(), which requires a
+// ThemeProvider ancestor.
+function renderHomeScreen() {
+  return render(
+    <ThemeProvider>
+      <HomeScreen />
+    </ThemeProvider>
+  );
+}
 
 const MOCK_PROJECT = {
   id: 'proj-1',
@@ -39,7 +50,7 @@ describe('HomeScreen', () => {
 
   it('shows a loading indicator before data arrives', () => {
     (axios.get as jest.Mock).mockResolvedValue({ data: { data: MOCK_PROJECT } });
-    const { getByText } = render(<HomeScreen />);
+    const { getByText } = renderHomeScreen();
     expect(getByText('Loading...')).toBeTruthy();
   });
 
@@ -48,7 +59,7 @@ describe('HomeScreen', () => {
       .mockResolvedValueOnce({ data: { data: MOCK_PROJECT } })
       .mockResolvedValueOnce({ data: { data: MOCK_STATS } });
 
-    const { getByText } = render(<HomeScreen />);
+    const { getByText } = renderHomeScreen();
     await waitFor(() => expect(getByText('Stellar GreenPay')).toBeTruthy());
   });
 
@@ -57,7 +68,7 @@ describe('HomeScreen', () => {
       .mockResolvedValueOnce({ data: { data: MOCK_PROJECT } })
       .mockResolvedValueOnce({ data: { data: MOCK_STATS } });
 
-    const { getByText } = render(<HomeScreen />);
+    const { getByText } = renderHomeScreen();
     await waitFor(() => {
       expect(getByText('320 donations')).toBeTruthy();
       expect(getByText('45200 XLM raised')).toBeTruthy();
@@ -69,7 +80,7 @@ describe('HomeScreen', () => {
       .mockResolvedValueOnce({ data: { data: MOCK_PROJECT } })
       .mockResolvedValueOnce({ data: { data: MOCK_STATS } });
 
-    const { getByText } = render(<HomeScreen />);
+    const { getByText } = renderHomeScreen();
     await waitFor(() =>
       expect(getByText('Amazon Reforestation Initiative')).toBeTruthy()
     );
@@ -80,7 +91,7 @@ describe('HomeScreen', () => {
       .mockResolvedValueOnce({ data: { data: MOCK_PROJECT } })
       .mockResolvedValueOnce({ data: { data: MOCK_STATS } });
 
-    const { getByText } = render(<HomeScreen />);
+    const { getByText } = renderHomeScreen();
     await waitFor(() =>
       expect(getByText('Browse All Projects')).toBeTruthy()
     );
@@ -89,7 +100,7 @@ describe('HomeScreen', () => {
   it('still renders the title when the API call fails', async () => {
     (axios.get as jest.Mock).mockRejectedValue(new Error('network error'));
 
-    const { getByText } = render(<HomeScreen />);
+    const { getByText } = renderHomeScreen();
     await waitFor(() => expect(getByText('Stellar GreenPay')).toBeTruthy());
   });
 });

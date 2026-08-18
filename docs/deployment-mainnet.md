@@ -138,6 +138,51 @@ Use a dedicated deployer/admin identity for contract initialization and project 
 
 Set `ALLOWED_ORIGINS` in `backend/.env` to your production frontend URL.
 
+### TLS termination (not yet in the k8s manifests)
+
+> **Current state:** the provided `k8s/ingress.yaml` terminates **HTTP only** —
+> it has no `tls:` block, no certificate issuer, and the host is the placeholder
+> `greenpay.local`. Consequently, every `https://…` URL in the example
+> configuration above (`NEXT_PUBLIC_API_URL`, `ALLOWED_ORIGINS`) is a
+> **placeholder** until TLS is actually provisioned. Do not point a browser or
+> the frontend at those URLs before the steps below are done.
+
+Before exposing the deployment to real users, TLS must be added outside of what
+the repository currently ships:
+
+1. Point a real DNS record (e.g. `app.greenpay.example`) at the ingress load
+   balancer (`kubectl -n greenpay get svc` → `EXTERNAL-IP` for the nginx
+   ingress controller).
+2. Install a certificate issuer, e.g. `cert-manager` with a `ClusterIssuer`
+   (Let's Encrypt staging first, then prod).
+3. Add a `tls:` block to `k8s/ingress.yaml` and switch the host:
+
+   ```yaml
+   spec:
+     ingressClassName: nginx
+     tls:
+       - hosts:
+           - app.greenpay.example
+         secretName: greenpay-tls
+     rules:
+       - host: app.greenpay.example
+         http:
+           paths:
+             - path: /api
+               pathType: Prefix
+               backend: { service: { name: backend-svc, port: { number: 4000 } } }
+             - path: /
+               pathType: Prefix
+               backend: { service: { name: frontend-svc, port: { number: 3000 } } }
+   ```
+
+4. Verify with `curl -I https://app.greenpay.example/api/health` and a browser
+   cert check.
+
+Until step 3 is applied and the certificate is issued, keep the example URLs
+below and keep `ALLOWED_ORIGINS` aligned with whatever origin is actually
+served (HTTP during staging).
+
 ### Network passphrase
 
 Mainnet uses the public passphrase:

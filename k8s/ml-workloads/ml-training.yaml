@@ -10,7 +10,7 @@
 #   - VRAM: 80 GiB per GPU (full A100 80GB)
 #   - Interconnect: nvlink preferred (scorer gives bonus)
 #   - Network: 100 Gbps (dataset loading from object storage)
-#   - NUMA: multi-NUMA preferred (scorer gives bonus for training)
+#   - NUMA: requested GPUs should fit in the fewest aligned NUMA domains
 #   - Bin-pack weight: 1.5 (aggressively consolidate training onto fewest nodes)
 ---
 apiVersion: batch/v1

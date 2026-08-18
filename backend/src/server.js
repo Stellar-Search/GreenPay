@@ -24,12 +24,19 @@ const server = http.createServer(app);
 
 // ── Swagger UI (development) ─────────────────────────────────────────────────
 if (process.env.NODE_ENV !== "production") {
-  const swaggerUi = require("swagger-ui-express");
-  const yaml = require("js-yaml");
-  const fs = require("fs");
-  const path = require("path");
-  const swaggerDoc = yaml.load(fs.readFileSync(path.join(__dirname, "../../docs/openapi.yml"), "utf8"));
-  app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(swaggerDoc));
+  try {
+    const swaggerUi = require("swagger-ui-express");
+    const yaml = require("js-yaml");
+    const fs = require("fs");
+    const path = require("path");
+    const openApiPath = path.join(__dirname, "../../docs/openapi.yml");
+    if (fs.existsSync(openApiPath)) {
+      const swaggerDoc = yaml.load(fs.readFileSync(openApiPath, "utf8"));
+      app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(swaggerDoc));
+    }
+  } catch (err) {
+    console.warn("[Swagger UI] Skipping Swagger UI initialization:", err.message);
+  }
 }
 
 app.use(helmet());

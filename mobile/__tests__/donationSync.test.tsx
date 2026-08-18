@@ -194,4 +194,95 @@ describe('useDonationSync — reconnect conflict resolution', () => {
 
     expect((axios.get as jest.Mock).mock.calls.length).toBe(projectsCallsAfterFirstSync);
   });
+
+  it('deduplicates loadAccount calls per donorAddress within a single sync pass', async () => {
+    const sameDonor = 'GDONOR00000000000000000000000000000000000000000000000';
+    const projects = [
+      { id: 'proj-1', name: 'Project One', status: 'active' },
+      { id: 'proj-2', name: 'Project Two', status: 'active' },
+      { id: 'proj-3', name: 'Project Three', status: 'active' },
+    ];
+    (axios.get as jest.Mock).mockResolvedValue({ data: { data: projects } });
+
+    await enqueueDonation({ projectId: 'proj-1', projectName: 'Project One', donorAddress: sameDonor, amountXLM: '1' });
+    await enqueueDonation({ projectId: 'proj-2', projectName: 'Project Two', donorAddress: sameDonor, amountXLM: '2' });
+    await enqueueDonation({ projectId: 'proj-3', projectName: 'Project Three', donorAddress: sameDonor, amountXLM: '3' });
+
+    const loadAccountMock = jest.fn().mockResolvedValue(mockHorizonAccount('1000'));
+    (Server as jest.Mock).mockImplementation(() => ({ loadAccount: loadAccountMock }));
+
+    const { result } = renderHook(() => useDonationSync());
+    await waitFor(() => expect(result.current.queue).toHaveLength(3));
+
+    await goOfflineThenOnline();
+
+    await waitFor(() => {
+      const statuses = result.current.queue.map((e: any) => e.status);
+      expect(statuses.every((s: string) => s === 'ready')).toBe(true);
+    });
+
+    // 3 entries with the same donor address should produce only 1 loadAccount call.
+    expect(loadAccountMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('flags duplicate entry when same project + donor + amount already has a ready entry', async () => {
+    const entry1 = await enqueueDonation({
+      projectId: ACTIVE_PROJECT.id,
+      projectName: ACTIVE_PROJECT.name,
+      donorAddress: DONOR_ADDRESS,
+      amountXLM: '5.0000000',
+    });
+
+    // Manually set the first entry to 'ready' to simulate it already being validated.
+    await AsyncStorage.setItem(
+      DONATION_QUEUE_KEY,
+      JSON.stringify([{ ...entry1, status: 'ready' }])
+    );
+
+    // Enqueue a second identical donation while the first is already ready.
+    await enqueueDonation({
+      projectId: ACTIVE_PROJECT.id,
+      projectName: ACTIVE_PROJECT.name,
+      donorAddress: DONOR_ADDRESS,
+      amountXLM: '5.0000000',
+    });
+
+    const { result } = renderHook(() => useDonationSync());
+    await waitFor(() => expect(result.current.queue).toHaveLength(2));
+
+    await goOfflineThenOnline();
+
+    await waitFor(() => {
+      const duplicate = result.current.queue.find((e: any) => e.conflictReason === 'duplicate');
+      expect(duplicate).toBeDefined();
+      expect(duplicate.status).toBe('conflict');
+    });
+  });
+
+  it('distinguishes Horizon 429 rate-limit from generic network failure', async () => {
+    await enqueueDonation({
+      projectId: ACTIVE_PROJECT.id,
+      projectName: ACTIVE_PROJECT.name,
+      donorAddress: DONOR_ADDRESS,
+      amountXLM: '5.0000000',
+    });
+
+    // Simulate a 429 rate-limit response from Horizon.
+    const rateLimitError = {
+      response: { status: 429, data: { status: 429, title: 'Rate Limit Exceeded' } },
+    };
+    (Server as jest.Mock).mockImplementation(() => ({
+      loadAccount: jest.fn().mockRejectedValue(rateLimitError),
+    }));
+
+    const { result } = renderHook(() => useDonationSync());
+    await waitFor(() => expect(result.current.queue).toHaveLength(1));
+
+    await goOfflineThenOnline();
+
+    // On 429, the entry should remain pending-sync (not conflict) for the next cycle.
+    await waitFor(() => {
+      expect(result.current.queue[0].status).toBe('pending-sync');
+    });
+  });
 });

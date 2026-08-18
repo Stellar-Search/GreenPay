@@ -5,8 +5,27 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      dast_target:
+        description: 'Deployed environment URL to DAST-scan (e.g. https://staging.example.com). The scan runs only when this is provided.'
+        required: false
+        default: ''
 
 jobs:
+  docs:
+    name: Contributor Docs (command drift)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      # Asserts every lint/test/build entry point documented in
+      # docs/getting-started.md §7 still exists. No toolchains needed — this only
+      # checks that the commands the doc names are still declared.
+      - run: node scripts/check-documented-commands.js
+
   frontend:
     name: Frontend (Next.js)
     runs-on: ubuntu-latest
@@ -15,12 +34,9 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-node-install
         with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: frontend/package-lock.json
-      - run: npm ci
+          working-directory: frontend
       - run: npm run type-check
       - run: npm run lint
       - run: npm run build
@@ -37,13 +53,10 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-node-install
         with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: frontend/package-lock.json
-      - run: npm ci
-      - run: npx playwright install --with-deps chromium
+          working-directory: frontend
+      - run: npx playwright install chromium
       - run: npm run build
         env:
           NEXT_PUBLIC_STELLAR_NETWORK: testnet
@@ -69,12 +82,9 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-node-install
         with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: backend/package-lock.json
-      - run: npm ci
+          working-directory: backend
       - run: npm run lint
       - run: npm test -- --coverage
       - uses: actions/upload-artifact@v4
@@ -106,6 +116,29 @@ jobs:
       - run: cargo test --workspace
       - run: cargo build --workspace --target wasm32-unknown-unknown --release
 
+  scheduler:
+    name: Go Scheduler
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: scheduler
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: scheduler/go.sum
+      - name: Verify gofmt
+        run: |
+          if [ -n "$(gofmt -l .)" ]; then
+            echo "gofmt formatting violations found:"
+            gofmt -d .
+            exit 1
+          fi
+      - run: go vet ./...
+      - run: go test -v ./...
+      - run: go build -v ./...
+
   zap_scan:
     name: DAST Security Scan (OWASP ZAP)
     runs-on: ubuntu-latest
@@ -113,23 +146,39 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Resolve DAST scan target
+        id: resolve_target
+        run: |
+          if [ -n "$DAST_TARGET" ]; then
+            echo "target=$DAST_TARGET" >> "$GITHUB_OUTPUT"
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No DAST target provided. Pass dast_target via workflow_dispatch (or wire up a real environment URL) to run the ZAP baseline scan."
+          fi
+        env:
+          DAST_TARGET: ${{ inputs.dast_target }}
+
       - name: Run ZAP Baseline Scan
         id: zap_scan
-        # The staging target isn't always deployed/reachable at the time this
-        # CI job runs (e.g. between deploys, or on branches without their own
-        # staging env) — a DNS/connection failure here is an environment
-        # precondition, not a code defect, so it must not fail the whole build.
+        if: steps.resolve_target.outputs.enabled == 'true'
+        # Scan failures against the live target are a precondition/tooling
+        # outcome, not a code defect, so they must not fail the whole build.
         continue-on-error: true
         uses: zaproxy/action-baseline@v0.14.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          target: 'https://staging.greenpay.app'
+          target: ${{ steps.resolve_target.outputs.target }}
           cmd_options: '-J report.json'
           fail_action: false
 
       - name: Run Security Triage Script
-        if: steps.zap_scan.outcome == 'success'
+        if: steps.resolve_target.outputs.enabled == 'true' && steps.zap_scan.outcome == 'success'
         run: node scripts/triage-zap.js
+
+      - name: Teardown Ephemeral Staging Stack
+        if: always()
+        run: docker compose down -v
 
       - name: Upload ZAP Reports
         uses: actions/upload-artifact@v4

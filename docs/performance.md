@@ -24,8 +24,8 @@ is violated.
 # Against local dev server
 k6 run scripts/load-test.js
 
-# Against a staging environment
-BASE_URL=https://staging.greenpay.app k6 run scripts/load-test.js
+# Against a deployed staging environment
+BASE_URL=https://your-deployed-staging.example.com k6 run scripts/load-test.js
 
 # HTML report
 k6 run --out json=results.json scripts/load-test.js

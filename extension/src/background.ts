@@ -58,7 +58,12 @@ async function handleMessage(request: BackgroundRequest): Promise<BackgroundResp
         await state.clearWallet();
         return { ok: true };
       case 'REFRESH_PROJECTS':
-        return { ok: true, projects: await fetchProjects(request.query) };
+        return {
+          ok: true,
+          projects: await fetchProjects(request.query),
+          sequence: request.sequence,
+          query: request.query,
+        };
       default:
         return { ok: false, error: 'Unsupported background request' };
     }

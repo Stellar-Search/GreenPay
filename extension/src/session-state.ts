@@ -82,6 +82,7 @@ export class WorkerSessionState {
   private projectsCachedAt: number | null = null;
   private initialized = false;
   private initialization: Promise<void> | null = null;
+  private mutationQueue: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly sessionStorage: StorageArea,
@@ -89,6 +90,21 @@ export class WorkerSessionState {
     private readonly now: () => number = Date.now,
     readonly workerInstanceId: string = crypto.randomUUID()
   ) {}
+
+  private async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const previousQueue = this.mutationQueue;
+    let releaseLock!: () => void;
+    this.mutationQueue = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+
+    try {
+      await previousQueue.catch(() => {});
+      return await operation();
+    } finally {
+      releaseLock();
+    }
+  }
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
@@ -141,56 +157,64 @@ export class WorkerSessionState {
   }
 
   async snapshot(previousWorkerInstanceId: string | null): Promise<RecoverySnapshot> {
-    await this.initialize();
-    await this.invalidateExpiredState();
-    return {
-      workerInstanceId: this.workerInstanceId,
-      workerRestarted:
-        previousWorkerInstanceId !== null &&
-        previousWorkerInstanceId !== this.workerInstanceId,
-      wallet: this.wallet,
-      projects: this.projects,
-      // Cached wallet identity is a UI hint, never proof of current access.
-      needsWalletValidation: true,
-    };
+    return this.runExclusive(async () => {
+      await this.initialize();
+      await this.invalidateExpiredState();
+      return {
+        workerInstanceId: this.workerInstanceId,
+        workerRestarted:
+          previousWorkerInstanceId !== null &&
+          previousWorkerInstanceId !== this.workerInstanceId,
+        wallet: this.wallet,
+        projects: this.projects,
+        // Cached wallet identity is a UI hint, never proof of current access.
+        needsWalletValidation: true,
+      };
+    });
   }
 
   async setWallet(publicKey: string): Promise<WalletSession> {
-    await this.initialize();
-    if (!/^G[A-Z2-7]{55}$/.test(publicKey)) {
-      throw new Error('Invalid Stellar public key');
-    }
+    return this.runExclusive(async () => {
+      await this.initialize();
+      if (!/^G[A-Z2-7]{55}$/.test(publicKey)) {
+        throw new Error('Invalid Stellar public key');
+      }
 
-    this.wallet = {
-      publicKey,
-      network: 'TESTNET',
-      validatedAt: this.now(),
-    };
-    const persisted: PersistedSessionState = {
-      schemaVersion: SESSION_SCHEMA_VERSION,
-      wallet: this.wallet,
-    };
-    await this.sessionStorage.set({ [STORAGE_KEYS.session]: persisted });
-    return this.wallet;
+      this.wallet = {
+        publicKey,
+        network: 'TESTNET',
+        validatedAt: this.now(),
+      };
+      const persisted: PersistedSessionState = {
+        schemaVersion: SESSION_SCHEMA_VERSION,
+        wallet: this.wallet,
+      };
+      await this.sessionStorage.set({ [STORAGE_KEYS.session]: persisted });
+      return this.wallet;
+    });
   }
 
   async clearWallet(): Promise<void> {
-    await this.initialize();
-    this.wallet = null;
-    await this.sessionStorage.remove(STORAGE_KEYS.session);
+    return this.runExclusive(async () => {
+      await this.initialize();
+      this.wallet = null;
+      await this.sessionStorage.remove(STORAGE_KEYS.session);
+    });
   }
 
   async setProjects(projects: ProjectSummary[]): Promise<ProjectSummary[]> {
-    await this.initialize();
-    this.projects = projects.filter(isProject);
-    this.projectsCachedAt = this.now();
-    const persisted: PersistedProjectCache = {
-      schemaVersion: SESSION_SCHEMA_VERSION,
-      projects: this.projects,
-      cachedAt: this.projectsCachedAt,
-    };
-    await this.localStorage.set({ [STORAGE_KEYS.projects]: persisted });
-    return this.projects;
+    return this.runExclusive(async () => {
+      await this.initialize();
+      this.projects = projects.filter(isProject);
+      this.projectsCachedAt = this.now();
+      const persisted: PersistedProjectCache = {
+        schemaVersion: SESSION_SCHEMA_VERSION,
+        projects: this.projects,
+        cachedAt: this.projectsCachedAt,
+      };
+      await this.localStorage.set({ [STORAGE_KEYS.projects]: persisted });
+      return this.projects;
+    });
   }
 
   private async invalidateExpiredState(): Promise<void> {

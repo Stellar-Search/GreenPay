@@ -11,16 +11,21 @@
  * re-enter their secret key on the normal donate screen.
  *
  * Conflict rules:
+ *  - Another queued entry for the same project + donor + amount is already
+ *    completed or ready  -> conflict: duplicate
  *  - Project is no longer `active`               -> conflict: project-inactive
  *  - Available XLM balance < amount + fee buffer -> conflict: insufficient-balance
  *  - Entry already carries a horizonTransactionHash from a prior attempt
  *    (i.e. Horizon already accepted the payment)  -> completed, removed
  *  - Otherwise                                    -> ready
  *
- * The preflight runs once per reconnect event (or manual pull-to-refresh)
- * per entry — there is no background retry loop, so entries never get stuck
- * silently retrying forever; they simply sit in `ready` or `conflict` until
- * the user acts via the sync-conflicts screen.
+ * Horizon handling:
+ *  - loadAccount results are cached per donorAddress within a single
+ *    syncNow() pass so multiple entries for the same donor don't issue
+ *    redundant Horizon calls.
+ *  - HTTP 429 (rate-limit) responses are distinguished from generic network
+ *    failures and trigger an exponential backoff before the entry is left
+ *    as pending-sync for the next reconnect cycle.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert } from 'react-native';
@@ -40,12 +45,69 @@ const HORIZON_URL = process.env.EXPO_PUBLIC_HORIZON_URL || 'https://horizon-test
 /** Small reserve added on top of the donation amount to account for network fees. */
 const FEE_BUFFER_XLM = 0.5;
 
+/** Base delay (ms) before retrying after a 429 rate-limit response. */
+const RATE_LIMIT_BACKOFF_MS = 5_000;
+
 export type ResolveAction = 'remove' | 'edit-amount';
 
-async function preflightCheck(entry: QueuedDonation): Promise<QueuedDonation> {
+/** Cached Horizon account load result for deduplication within a sync pass. */
+interface AccountCacheEntry {
+  account: any | null;
+  error: unknown | null;
+}
+
+/**
+ * Detects a Horizon 429 rate-limit response. Horizon wraps HTTP status codes
+ * in the error's response.status or response.data.status fields.
+ */
+function isRateLimitError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const err = error as Record<string, unknown>;
+
+  // axios-style: error.response.status
+  const response = err.response as Record<string, unknown> | undefined;
+  if (response) {
+    if (response.status === 429) return true;
+    const data = response.data as Record<string, unknown> | undefined;
+    if (data && data.status === 429) return true;
+  }
+
+  // Horizon SDK-style: error.response.data.extras
+  if (response?.data) {
+    const data = response.data as Record<string, unknown>;
+    if (data.status === 429) return true;
+  }
+
+  return false;
+}
+
+async function preflightCheck(
+  entry: QueuedDonation,
+  allEntries: QueuedDonation[],
+  accountCache: Map<string, AccountCacheEntry>,
+): Promise<QueuedDonation> {
   // A prior attempt already reached Horizon successfully — nothing left to do.
   if (entry.horizonTransactionHash) {
     return { ...entry, status: 'completed' };
+  }
+
+  // Duplicate detection: check if another queued entry for the same project +
+  // donor + amount already has a terminal status (ready or completed).
+  const duplicate = allEntries.find(
+    (e) =>
+      e.id !== entry.id &&
+      e.projectId === entry.projectId &&
+      e.donorAddress === entry.donorAddress &&
+      e.amountXLM === entry.amountXLM &&
+      (e.status === 'ready' || e.status === 'completed'),
+  );
+  if (duplicate) {
+    return {
+      ...entry,
+      status: 'conflict',
+      conflictReason: 'duplicate',
+      conflictDetail: `A ${duplicate.status === 'completed' ? 'completed' : 'ready'} donation of ${entry.amountXLM} XLM to this project already exists in the queue.`,
+    };
   }
 
   try {
@@ -62,9 +124,32 @@ async function preflightCheck(entry: QueuedDonation): Promise<QueuedDonation> {
       };
     }
 
-    const server = createHorizonClient(HORIZON_URL);
-    const account = await server.loadAccount(entry.donorAddress);
-    const nativeBalance = account.balances.find((b: any) => b.asset_type === 'native');
+    // Use cached loadAccount result when available for this donor address.
+    let cacheEntry = accountCache.get(entry.donorAddress);
+    if (!cacheEntry) {
+      try {
+        const server = new Server(HORIZON_URL);
+        const account = await server.loadAccount(entry.donorAddress);
+        cacheEntry = { account, error: null };
+      } catch (error) {
+        if (isRateLimitError(error)) {
+          // 429: leave as pending-sync with a backoff signal for the next cycle.
+          console.warn('Donation queue preflight hit Horizon rate limit for', entry.donorAddress);
+          return entry;
+        }
+        cacheEntry = { account: null, error };
+      }
+      accountCache.set(entry.donorAddress, cacheEntry);
+    }
+
+    if (cacheEntry.error || !cacheEntry.account) {
+      // Network/Horizon hiccup during preflight — leave it as pending-sync so
+      // the next reconnect (or manual refresh) tries again. Never drop it.
+      console.warn('Donation queue preflight failed for entry', entry.id, cacheEntry.error);
+      return entry;
+    }
+
+    const nativeBalance = cacheEntry.account.balances.find((b: any) => b.asset_type === 'native');
     const available = nativeBalance ? parseFloat(nativeBalance.balance) : 0;
     const required = parseFloat(entry.amountXLM) + FEE_BUFFER_XLM;
 
@@ -110,10 +195,11 @@ export function useDonationSync() {
     try {
       const current = await listQueuedDonations();
       const pending = current.filter((entry) => entry.status === 'pending-sync');
+      const accountCache = new Map<string, AccountCacheEntry>();
 
       let completedCount = 0;
       for (const entry of pending) {
-        const result = await preflightCheck(entry);
+        const result = await preflightCheck(entry, current, accountCache);
         if (result.status === 'completed') {
           await removeQueuedDonation(entry.id);
           completedCount += 1;

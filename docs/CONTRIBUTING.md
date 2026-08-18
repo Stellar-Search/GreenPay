@@ -5,23 +5,35 @@ Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before contributing.
 ## Getting started
 
 1. Fork and clone the repo.
-2. Install dependencies: `pnpm install` (root workspace).
-3. Copy `.env.example` to `.env` and fill in the required values.
-4. Start the backend: `pnpm --filter backend dev`.
-5. Start the mobile app: `pnpm --filter mobile start`.
+2. Install dependencies **per subproject** — there is no root workspace. Run
+   `./scripts/setup-dev.sh` for `frontend/` and `backend/`, then `npm ci` inside
+   `mobile/` or `extension/` if you are working on those.
+3. Copy the per-subproject env templates: `frontend/.env.example` →
+   `frontend/.env.local` and `backend/.env.example` → `backend/.env`. There is no root
+   `.env.example`.
+4. Start PostgreSQL: `docker compose up -d postgres`.
+5. Start the backend: `cd backend && npm run dev`.
+6. Start the mobile app: `cd mobile && npx expo start`.
+
+> The full, verified list of lint/test/build commands for **all six subprojects** —
+> backend, frontend, contracts, mobile, extension and the Go scheduler — lives in
+> [`getting-started.md` §7](getting-started.md#7-subproject-reference--build-lint--test),
+> along with a note on which of them CI actually enforces. Treat that section as the
+> source of truth; do not assume one subproject's conventions apply to another.
 
 ## ✅ Prerequisites
 
 Install the following before cloning:
 
-| Tool | Version | Install |
-|------|---------|---------|
-| Node.js | ≥ 18.x | [nodejs.org](https://nodejs.org) or `nvm install 18` |
-| npm | latest | bundled with Node |
-| Docker | latest | [docs.docker.com/get-docker](https://docs.docker.com/get-docker/) |
-| Rust + Cargo | ≥ 1.74 | `curl https://sh.rustup.rs -sSf \| sh` |
-| Soroban CLI | latest | `cargo install --locked soroban-cli` |
-| Freighter Wallet | latest | See below |
+| Tool | Version | Install | Needed for |
+|------|---------|---------|------------|
+| Node.js | ≥ 18.x | [nodejs.org](https://nodejs.org) or `nvm install 18` | backend, frontend, mobile, extension |
+| npm | latest | bundled with Node | all Node subprojects |
+| Docker | latest | [docs.docker.com/get-docker](https://docs.docker.com/get-docker/) | PostgreSQL for the backend |
+| Rust + Cargo | ≥ 1.74 | `curl https://sh.rustup.rs -sSf \| sh` | `contracts/` |
+| Go | ≥ 1.22 | [go.dev/dl](https://go.dev/dl/) | `scheduler/` |
+| Soroban CLI | latest | `cargo install --locked soroban-cli` | deploying contracts only |
+| Freighter Wallet | latest | See below | using the app |
 
 ### 🦊 Install Freighter & Switch to Testnet
 
@@ -53,9 +65,9 @@ A `{"hash": "..."}` response confirms success. Refresh Freighter to see the bala
 ## 🍴 Fork & Set Up
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/stellar-greenpay.git
-cd stellar-greenpay
-git remote add upstream https://github.com/your-org/stellar-greenpay.git
+git clone https://github.com/YOUR_USERNAME/GreenPay.git
+cd GreenPay
+git remote add upstream https://github.com/Stellar-Search/GreenPay.git
 chmod +x scripts/setup-dev.sh && ./scripts/setup-dev.sh
 ```
 
@@ -66,9 +78,12 @@ cp frontend/.env.example frontend/.env.local
 cp backend/.env.example backend/.env
 ```
 
-Start the app:
+Start the app. The backend runs its migrations on boot and exits with
+`connect ECONNREFUSED 127.0.0.1:5432` if PostgreSQL is not up, so start that first:
 
 ```bash
+docker compose up -d postgres
+
 # terminal 1
 cd backend && npm run dev   # → http://localhost:4000
 
@@ -92,7 +107,7 @@ The Docker override watches backend changes through `backend/src` with Nodemon a
 4. Enter an XLM amount and confirm the transaction in Freighter.
 5. The on-chain transaction hash appears in the UI — paste it into [Stellar Expert (testnet)](https://stellar.expert/explorer/testnet) to verify.
 
-> 💡 A Loom walkthrough of this flow is available in [`docs/walkthrough.md`](docs/walkthrough.md).
+> 💡 A Loom walkthrough of this flow is available in [`docs/walkthrough.md`](walkthrough.md).
 
 ---
 
@@ -114,7 +129,7 @@ k6 run scripts/load-test.js
 The test enforces the p95 threshold as a hard check. A failed threshold means
 the PR is not mergeable until the regression is resolved.
 
-See [docs/performance.md](docs/performance.md) for the full target table and
+See [docs/performance.md](performance.md) for the full target table and
 how to record baseline numbers.
 
 ## Wallet & Stellar guidelines
@@ -129,7 +144,19 @@ how to record baseline numbers.
 
 ## Testing
 
+There is no root test runner. Run each subproject's suite from its own directory:
+
 ```bash
-pnpm test          # unit + integration
-pnpm test:e2e      # end-to-end (requires running backend + Horizon testnet)
+cd backend    && npm test        # jest
+cd frontend   && npm test        # jest
+cd frontend   && npm run test:e2e  # playwright (needs `npm run build` first)
+cd contracts  && cargo test --workspace
+cd mobile     && npm test        # jest-expo
+cd extension  && npm test        # vitest
+cd scheduler  && go test ./...
 ```
+
+Before you run these for the first time, read
+[`getting-started.md` §7](getting-started.md#7-subproject-reference--build-lint--test) —
+it documents the prerequisites for each command and flags the two suites that do not
+currently pass on a clean checkout (`mobile` and `scheduler`).

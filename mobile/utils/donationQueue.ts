@@ -8,6 +8,10 @@
  * optional message) is persisted. Signing always happens later, live, when
  * the user re-opens the donate screen and re-enters their secret key — see
  * docs/offline-donation-sync.md for the full rationale.
+ *
+ * Concurrency: every read-modify-write mutator is serialized through a
+ * module-level promise chain so concurrent calls (e.g. enqueueDonation
+ * firing while syncNow is mid-loop) never clobber each other's writes.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -37,6 +41,19 @@ function generateId(): string {
   return `donation_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+/**
+ * Serializes all read-modify-write mutations through a single promise chain.
+ * Each call waits for the previous mutation to complete before reading,
+ * preventing lost writes from concurrent callers.
+ */
+let mutationChain: Promise<unknown> = Promise.resolve();
+
+function enqueueMutation<T>(fn: () => Promise<T>): Promise<T> {
+  const result = mutationChain.then(fn, fn);
+  mutationChain = result.then(() => {}, () => {});
+  return result;
+}
+
 export async function listQueuedDonations(): Promise<QueuedDonation[]> {
   try {
     const raw = await AsyncStorage.getItem(DONATION_QUEUE_KEY);
@@ -59,34 +76,40 @@ export async function enqueueDonation(input: {
   amountXLM: string;
   message?: string;
 }): Promise<QueuedDonation> {
-  const entry: QueuedDonation = {
-    id: generateId(),
-    projectId: input.projectId,
-    projectName: input.projectName,
-    donorAddress: input.donorAddress,
-    amountXLM: input.amountXLM,
-    message: input.message?.trim() || undefined,
-    createdAt: Date.now(),
-    status: 'pending-sync',
-  };
-  const all = await listQueuedDonations();
-  await saveQueuedDonations([entry, ...all]);
-  return entry;
+  return enqueueMutation(async () => {
+    const entry: QueuedDonation = {
+      id: generateId(),
+      projectId: input.projectId,
+      projectName: input.projectName,
+      donorAddress: input.donorAddress,
+      amountXLM: input.amountXLM,
+      message: input.message?.trim() || undefined,
+      createdAt: Date.now(),
+      status: 'pending-sync',
+    };
+    const all = await listQueuedDonations();
+    await saveQueuedDonations([entry, ...all]);
+    return entry;
+  });
 }
 
 export async function updateQueuedDonation(
   id: string,
   patch: Partial<Omit<QueuedDonation, 'id'>>
 ): Promise<QueuedDonation[]> {
-  const all = await listQueuedDonations();
-  const updated = all.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry));
-  await saveQueuedDonations(updated);
-  return updated;
+  return enqueueMutation(async () => {
+    const all = await listQueuedDonations();
+    const updated = all.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry));
+    await saveQueuedDonations(updated);
+    return updated;
+  });
 }
 
 export async function removeQueuedDonation(id: string): Promise<QueuedDonation[]> {
-  const all = await listQueuedDonations();
-  const updated = all.filter((entry) => entry.id !== id);
-  await saveQueuedDonations(updated);
-  return updated;
+  return enqueueMutation(async () => {
+    const all = await listQueuedDonations();
+    const updated = all.filter((entry) => entry.id !== id);
+    await saveQueuedDonations(updated);
+    return updated;
+  });
 }

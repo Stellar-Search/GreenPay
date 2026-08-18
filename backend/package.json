@@ -6,7 +6,7 @@
     "dev": "nodemon src/server.js",
     "dev:docker": "nodemon --legacy-watch --watch src src/server.js",
     "start": "node src/server.js",
-    "lint": "eslint src/**/*.js",
+    "lint": "eslint src",
     "docs": "typedoc --options typedoc.json",
     "test": "jest --runInBand"
   },

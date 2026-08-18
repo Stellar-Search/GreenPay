@@ -30,6 +30,7 @@ stellar-greenpay/
 ├── backend/           # Node.js + Express API
 ├── contracts/         # Stellar Soroban smart contracts (Rust)
 ├── docs/              # Architecture, API, and project documentation
+│   └── runbooks/      # Incident response runbooks (matcher key, indexer lag)
 ├── scripts/           # Deployment & utility scripts
 ├── .github/           # CI/CD workflows & issue templates
 └── LICENSE

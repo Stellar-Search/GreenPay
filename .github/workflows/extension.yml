@@ -21,14 +21,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Set up Node.js and install dependencies
+        uses: ./.github/actions/setup-node-install
         with:
-          node-version: '20'
-
-      - name: Install dependencies
-        working-directory: extension
-        run: npm ci
+          working-directory: extension
 
       - name: Simulate service-worker termination and test recovery
         working-directory: extension

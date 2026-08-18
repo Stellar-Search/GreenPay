@@ -13,6 +13,8 @@ frontend:
 postgres:
   image: postgres:16-alpine
   storage: 5Gi
+  walBucket: greenpay-wal-backups
+  awsRegion: us-east-1
 
 config:
   stellarNetwork: testnet
@@ -28,6 +30,8 @@ secrets:
   postgresDb: greenpay
   resendApiKey: ""
   adminApiKey: ""
+  awsAccessKeyId: ""
+  awsSecretAccessKey: ""
 
 ingress:
   host: greenpay.local

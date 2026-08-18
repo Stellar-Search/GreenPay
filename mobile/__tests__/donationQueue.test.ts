@@ -111,4 +111,89 @@ describe('donationQueue', () => {
     const list = await listQueuedDonations();
     expect(list).toEqual([]);
   });
+
+  it('survives concurrent enqueue + update without losing either write', async () => {
+    const first = await enqueueDonation({
+      projectId: 'proj-1',
+      projectName: 'Project One',
+      donorAddress: 'GABC',
+      amountXLM: '1',
+    });
+
+    // Fire enqueue and update concurrently — both must survive.
+    const [, updated] = await Promise.all([
+      enqueueDonation({
+        projectId: 'proj-2',
+        projectName: 'Project Two',
+        donorAddress: 'GABC',
+        amountXLM: '2',
+      }),
+      updateQueuedDonation(first.id, {
+        status: 'conflict',
+        conflictReason: 'insufficient-balance',
+      }),
+    ]);
+
+    const list = await listQueuedDonations();
+    expect(list).toHaveLength(2);
+
+    const enqueued = list.find((e) => e.projectId === 'proj-2');
+    expect(enqueued).toBeDefined();
+
+    const patched = list.find((e) => e.id === first.id);
+    expect(patched?.status).toBe('conflict');
+    expect(patched?.conflictReason).toBe('insufficient-balance');
+  });
+
+  it('survives concurrent enqueue + remove without losing either write', async () => {
+    const first = await enqueueDonation({
+      projectId: 'proj-1',
+      projectName: 'Project One',
+      donorAddress: 'GABC',
+      amountXLM: '1',
+    });
+
+    const [, removed] = await Promise.all([
+      enqueueDonation({
+        projectId: 'proj-2',
+        projectName: 'Project Two',
+        donorAddress: 'GABC',
+        amountXLM: '2',
+      }),
+      removeQueuedDonation(first.id),
+    ]);
+
+    const list = await listQueuedDonations();
+    expect(list).toHaveLength(1);
+    expect(list[0].projectId).toBe('proj-2');
+  });
+
+  it('serializes a mid-loop enqueue during batch update', async () => {
+    // Seed 3 entries.
+    const e1 = await enqueueDonation({ projectId: 'p1', projectName: 'P1', donorAddress: 'GA', amountXLM: '1' });
+    const e2 = await enqueueDonation({ projectId: 'p2', projectName: 'P2', donorAddress: 'GA', amountXLM: '2' });
+    const e3 = await enqueueDonation({ projectId: 'p3', projectName: 'P3', donorAddress: 'GA', amountXLM: '3' });
+
+    // Simulate a batch update (like syncNow does) interleaved with a new enqueue.
+    const batchUpdate = (async () => {
+      const results: any[] = [];
+      for (const entry of [e1, e2, e3]) {
+        results.push(await updateQueuedDonation(entry.id, { status: 'ready' }));
+        // This fires mid-loop — the serialization must ensure the new entry
+        // is not lost by the next iteration's read.
+        if (entry.id === e2.id) {
+          await enqueueDonation({ projectId: 'p-new', projectName: 'New', donorAddress: 'GA', amountXLM: '5' });
+        }
+      }
+      return results;
+    })();
+
+    await batchUpdate;
+
+    const list = await listQueuedDonations();
+    // All 4 entries must exist and none clobbered.
+    expect(list).toHaveLength(4);
+    expect(list.filter((e) => e.status === 'ready')).toHaveLength(3);
+    expect(list.find((e) => e.projectId === 'p-new')).toBeDefined();
+  });
 });

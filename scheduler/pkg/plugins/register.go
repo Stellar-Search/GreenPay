@@ -19,5 +19,8 @@ func RegisterPlugins(registry runtime.Registry) error {
 	if err := registry.Register(MLWorkloadScoreName, NewMLWorkloadScore); err != nil {
 		return err
 	}
+	if err := registry.Register(MLWorkloadPreemptionName, NewMLWorkloadPreemption); err != nil {
+		return err
+	}
 	return nil
 }

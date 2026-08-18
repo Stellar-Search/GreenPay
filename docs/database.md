@@ -35,8 +35,8 @@ For production deployments:
 - Use strong, randomly generated passwords
 - Enable SSL/TLS connections
 - Configure proper firewall rules
-- Use managed database services (RDS, Cloud SQL) when possible
-- Enable automated backups
+- Use managed database services (RDS, Cloud SQL) when possible (see [ADR-004](adr/ADR-004-managed-postgres-vs-self-hosted-ha.md))
+- Enable automated backups and continuous WAL archiving
 
 ## Database Backup Strategy
 
@@ -237,20 +237,40 @@ SELECT COUNT(*) FROM transactions;
 
 ## Point-in-Time Recovery (PITR)
 
-For point-in-time recovery:
+> **Status: not implemented.** PITR is currently a design goal, not a deployed
+> capability.
 
-1. Enable WAL (Write-Ahead Logging) archiving
-2. Archive WAL files to S3/GCS
-3. Use `pg_restore` with recovery target time
+The deployed database (`k8s/postgres.yaml`) is a stock `postgres:16-alpine`
+StatefulSet: it mounts no custom `postgresql.conf`, WAL archiving is **off**, and
+no WAL files are shipped to object storage. The only automated backup that
+exists today is the **nightly `pg_dump`** gzip snapshot produced by
+`.github/workflows/database-backup.yml` (runs at 02:00 UTC via
+`scripts/backup-db.sh`). That snapshot allows restoring to the time of the last
+backup — not to an arbitrary point in time.
 
-Example configuration in postgresql.conf:
+### What PITR would require (not yet in `k8s/postgres.yaml`)
 
-```postgresql
+1. Enable WAL (Write-Ahead Logging) archiving on the PostgreSQL instance
+2. Archive WAL files to S3/GCS continuously
+3. Restore using `pg_restore`/`recovery_target_time` when needed
+
+Example configuration that would need to be added (currently **absent** from the
+deployed manifests):
+
+```ini
+# PostgreSQL Configuration with WAL Archiving for PITR
 wal_level = replica
 archive_mode = on
-archive_command = 'aws s3 cp %p s3://my-backup-bucket/wal/%f'
+archive_command = 'aws s3 cp %p s3://greenpay-wal-backups/wal/%f'
 archive_timeout = 300
+max_wal_senders = 10
 ```
+
+To make this real, `k8s/postgres.yaml` must mount a `postgresql.conf` containing
+the above (or the image entrypoint must append it), the pod must have
+credentials/network access to the S3/GCS bucket, and a WAL lifecycle/retention
+policy must be defined. Until then, do not claim PITR in runbooks or incident
+documentation — recovery granularity is limited to the nightly snapshot.
 
 ## Backup Testing
 
