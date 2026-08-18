@@ -1,19 +1,28 @@
 /**
  * src/services/stellar.js
  * Backend Stellar/Soroban service.
+ *
+ * Clients are constructed via the shared @greenpay/stellar-client
+ * factory so that network-passphrase resolution, Horizon URL, and
+ * Soroban/RPC URL are consistent with every other GreenPay sub-project.
  */
 "use strict";
 
-const { Horizon, Networks, rpc, Contract, TransactionBuilder, scValToNative } = require("@stellar/stellar-sdk");
+const { createStellarClients, Contract, TransactionBuilder, scValToNative, Horizon } = require("@greenpay/stellar-client");
 
-const NETWORK     = process.env.STELLAR_NETWORK || "testnet";
-const HORIZON_URL = process.env.HORIZON_URL || "https://horizon-testnet.stellar.org";
-const RPC_URL     = process.env.SOROBAN_RPC_URL || "https://soroban-testnet.stellar.org";
+const {
+  networkPassphrase: NETWORK_PASSPHRASE,
+  horizonServer: server,
+  rpcServer,
+  contractId: CONTRACT_ID,
+} = createStellarClients({
+  network:    process.env.STELLAR_NETWORK,
+  horizonUrl: process.env.HORIZON_URL,
+  rpcUrl:     process.env.SOROBAN_RPC_URL,
+  contractId: process.env.CONTRACT_ID,
+});
 
-const NETWORK_PASSPHRASE = NETWORK === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
-const server = new Horizon.Server(HORIZON_URL);
-const rpcServer = new rpc.Server(RPC_URL);
-const CONTRACT_ID = process.env.CONTRACT_ID || "";
+const NETWORK = process.env.STELLAR_NETWORK || "testnet";
 
 async function getOnChainProject(projectId) {
   if (!CONTRACT_ID) return null;

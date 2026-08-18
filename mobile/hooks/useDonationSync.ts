@@ -26,7 +26,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert } from 'react-native';
 import axios from 'axios';
 import NetInfo from '@react-native-community/netinfo';
-import { Server } from '@stellar/stellar-sdk';
+import { createHorizonClient } from '@greenpay/stellar-client';
 import {
   QueuedDonation,
   listQueuedDonations,
@@ -62,7 +62,7 @@ async function preflightCheck(entry: QueuedDonation): Promise<QueuedDonation> {
       };
     }
 
-    const server = new Server(HORIZON_URL);
+    const server = createHorizonClient(HORIZON_URL);
     const account = await server.loadAccount(entry.donorAddress);
     const nativeBalance = account.balances.find((b: any) => b.asset_type === 'native');
     const available = nativeBalance ? parseFloat(nativeBalance.balance) : 0;

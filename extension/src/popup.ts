@@ -5,12 +5,11 @@ import {
   signTransaction,
 } from '@stellar/freighter-api';
 import {
+  createStellarClients,
   Asset,
-  Horizon,
-  Networks,
   Operation,
   TransactionBuilder,
-} from '@stellar/stellar-sdk';
+} from '@greenpay/stellar-client';
 import type { BackgroundRequest, BackgroundResponse } from './messages';
 import { recoverPopupSession, type PopupRecoveryClient } from './popup-session';
 import {
@@ -20,7 +19,7 @@ import {
   type WalletSession,
 } from './session-state';
 
-const server = new Horizon.Server('https://horizon-testnet.stellar.org');
+const { networkPassphrase, horizonServer: server } = createStellarClients();
 const sessionArea = chrome.storage.session ?? chrome.storage.local;
 
 const connectBtn = document.getElementById('connect-btn') as HTMLButtonElement;
@@ -246,7 +245,7 @@ async function buildDonationTransaction(project: ProjectSummary, amount: number)
   const account = await server.loadAccount(currentWallet.publicKey);
   const transaction = new TransactionBuilder(account, {
     fee: (await server.fetchBaseFee()).toString(),
-    networkPassphrase: Networks.TESTNET,
+    networkPassphrase: networkPassphrase,
   })
     .addOperation(
       Operation.payment({
@@ -274,9 +273,9 @@ async function donate() {
 
     const xdr = await buildDonationTransaction(activeProject, currentDonationAmount);
     const signedXdr = await signTransaction(xdr, {
-      networkPassphrase: Networks.TESTNET,
+      networkPassphrase: networkPassphrase,
     });
-    const transaction = TransactionBuilder.fromXDR(signedXdr, Networks.TESTNET);
+    const transaction = TransactionBuilder.fromXDR(signedXdr, networkPassphrase);
     const result = await server.submitTransaction(transaction);
     showStatus(`Donation sent! ${result.hash.slice(0, 12)}…`, 'success');
   } catch (error) {

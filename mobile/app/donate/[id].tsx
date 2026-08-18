@@ -8,12 +8,13 @@ import { useEffect, useState } from 'react';
 import axios from 'axios';
 import NetInfo from '@react-native-community/netinfo';
 import { authenticate } from '../../hooks/useBiometricAuth';
-import { Keypair, Server, TransactionBuilder, Networks, Operation, Asset, Memo } from '@stellar/stellar-sdk';
+import { Keypair, TransactionBuilder, Operation, Asset, Memo, createHorizonClient, resolvePassphrase } from '@greenpay/stellar-client';
 import { useTheme } from '../theme';
 import { enqueueDonation } from '../../utils/donationQueue';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
 const HORIZON_URL = process.env.EXPO_PUBLIC_HORIZON_URL || 'https://horizon-testnet.stellar.org';
+const NETWORK_PASSPHRASE = resolvePassphrase(process.env.EXPO_PUBLIC_STELLAR_NETWORK);
 
 interface ClimateProject {
   id: string;
@@ -136,12 +137,12 @@ export default function DonateScreen() {
     setStatusMessage('Signing and submitting your donation...');
 
     try {
-      const server = new Server(HORIZON_URL);
+      const server = createHorizonClient(HORIZON_URL);
       const sourceAccount = await server.loadAccount(publicKey);
 
       const transaction = new TransactionBuilder(sourceAccount, {
         fee: '100',
-        networkPassphrase: Networks.TESTNET,
+        networkPassphrase: NETWORK_PASSPHRASE,
       })
         .addOperation(
           Operation.payment({

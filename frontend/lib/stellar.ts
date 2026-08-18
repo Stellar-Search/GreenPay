@@ -1,19 +1,35 @@
 /**
  * lib/stellar.ts — Stellar SDK helpers for GreenPay
+ *
+ * Clients are constructed via the shared @greenpay/stellar-client
+ * factory so that network-passphrase resolution, Horizon URL, and
+ * Soroban/RPC URL are consistent with every other GreenPay sub-project.
  */
-import { Horizon, Networks, Asset, Operation, TransactionBuilder, Transaction, Memo, rpc, Contract, scValToNative, Address, nativeToScVal, Account, xdr } from "@stellar/stellar-sdk";
+import {
+  createStellarClients,
+  Asset, Operation, TransactionBuilder, Transaction, Memo,
+  Contract, scValToNative, Address, nativeToScVal, Account, xdr,
+  Horizon, rpc,
+} from "@greenpay/stellar-client";
 
-export const NETWORK = (process.env.NEXT_PUBLIC_STELLAR_NETWORK || "testnet") as "testnet" | "mainnet";
-const HORIZON_URL = process.env.NEXT_PUBLIC_HORIZON_URL || "https://horizon-testnet.stellar.org";
-const RPC_URL     = process.env.NEXT_PUBLIC_SOROBAN_RPC_URL || "https://soroban-testnet.stellar.org";
+const {
+  network,
+  networkPassphrase,
+  horizonServer: server,
+  rpcServer,
+  contractId: CONTRACT_ID,
+  escrowContractId: ESCROW_CONTRACT_ID,
+} = createStellarClients({
+  network:          process.env.NEXT_PUBLIC_STELLAR_NETWORK,
+  horizonUrl:       process.env.NEXT_PUBLIC_HORIZON_URL,
+  rpcUrl:           process.env.NEXT_PUBLIC_SOROBAN_RPC_URL,
+  contractId:       process.env.NEXT_PUBLIC_CONTRACT_ID,
+  escrowContractId: process.env.NEXT_PUBLIC_ESCROW_CONTRACT_ID,
+});
 
-export const NETWORK_PASSPHRASE = NETWORK === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
-export const server = new Horizon.Server(HORIZON_URL);
-export const rpcServer = new rpc.Server(RPC_URL);
-export const CONTRACT_ID = process.env.NEXT_PUBLIC_CONTRACT_ID || "";
-
-/** Soroban escrow contract (deploy `contracts/escrow-contract`). */
-export const ESCROW_CONTRACT_ID = process.env.NEXT_PUBLIC_ESCROW_CONTRACT_ID || "";
+export const NETWORK = network;
+export const NETWORK_PASSPHRASE = networkPassphrase;
+export { server, rpcServer, CONTRACT_ID, ESCROW_CONTRACT_ID };
 
 export async function getXLMBalance(publicKey: string): Promise<string> {
   try {

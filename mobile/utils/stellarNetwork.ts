@@ -1,14 +1,12 @@
 /**
  * utils/stellarNetwork.ts
- * Resolves which Stellar network the app expects to operate on, mirroring
- * the web app's `NEXT_PUBLIC_STELLAR_NETWORK` pattern via
- * `EXPO_PUBLIC_STELLAR_NETWORK`.
+ * Resolves which Stellar network the app expects to operate on.
  *
- * Used to reject SEP-7 payment requests (or any other payload that names a
- * network passphrase) that target a different Stellar network than the one
- * this build of the app is configured for.
+ * Delegates to the shared @greenpay/stellar-client factory so that
+ * network-passphrase resolution is identical across backend, frontend,
+ * mobile, and extension.
  */
-import { Networks } from '@stellar/stellar-sdk';
+import { resolveNetworkLabel, resolveNetworkPassphrase } from '@greenpay/stellar-client';
 
 export type StellarNetworkLabel = 'testnet' | 'public';
 
@@ -18,12 +16,11 @@ export type StellarNetworkLabel = 'testnet' | 'public';
  * 'public'. Defaults to 'testnet' when unset.
  */
 export function getExpectedNetworkLabel(): StellarNetworkLabel {
-  const raw = (process.env.EXPO_PUBLIC_STELLAR_NETWORK || '').trim().toLowerCase();
-  if (raw === 'public' || raw === 'mainnet') return 'public';
-  return 'testnet';
+  const label = resolveNetworkLabel(process.env.EXPO_PUBLIC_STELLAR_NETWORK);
+  return label === 'mainnet' ? 'public' : label;
 }
 
 /** Returns the Stellar network passphrase this app build expects. */
 export function getExpectedNetworkPassphrase(): string {
-  return getExpectedNetworkLabel() === 'public' ? Networks.PUBLIC : Networks.TESTNET;
+  return resolveNetworkPassphrase(resolveNetworkLabel(process.env.EXPO_PUBLIC_STELLAR_NETWORK));
 }
