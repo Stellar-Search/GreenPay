@@ -8,7 +8,14 @@ import {
   sanitizeStellarAddress,
 } from './content-script';
 
-const ADDRESS = `G${'A'.repeat(55)}`;
+// A real, checksum-valid Stellar public key (from Stellar's docs). The old
+// fixture used `G${'A'.repeat(55)}`, which only matched the shape regex and is
+// rejected by the StrKey-backed sanitizer.
+const ADDRESS = 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H';
+
+// Shape-valid but checksum-invalid — the class of value the sanitizer must
+// reject even though it matches the scanning regex.
+const SHAPE_ONLY_ADDRESS = `G${'A'.repeat(55)}`;
 
 describe('content script hostile-page hardening', () => {
   const sendMessage = vi.fn();
@@ -29,8 +36,9 @@ describe('content script hostile-page hardening', () => {
     vi.unstubAllGlobals();
   });
 
-  it('accepts only complete Stellar-shaped addresses at the message boundary', () => {
+  it('accepts only complete, checksum-valid Stellar addresses at the message boundary', () => {
     expect(sanitizeStellarAddress(ADDRESS)).toBe(ADDRESS);
+    expect(sanitizeStellarAddress(SHAPE_ONLY_ADDRESS)).toBeNull();
     expect(sanitizeStellarAddress(`${ADDRESS}<script>alert(1)</script>`)).toBeNull();
     expect(sanitizeStellarAddress(`javascript:${ADDRESS}`)).toBeNull();
     expect(sanitizeStellarAddress({ toString: () => ADDRESS })).toBeNull();

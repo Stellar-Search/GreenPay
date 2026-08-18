@@ -27,7 +27,7 @@ jest.mock('expo-status-bar', () => ({ StatusBar: () => null }));
 const MOCK_PROJECT = {
   id: 'proj-1',
   name: 'Amazon Reforestation',
-  walletAddress: 'GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN',
+  walletAddress: 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H',
 };
 
 import DonateScreen from '../app/donate/[id]';
@@ -97,10 +97,10 @@ describe('DonateScreen – biometric auth gate', () => {
   });
 });
 
-// A syntactically valid-shaped Stellar public key (G + 55 base32 chars) —
-// matches the `/^G[A-Z0-9]{55}$/` check in connectWallet(), independent of
-// the real MOCK_PROJECT.walletAddress above.
-const DONOR_PUBLIC_KEY = 'GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW';
+// A real, checksum-valid Stellar public key (from Stellar's docs). The old
+// constant was only shape-valid (`/^G[A-Z0-9]{55}$/`) and is rejected by the
+// StrKey-backed check now used in connectWallet().
+const DONOR_PUBLIC_KEY = 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H';
 
 /** Drives the "Connect Wallet" Alert.alert prompt exactly like a user would. */
 async function connectWallet(getByText: any, alertSpy: jest.SpyInstance, publicKey: string) {

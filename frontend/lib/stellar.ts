@@ -411,7 +411,7 @@ export async function submitAndConfirmDonation(signedXDR: string): Promise<{ has
   );
 }
 
-export function isValidStellarAddress(a: string): boolean { return /^G[A-Z0-9]{55}$/.test(a); }
+export { isValidStellarAddress } from "./stellar-address";
 export function explorerUrl(hash: string): string {
   return `https://stellar.expert/explorer/${NETWORK === "mainnet" ? "public" : "testnet"}/tx/${hash}`;
 }

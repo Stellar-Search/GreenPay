@@ -11,6 +11,7 @@ import { authenticate } from '../../hooks/useBiometricAuth';
 import { Keypair, Server, TransactionBuilder, Networks, Operation, Asset, Memo } from '@stellar/stellar-sdk';
 import { useTheme } from '../theme';
 import { enqueueDonation } from '../../utils/donationQueue';
+import { isValidStellarAddress } from '../../utils/stellarValidation';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
 const HORIZON_URL = process.env.EXPO_PUBLIC_HORIZON_URL || 'https://horizon-testnet.stellar.org';
@@ -194,7 +195,7 @@ export default function DonateScreen() {
           text: 'OK',
           onPress: (input: any) => {
             const trimmed = String(input || '').trim();
-            if (/^G[A-Z0-9]{55}$/.test(trimmed)) {
+            if (isValidStellarAddress(trimmed)) {
               setPublicKey(trimmed);
             } else {
               Alert.alert('Invalid Key', 'Please enter a valid Stellar public key');

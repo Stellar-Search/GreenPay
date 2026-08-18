@@ -1,22 +1,20 @@
 /**
- * utils/stellarValidation.ts
- * Stellar address validation for the mobile app.
+ * lib/stellar-address.ts
+ * Stellar address validation for the web frontend.
  *
- * Validates real ed25519/muxed checksums via `@stellar/stellar-sdk`'s
- * `StrKey` (the same primitive used by `src/hooks/useWallet.ts`) instead of
- * a shape-only regex. A string that merely *looks* like a Stellar address
- * (right prefix, right length) is not guaranteed to be a real, checksum-valid
- * account id — accepting shape alone would let a single mistyped or
- * adversarially-crafted character through undetected.
+ * Canonical StrKey-backed implementation, verified via `@stellar/stellar-sdk`'s
+ * `StrKey` (checksum) rather than a shape-only regex. A string that merely
+ * *looks* like a Stellar address (right prefix, right length) is not
+ * guaranteed to be a real, checksum-valid account id.
  *
- * Canonical implementation, mirrored verbatim across:
- *   - frontend/lib/stellar-address.ts
- *   - mobile/utils/stellarValidation.ts  (this file)
+ * Mirrored verbatim across:
+ *   - frontend/lib/stellar-address.ts        (this file)
+ *   - mobile/utils/stellarValidation.ts
  *   - extension/src/stellar-address.ts
  * The cross-validation test in `extension/src/__tests__/stellar-address-cross-validation.test.ts`
  * proves all three accept and reject exactly the same corpus. Keep them in sync.
  */
-import { StrKey } from '@stellar/stellar-sdk';
+import { StrKey } from "@stellar/stellar-sdk";
 
 /**
  * Returns true when `address` is a valid Stellar Ed25519 public key (G…),
@@ -27,7 +25,7 @@ import { StrKey } from '@stellar/stellar-sdk';
  * should use `isValidStellarDestination` instead.
  */
 export function isValidStellarAddress(address: unknown): address is string {
-  if (typeof address !== 'string') return false;
+  if (typeof address !== "string") return false;
   try {
     return StrKey.isValidEd25519PublicKey(address);
   } catch {
@@ -42,7 +40,7 @@ export function isValidStellarAddress(address: unknown): address is string {
  * from a plain G-address.
  */
 export function isValidStellarMuxedAddress(address: unknown): address is string {
-  if (typeof address !== 'string') return false;
+  if (typeof address !== "string") return false;
   try {
     return StrKey.isValidMed25519PublicKey(address);
   } catch {
