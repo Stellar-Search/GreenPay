@@ -2,7 +2,7 @@
  * app/donate/[id].tsx
  * Donate screen with project selector, amount input, and Stellar transaction submission.
  */
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, Alert, ActivityIndicator, Modal } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import axios from 'axios';
@@ -11,6 +11,7 @@ import { authenticate } from '../../hooks/useBiometricAuth';
 import { Keypair, Server, TransactionBuilder, Networks, Operation, Asset, Memo } from '@stellar/stellar-sdk';
 import { useTheme } from '../theme';
 import { enqueueDonation } from '../../utils/donationQueue';
+import { useWallet } from '../../src/hooks/useWallet';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
 const HORIZON_URL = process.env.EXPO_PUBLIC_HORIZON_URL || 'https://horizon-testnet.stellar.org';
@@ -31,11 +32,21 @@ export default function DonateScreen() {
   const [amount, setAmount] = useState('1');
   const [message, setMessage] = useState('');
   const [secretKey, setSecretKey] = useState('');
-  const [publicKey, setPublicKey] = useState('');
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [statusType, setStatusType] = useState<'success' | 'error' | 'info' | null>(null);
+
+  const {
+    publicKey,
+    loading: walletLoading,
+    error: walletError,
+    connect: connectWallet,
+    disconnect: disconnectWallet,
+  } = useWallet();
+  const [walletModalVisible, setWalletModalVisible] = useState(false);
+  const [walletInput, setWalletInput] = useState('');
+  const [connectingWallet, setConnectingWallet] = useState(false);
 
   useEffect(() => {
     loadProjects();
@@ -184,25 +195,24 @@ export default function DonateScreen() {
     }
   };
 
-  const connectWallet = async () => {
+  const handleConnectWallet = async () => {
+    setConnectingWallet(true);
+    const ok = await connectWallet(walletInput);
+    setConnectingWallet(false);
+    if (ok) {
+      setWalletModalVisible(false);
+      setWalletInput('');
+    }
+  };
+
+  const handleDisconnectWallet = () => {
     Alert.alert(
-      'Connect Wallet',
-      'Enter your Stellar public key:',
+      'Disconnect wallet?',
+      publicKey ? `${publicKey.slice(0, 8)}...${publicKey.slice(-4)}` : undefined,
       [
         { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'OK',
-          onPress: (input: any) => {
-            const trimmed = String(input || '').trim();
-            if (/^G[A-Z0-9]{55}$/.test(trimmed)) {
-              setPublicKey(trimmed);
-            } else {
-              Alert.alert('Invalid Key', 'Please enter a valid Stellar public key');
-            }
-          },
-        },
-      ],
-      'plain-text-input'
+        { text: 'Disconnect', style: 'destructive', onPress: disconnectWallet },
+      ]
     );
   };
 
@@ -247,18 +257,62 @@ export default function DonateScreen() {
         </ScrollView>
       </View>
 
-      {!publicKey ? (
+      {walletLoading ? (
+        <ActivityIndicator size="small" color="#227239" style={styles.walletLoadingIndicator} />
+      ) : !publicKey ? (
         <TouchableOpacity style={[styles.connectButton, { backgroundColor: colors.buttonBackground }]}
-          onPress={connectWallet}
+          onPress={() => setWalletModalVisible(true)}
         >
           <Text style={[styles.connectButtonText, { color: colors.buttonText }]}>Connect Wallet</Text>
         </TouchableOpacity>
       ) : (
-        <View style={styles.walletCard}>
+        <TouchableOpacity style={styles.walletCard} onLongPress={handleDisconnectWallet}>
           <Text style={styles.walletLabel}>Connected wallet</Text>
           <Text style={styles.walletAddress}>{publicKey.slice(0, 8)}...{publicKey.slice(-4)}</Text>
-        </View>
+        </TouchableOpacity>
       )}
+
+      <Modal
+        visible={walletModalVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setWalletModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalSheet}>
+            <Text style={styles.modalTitle}>Connect Stellar Wallet</Text>
+            <Text style={styles.modalSubtitle}>Enter your Stellar public key (starts with G)</Text>
+
+            <TextInput
+              style={styles.modalInput}
+              placeholder="GABC...XYZ"
+              placeholderTextColor="#9ca3af"
+              value={walletInput}
+              onChangeText={setWalletInput}
+              autoCapitalize="characters"
+              autoCorrect={false}
+            />
+
+            {walletError ? <Text style={styles.modalErrorText}>{walletError}</Text> : null}
+
+            <TouchableOpacity
+              style={[styles.modalConfirmButton, connectingWallet && styles.modalButtonDisabled]}
+              onPress={handleConnectWallet}
+              disabled={connectingWallet || !walletInput.trim()}
+            >
+              {connectingWallet ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Text style={styles.modalConfirmButtonText}>Connect</Text>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity onPress={() => setWalletModalVisible(false)}>
+              <Text style={styles.modalCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       <View style={styles.card}>
         <Text style={styles.label}>Amount (XLM)</Text>
@@ -405,6 +459,67 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#1f5136',
     marginTop: 4,
+  },
+  walletLoadingIndicator: {
+    marginTop: 24,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalSheet: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 24,
+    paddingBottom: 40,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 6,
+    color: '#1f5136',
+  },
+  modalSubtitle: {
+    color: '#6b7280',
+    marginBottom: 16,
+    fontSize: 14,
+  },
+  modalInput: {
+    borderWidth: 1,
+    borderColor: '#d1d5db',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 13,
+    fontFamily: 'monospace',
+    marginBottom: 8,
+  },
+  modalErrorText: {
+    color: '#ef4444',
+    fontSize: 12,
+    marginBottom: 10,
+  },
+  modalConfirmButton: {
+    backgroundColor: '#227239',
+    borderRadius: 10,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  modalButtonDisabled: {
+    opacity: 0.5,
+  },
+  modalConfirmButtonText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 15,
+  },
+  modalCancelText: {
+    color: '#6b7280',
+    textAlign: 'center',
+    fontSize: 14,
   },
   card: {
     margin: 16,
