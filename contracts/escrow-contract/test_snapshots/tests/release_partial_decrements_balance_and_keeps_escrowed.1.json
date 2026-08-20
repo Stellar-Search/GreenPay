@@ -318,6 +318,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "dispute_expiry_ledger"
+                              },
+                              "val": {
+                                "u32": 0
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "expiry_ledger"
                               },
                               "val": {
@@ -1554,6 +1562,14 @@
                   },
                   "val": {
                     "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "dispute_expiry_ledger"
+                  },
+                  "val": {
+                    "u32": 0
                   }
                 },
                 {

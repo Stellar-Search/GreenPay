@@ -289,6 +289,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "dispute_expiry_ledger"
+                              },
+                              "val": {
+                                "u32": 0
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "expiry_ledger"
                               },
                               "val": {
@@ -1255,7 +1263,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Only the client can cancel this job' from contract function 'Symbol(obj#289)'"
+                  "string": "caught panic 'Only the client can cancel this job' from contract function 'Symbol(obj#291)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"

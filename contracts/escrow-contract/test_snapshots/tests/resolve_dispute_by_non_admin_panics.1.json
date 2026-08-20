@@ -311,6 +311,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "dispute_expiry_ledger"
+                              },
+                              "val": {
+                                "u32": 200
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "expiry_ledger"
                               },
                               "val": {
@@ -1390,7 +1398,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Only admin can resolve disputes' from contract function 'Symbol(obj#347)'"
+                  "string": "caught panic 'Only admin can resolve disputes' from contract function 'Symbol(obj#353)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"

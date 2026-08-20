@@ -289,6 +289,14 @@
                             },
                             {
                               "key": {
+                                "symbol": "dispute_expiry_ledger"
+                              },
+                              "val": {
+                                "u32": 0
+                              }
+                            },
+                            {
+                              "key": {
                                 "symbol": "expiry_ledger"
                               },
                               "val": {
@@ -1255,7 +1263,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Job has not expired yet' from contract function 'Symbol(obj#289)'"
+                  "string": "caught panic 'Job has not expired yet' from contract function 'Symbol(obj#291)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
