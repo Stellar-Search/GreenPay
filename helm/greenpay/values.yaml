@@ -29,6 +29,12 @@ backend:
   # Must stay above the app's SHUTDOWN_TIMEOUT_MS (25s, see backend/src/server.js)
   # so a graceful shutdown can finish before the kubelet sends SIGKILL.
   terminationGracePeriodSeconds: 30
+  # PodDisruptionBudget — keeps at least one backend pod available during
+  # voluntary disruptions (node drain, cluster-autoscaler scale-down).
+  # maxUnavailable: 1 means at most 1 of the 2 replicas may be evicted at once.
+  pdb:
+    enabled: true
+    maxUnavailable: 1
   canary:
     steps:
       initialWeight: 10
@@ -48,6 +54,11 @@ frontend:
   image: greenpay/frontend:latest
   replicas: 2
   port: 3000
+  # PodDisruptionBudget — keeps at least one frontend pod available during
+  # voluntary disruptions. maxUnavailable: 1 at 2 replicas = 1 always up.
+  pdb:
+    enabled: true
+    maxUnavailable: 1
   canary:
     steps:
       initialWeight: 10
@@ -61,6 +72,23 @@ frontend:
       interval: 1m
       count: 5
       failureLimit: 3
+
+# summary-worker PDB values (Deployment managed via ml-workloads/summary-worker.yaml)
+summaryWorker:
+  # PodDisruptionBudget — 2 replicas; maxUnavailable: 1 keeps one worker
+  # processing the pg-boss queue during voluntary node disruptions.
+  pdb:
+    enabled: true
+    maxUnavailable: 1
+
+# ml-inference PDB values (Deployment managed via ml-workloads/ml-inference.yaml)
+mlInference:
+  # PodDisruptionBudget — HPA minReplicas is 1, so we MUST use maxUnavailable
+  # rather than minAvailable: 1. A minAvailable: 1 PDB would permanently block
+  # eviction once the HPA scales to its minimum, hanging node drains forever.
+  pdb:
+    enabled: true
+    maxUnavailable: 1
 
 monitoring:
   namespace: monitoring

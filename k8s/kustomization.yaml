@@ -17,6 +17,11 @@ resources:
   - ml-workloads/summary-worker.yaml
   - ml-workloads/ml-inference.yaml
   - ml-workloads/ml-training.yaml
+  # PodDisruptionBudgets — ensures at least one replica survives voluntary
+  # disruptions (node drains, cluster-autoscaler scale-downs). See pdb.yaml
+  # for per-workload design decisions, including the postgres exclusion.
+  # Issue: https://github.com/Stellar-Search/GreenPay/issues/158
+  - pdb.yaml
 
 components:
   # Deploy the custom scheduler infrastructure.
