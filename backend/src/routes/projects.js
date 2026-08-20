@@ -7,6 +7,7 @@ const express = require("express");
 const router = express.Router();
 const { v4: uuid } = require("uuid");
 const pool = require("../db/pool");
+const { adminRequired } = require("../middleware/auth");
 const { logAdminAction } = require("../services/audit");
 const { mapProjectRow, mapProjectMilestoneRow } = require("../services/store");
 const { getOnChainProject, CONTRACT_ID, server, NETWORK_PASSPHRASE } = require("../services/stellar");
@@ -602,11 +603,12 @@ router.get("/:id/matching", async (req, res, next) => {
 /**
  * PATCH /api/projects/:id/status
  * Approve or reject a project. Body: { status: "active" | "rejected", reason?: string }
- * `adminAddress` must match the project wallet (owner) or be a platform admin.
+ * Requires a verified platform-admin JWT (adminRequired) — no client-supplied
+ * identity claim is accepted as proof for this action.
  */
-router.patch("/:id/status", async (req, res, next) => {
+router.patch("/:id/status", adminRequired, async (req, res, next) => {
   try {
-    const { status, reason, adminAddress } = req.body || {};
+    const { status, reason } = req.body || {};
     const validStatuses = ["active", "rejected", "paused"];
     if (!status || !validStatuses.includes(status)) {
       return res.status(400).json({ error: `status must be one of: ${validStatuses.join(", ")}` });
@@ -628,7 +630,7 @@ router.patch("/:id/status", async (req, res, next) => {
     );
 
     logAdminAction({
-      actor: adminAddress || "unknown",
+      actor: req.admin.sub,
       action: `project.status.${status}`,
       targetType: "project",
       targetId: req.params.id,
