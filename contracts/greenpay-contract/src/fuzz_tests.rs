@@ -57,6 +57,9 @@ mod fuzz {
             .address();
         let token_client = StellarAssetClient::new(&env, &token);
 
+        // Allow the token so donate() passes its allowlist check.
+        client.allow_token(&admin, &token);
+
         (env, client, admin, token, token_client, project_id)
     }
 

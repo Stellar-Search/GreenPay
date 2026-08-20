@@ -1,4 +1,5 @@
 #![no_std]
+extern crate alloc;
 #[cfg(all(test, feature = "testutils"))]
 mod fuzz_tests;
 
@@ -25,7 +26,8 @@ mod fuzz_tests;
  *     --source alice --network testnet
  */
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env, String,
+    contract, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env, IntoVal,
+    String, TryFromVal, Val,
 };
 
 // ─── Badge tiers (on-chain) ───────────────────────────────────────────────────
@@ -156,6 +158,18 @@ const VOTING_WINDOW_LEDGERS: u32 = 120_960;
 const MIN_VOTING_WINDOW_LEDGERS: u32 = 720; // 1 hour @ 5s/ledger
 const MAX_VOTING_WINDOW_LEDGERS: u32 = 518_400; // 30 days @ 5s/ledger
 
+// ─── Persistent storage TTL ───────────────────────────────────────────────────
+
+/// Minimum remaining TTL (ledgers) below which per-entity persistent entries
+/// are extended. Mirrors dao-governance-contract's 7-day threshold so entries
+/// that are actively used never risk expiring.
+const PERSISTENT_TTL_THRESHOLD: u32 = VOTING_WINDOW_LEDGERS;
+
+/// Target TTL (ledgers) per-entity persistent entries are extended to.
+/// 4 years × 365 days × 24 h × 3600 s ÷ 5 s per ledger — matches
+/// dao-governance-contract's `MAX_LOCK_LEDGERS`.
+const PERSISTENT_TTL_EXTEND: u32 = 2_102_400;
+
 fn calculate_badge(total_stroops: i128) -> BadgeTier {
     let xlm = total_stroops / STROOP;
     if xlm >= 2000 {
@@ -169,6 +183,94 @@ fn calculate_badge(total_stroops: i128) -> BadgeTier {
     } else {
         BadgeTier::None
     }
+}
+
+// ─── Persistent storage helpers ───────────────────────────────────────────────
+//
+// Per-entity records (Project, DonorStats, ImpactNFT, HasDonated, Proposal,
+// HasVoted) live in *persistent* storage, not instance storage. Instance storage
+// shares a single TTL/footprint with the contract instance — it is documented
+// by Soroban as suitable only for small, contract-wide configuration (Admin,
+// counters, AllowedToken allowlist). Storing per-entity records there inflates
+// the instance footprint on every invocation and eventually hits the hard
+// ledger-entry size ceiling. Persistent storage gives each per-entity key its
+// own TTL, so adding thousands of projects/donors never grows the shared
+// footprint.
+//
+// The helpers below also implement a lazy migration from the legacy v1 layout
+// (per-entity entries in instance storage). On first access to a per-entity key,
+// if a value exists in instance storage it is atomically copied to persistent
+// storage and removed from instance storage (Soroban rolls back all state
+// changes if the invocation panics, so the migration cannot lose data).
+
+/// Read a per-entity value from persistent storage, transparently migrating a
+/// legacy v1 instance-storage entry on first access, and extend its TTL.
+fn read_persistent<K, V>(env: &Env, key: &K) -> Option<V>
+where
+    K: IntoVal<Env, Val>,
+    V: TryFromVal<Env, Val> + IntoVal<Env, Val>,
+    V::Error: core::fmt::Debug,
+{
+    let storage = env.storage();
+
+    // 1. Fresh persistent entry — read and extend TTL.
+    if storage.persistent().has(key) {
+        let val: V = storage
+            .persistent()
+            .get(key)
+            .expect("persistent entry disappeared");
+        extend_persistent_ttl(env, key);
+        return Some(val);
+    }
+
+    // 2. Legacy v1 instance-storage entry — migrate to persistent storage.
+    if storage.instance().has(key) {
+        let val: V = storage
+            .instance()
+            .get(key)
+            .expect("legacy instance entry disappeared");
+        storage.persistent().set(key, &val);
+        storage.instance().remove(key);
+        extend_persistent_ttl(env, key);
+        return Some(val);
+    }
+
+    None
+}
+
+/// Write a per-entity value to persistent storage and extend its TTL.
+fn write_persistent<K, V>(env: &Env, key: &K, val: &V)
+where
+    K: IntoVal<Env, Val>,
+    V: IntoVal<Env, Val>,
+{
+    env.storage().persistent().set(key, val);
+    extend_persistent_ttl(env, key);
+}
+
+/// Check whether a per-entity key exists in persistent storage (or as a legacy
+/// v1 instance-storage entry). Persistent entries have their TTL extended;
+/// legacy entries are migrated by the next read.
+fn has_persistent<K>(env: &Env, key: &K) -> bool
+where
+    K: IntoVal<Env, Val>,
+{
+    let storage = env.storage();
+    if storage.persistent().has(key) {
+        extend_persistent_ttl(env, key);
+        return true;
+    }
+    storage.instance().has(key)
+}
+
+/// Extend the TTL of a persistent entry if it falls below the threshold.
+fn extend_persistent_ttl<K>(env: &Env, key: &K)
+where
+    K: IntoVal<Env, Val>,
+{
+    env.storage()
+        .persistent()
+        .extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND);
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -246,11 +348,7 @@ impl GreenPayContract {
         if stored_admin != admin {
             panic!("Only admin can register projects");
         }
-        if env
-            .storage()
-            .instance()
-            .has(&DataKey::Project(project_id.clone()))
-        {
+        if has_persistent(&env, &DataKey::Project(project_id.clone())) {
             panic!("Project already registered");
         }
         if co2_per_xlm > MAX_CO2_PER_XLM {
@@ -266,9 +364,7 @@ impl GreenPayContract {
             active: true,
             registered_at: env.ledger().sequence(),
         };
-        env.storage()
-            .instance()
-            .set(&DataKey::Project(project_id.clone()), &project);
+        write_persistent(&env, &DataKey::Project(project_id.clone()), &project);
         let count: u32 = env
             .storage()
             .instance()
@@ -292,15 +388,10 @@ impl GreenPayContract {
         if stored_admin != admin {
             panic!("Only admin can deactivate projects");
         }
-        let mut project: Project = env
-            .storage()
-            .instance()
-            .get(&DataKey::Project(project_id.clone()))
+        let mut project: Project = read_persistent(&env, &DataKey::Project(project_id.clone()))
             .expect("Project not found");
         project.active = false;
-        env.storage()
-            .instance()
-            .set(&DataKey::Project(project_id), &project);
+        write_persistent(&env, &DataKey::Project(project_id), &project);
     }
 
     // ─── Donations ────────────────────────────────────────────────────────────
@@ -326,10 +417,7 @@ impl GreenPayContract {
             panic!("Token is not supported");
         }
 
-        let mut project: Project = env
-            .storage()
-            .instance()
-            .get(&DataKey::Project(project_id.clone()))
+        let mut project: Project = read_persistent(&env, &DataKey::Project(project_id.clone()))
             .expect("Project not found");
         if !project.active {
             panic!("Project is not accepting donations");
@@ -342,11 +430,8 @@ impl GreenPayContract {
             .checked_mul(project.co2_per_xlm as i128)
             .expect("CO2 calculation overflow");
 
-        let mut donor_stats: DonorStats = env
-            .storage()
-            .instance()
-            .get(&DataKey::DonorStats(donor.clone()))
-            .unwrap_or(DonorStats {
+        let mut donor_stats: DonorStats =
+            read_persistent(&env, &DataKey::DonorStats(donor.clone())).unwrap_or(DonorStats {
                 total_donated: 0,
                 donation_count: 0,
                 badge: BadgeTier::None,
@@ -362,16 +447,14 @@ impl GreenPayContract {
             .checked_add(amount)
             .expect("Project total_raised overflow");
         let donated_key = DataKey::HasDonated(project_id.clone(), donor.clone());
-        if !env.storage().instance().has(&donated_key) {
-            env.storage().instance().set(&donated_key, &true);
+        if !has_persistent(&env, &donated_key) {
+            write_persistent(&env, &donated_key, &true);
             project.donor_count = project
                 .donor_count
                 .checked_add(1)
                 .expect("Project donor_count overflow");
         }
-        env.storage()
-            .instance()
-            .set(&DataKey::Project(project_id.clone()), &project);
+        write_persistent(&env, &DataKey::Project(project_id.clone()), &project);
 
         donor_stats.total_donated = donor_stats
             .total_donated
@@ -386,21 +469,19 @@ impl GreenPayContract {
             .checked_add(co2_increment)
             .expect("Donor co2_offset overflow");
         donor_stats.badge = calculate_badge(donor_stats.total_donated);
-        env.storage()
-            .instance()
-            .set(&DataKey::DonorStats(donor.clone()), &donor_stats);
+        write_persistent(&env, &DataKey::DonorStats(donor.clone()), &donor_stats);
 
         // Auto-mint an Impact NFT when a donor reaches a new badge tier.
         if donor_stats.badge != BadgeTier::None && donor_stats.badge != prev_badge {
             let nft_key = DataKey::ImpactNFT(donor.clone(), donor_stats.badge.clone());
-            if !env.storage().instance().has(&nft_key) {
+            if !has_persistent(&env, &nft_key) {
                 let nft = ImpactNFT {
                     owner: donor.clone(),
                     tier: donor_stats.badge.clone(),
                     total_donated: donor_stats.total_donated,
                     minted_at_ledger: env.ledger().sequence(),
                 };
-                env.storage().instance().set(&nft_key, &nft);
+                write_persistent(&env, &nft_key, &nft);
                 env.events().publish(
                     (symbol_short!("nft_mint"), donor.clone()),
                     donor_stats.badge.clone(),
@@ -451,30 +532,21 @@ impl GreenPayContract {
     // ─── Getters ─────────────────────────────────────────────────────────────
 
     pub fn get_project(env: Env, project_id: String) -> Project {
-        env.storage()
-            .instance()
-            .get(&DataKey::Project(project_id))
-            .expect("Project not found")
+        read_persistent(&env, &DataKey::Project(project_id)).expect("Project not found")
     }
 
     pub fn get_donor_stats(env: Env, donor: Address) -> DonorStats {
-        env.storage()
-            .instance()
-            .get(&DataKey::DonorStats(donor))
-            .unwrap_or(DonorStats {
-                total_donated: 0,
-                donation_count: 0,
-                badge: BadgeTier::None,
-                co2_offset_grams: 0,
-            })
+        read_persistent(&env, &DataKey::DonorStats(donor)).unwrap_or(DonorStats {
+            total_donated: 0,
+            donation_count: 0,
+            badge: BadgeTier::None,
+            co2_offset_grams: 0,
+        })
     }
 
     pub fn get_badge(env: Env, donor: Address) -> BadgeTier {
-        let stats: DonorStats = env
-            .storage()
-            .instance()
-            .get(&DataKey::DonorStats(donor))
-            .unwrap_or(DonorStats {
+        let stats: DonorStats =
+            read_persistent(&env, &DataKey::DonorStats(donor)).unwrap_or(DonorStats {
                 total_donated: 0,
                 donation_count: 0,
                 badge: BadgeTier::None,
@@ -526,10 +598,7 @@ impl GreenPayContract {
             panic!("Cannot mint NFT for None tier");
         }
 
-        let stats: DonorStats = env
-            .storage()
-            .instance()
-            .get(&DataKey::DonorStats(donor.clone()))
+        let stats: DonorStats = read_persistent(&env, &DataKey::DonorStats(donor.clone()))
             .unwrap_or(DonorStats {
                 total_donated: 0,
                 donation_count: 0,
@@ -544,7 +613,7 @@ impl GreenPayContract {
         }
 
         let key = DataKey::ImpactNFT(donor.clone(), tier.clone());
-        if env.storage().instance().has(&key) {
+        if has_persistent(&env, &key) {
             panic!("NFT already minted for this tier");
         }
 
@@ -554,15 +623,13 @@ impl GreenPayContract {
             total_donated: stats.total_donated,
             minted_at_ledger: env.ledger().sequence(),
         };
-        env.storage().instance().set(&key, &nft);
+        write_persistent(&env, &key, &nft);
         env.events()
             .publish((symbol_short!("nft_mint"), donor), tier);
     }
 
     pub fn has_nft(env: Env, donor: Address, tier: BadgeTier) -> bool {
-        env.storage()
-            .instance()
-            .has(&DataKey::ImpactNFT(donor, tier))
+        has_persistent(&env, &DataKey::ImpactNFT(donor, tier))
     }
 
     // ─── Governance ───────────────────────────────────────────────────────────
@@ -583,18 +650,10 @@ impl GreenPayContract {
         if stored_admin != admin {
             panic!("Only admin can create proposals");
         }
-        if !env
-            .storage()
-            .instance()
-            .has(&DataKey::Project(project_id.clone()))
-        {
+        if !has_persistent(&env, &DataKey::Project(project_id.clone())) {
             panic!("Project not found");
         }
-        if env
-            .storage()
-            .instance()
-            .has(&DataKey::Proposal(project_id.clone()))
-        {
+        if has_persistent(&env, &DataKey::Proposal(project_id.clone())) {
             panic!("Proposal already exists for this project");
         }
 
@@ -622,9 +681,7 @@ impl GreenPayContract {
             deadline_ledger,
             resolved: false,
         };
-        env.storage()
-            .instance()
-            .set(&DataKey::Proposal(project_id.clone()), &proposal);
+        write_persistent(&env, &DataKey::Proposal(project_id.clone()), &proposal);
         env.events()
             .publish((symbol_short!("prop_new"), admin), (project_id, window));
     }
@@ -633,10 +690,7 @@ impl GreenPayContract {
     pub fn vote_verify_project(env: Env, voter: Address, project_id: String, approve: bool) {
         voter.require_auth();
 
-        let stats: DonorStats = env
-            .storage()
-            .instance()
-            .get(&DataKey::DonorStats(voter.clone()))
+        let stats: DonorStats = read_persistent(&env, &DataKey::DonorStats(voter.clone()))
             .unwrap_or(DonorStats {
                 total_donated: 0,
                 donation_count: 0,
@@ -647,11 +701,9 @@ impl GreenPayContract {
             panic!("Only badge holders (Seedling or above) can vote");
         }
 
-        let mut proposal: VoteProposal = env
-            .storage()
-            .instance()
-            .get(&DataKey::Proposal(project_id.clone()))
-            .expect("Proposal not found");
+        let mut proposal: VoteProposal =
+            read_persistent(&env, &DataKey::Proposal(project_id.clone()))
+                .expect("Proposal not found");
         if proposal.resolved {
             panic!("Proposal already resolved");
         }
@@ -660,10 +712,10 @@ impl GreenPayContract {
         }
 
         let voted_key = DataKey::HasVoted(project_id.clone(), voter.clone());
-        if env.storage().instance().has(&voted_key) {
+        if has_persistent(&env, &voted_key) {
             panic!("Already voted on this proposal");
         }
-        env.storage().instance().set(&voted_key, &true);
+        write_persistent(&env, &voted_key, &true);
 
         if approve {
             proposal.votes_for = proposal
@@ -676,9 +728,7 @@ impl GreenPayContract {
                 .checked_add(1)
                 .expect("votes_against overflow");
         }
-        env.storage()
-            .instance()
-            .set(&DataKey::Proposal(project_id.clone()), &proposal);
+        write_persistent(&env, &DataKey::Proposal(project_id.clone()), &proposal);
         env.events()
             .publish((symbol_short!("voted"), voter, project_id), approve);
     }
@@ -686,11 +736,9 @@ impl GreenPayContract {
     /// Callable by anyone after the deadline. Resolves based on majority.
     /// Emits proj_ver on approval, prop_rej on rejection.
     pub fn resolve_proposal(env: Env, project_id: String) {
-        let mut proposal: VoteProposal = env
-            .storage()
-            .instance()
-            .get(&DataKey::Proposal(project_id.clone()))
-            .expect("Proposal not found");
+        let mut proposal: VoteProposal =
+            read_persistent(&env, &DataKey::Proposal(project_id.clone()))
+                .expect("Proposal not found");
         if proposal.resolved {
             panic!("Proposal already resolved");
         }
@@ -705,17 +753,12 @@ impl GreenPayContract {
             env.events()
                 .publish((symbol_short!("prop_rej"),), project_id.clone());
         }
-        env.storage()
-            .instance()
-            .set(&DataKey::Proposal(project_id), &proposal);
+        write_persistent(&env, &DataKey::Proposal(project_id), &proposal);
     }
 
     /// Returns current vote counts and status for a proposal.
     pub fn get_proposal(env: Env, project_id: String) -> VoteProposal {
-        env.storage()
-            .instance()
-            .get(&DataKey::Proposal(project_id))
-            .expect("Proposal not found")
+        read_persistent(&env, &DataKey::Proposal(project_id)).expect("Proposal not found")
     }
 
     // ─── Upgrade ──────────────────────────────────────────────────────────────────
@@ -745,6 +788,7 @@ impl GreenPayContract {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::format;
     use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
     use soroban_sdk::{
         testutils::{Address as _, Ledger as _},
@@ -936,12 +980,12 @@ mod tests {
         env.as_contract(&cid, || {
             let mut project: Project = env
                 .storage()
-                .instance()
+                .persistent()
                 .get(&DataKey::Project(pid.clone()))
                 .expect("project");
             project.total_raised = i128::MAX - (STROOP / 2);
             env.storage()
-                .instance()
+                .persistent()
                 .set(&DataKey::Project(pid.clone()), &project);
         });
 
@@ -958,12 +1002,12 @@ mod tests {
         env.as_contract(&cid, || {
             let mut project: Project = env
                 .storage()
-                .instance()
+                .persistent()
                 .get(&DataKey::Project(pid.clone()))
                 .expect("project");
             project.total_raised = i128::MAX - (STROOP / 2);
             env.storage()
-                .instance()
+                .persistent()
                 .set(&DataKey::Project(pid.clone()), &project);
         });
 
@@ -1118,10 +1162,10 @@ mod tests {
         (env, cid, client, admin, pid)
     }
 
-    /// Inject a Seedling badge directly into contract storage for a voter.
+    /// Inject a Seedling badge directly into persistent storage for a voter.
     fn grant_badge(env: &Env, cid: &soroban_sdk::Address, voter: &Address) {
         env.as_contract(cid, || {
-            env.storage().instance().set(
+            env.storage().persistent().set(
                 &DataKey::DonorStats(voter.clone()),
                 &DonorStats {
                     total_donated: 10 * STROOP,
@@ -1133,7 +1177,9 @@ mod tests {
         });
     }
 
-    /// Extend instance TTL before a large ledger jump so storage isn't archived.
+    /// Extend instance TTL before a large ledger jump so config storage isn't
+    /// archived. Per-entity persistent entries are TTL-extended on every read by
+    /// `extend_persistent_ttl`, so they survive the ledger jump automatically.
     fn extend_ttl(env: &Env, cid: &soroban_sdk::Address) {
         env.as_contract(cid, || {
             env.storage()
@@ -1194,19 +1240,21 @@ mod tests {
         assert_eq!(client_v2.get_global_co2(), expected_co2);
 
         env.as_contract(&cid, || {
+            // Per-entity records now live in *persistent* storage with
+            // per-key TTLs (v2+ layout).
             let stored_project: Project = env
                 .storage()
-                .instance()
+                .persistent()
                 .get(&DataKey::Project(pid.clone()))
-                .expect("project key must remain readable after upgrade");
+                .expect("project key must be in persistent storage after upgrade");
             assert_eq!(stored_project.total_raised, amount);
             assert_eq!(stored_project.donor_count, 1);
 
             let stored_stats: DonorStats = env
                 .storage()
-                .instance()
+                .persistent()
                 .get(&DataKey::DonorStats(donor.clone()))
-                .expect("donor stats key must remain readable after upgrade");
+                .expect("donor stats key must be in persistent storage after upgrade");
             assert_eq!(stored_stats.total_donated, amount);
             assert_eq!(stored_stats.donation_count, 1);
             assert_eq!(stored_stats.badge, BadgeTier::Seedling);
@@ -1214,11 +1262,12 @@ mod tests {
 
             let has_donated: bool = env
                 .storage()
-                .instance()
+                .persistent()
                 .get(&DataKey::HasDonated(pid.clone(), donor.clone()))
-                .expect("unique donor key must remain readable after upgrade");
+                .expect("unique donor key must be in persistent storage after upgrade");
             assert!(has_donated);
 
+            // Contract-wide config remains in instance storage.
             let donation_count: u32 = env
                 .storage()
                 .instance()
@@ -1239,6 +1288,279 @@ mod tests {
             assert_eq!(global_total, amount);
             assert_eq!(global_co2, expected_co2);
         });
+    }
+
+    // ─── Persistent storage / migration tests ────────────────────────────────
+
+    /// Legacy v1 per-entity entries in instance storage are transparently
+    /// migrated to persistent storage on first access, without data loss.
+    #[test]
+    fn test_lazy_migration_from_instance_to_persistent_storage() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let cid = env.register_contract(None, GreenPayContract);
+        let client = GreenPayContractClient::new(&env, &cid);
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+        let pid = String::from_str(&env, "proj-001");
+        let donor = Address::generate(&env);
+
+        // Simulate a v1 deployment: per-entity records written to instance
+        // storage (the pre-fix layout).
+        env.as_contract(&cid, || {
+            env.storage().instance().set(
+                &DataKey::Project(pid.clone()),
+                &Project {
+                    id: pid.clone(),
+                    name: String::from_str(&env, "Legacy Project"),
+                    wallet: Address::generate(&env),
+                    co2_per_xlm: 100,
+                    total_raised: 5 * STROOP,
+                    donor_count: 1,
+                    active: true,
+                    registered_at: 1,
+                },
+            );
+            env.storage().instance().set(
+                &DataKey::DonorStats(donor.clone()),
+                &DonorStats {
+                    total_donated: 5 * STROOP,
+                    donation_count: 1,
+                    badge: BadgeTier::Seedling,
+                    co2_offset_grams: 500,
+                },
+            );
+            env.storage()
+                .instance()
+                .set(&DataKey::HasDonated(pid.clone(), donor.clone()), &true);
+            env.storage().instance().set(
+                &DataKey::ImpactNFT(donor.clone(), BadgeTier::Seedling),
+                &ImpactNFT {
+                    owner: donor.clone(),
+                    tier: BadgeTier::Seedling,
+                    total_donated: 5 * STROOP,
+                    minted_at_ledger: 1,
+                },
+            );
+        });
+
+        // First access through the public getters migrates Project and
+        // DonorStats via the read_persistent helper.
+        let project = client.get_project(&pid);
+        assert_eq!(project.total_raised, 5 * STROOP);
+        assert_eq!(project.donor_count, 1);
+
+        let stats = client.get_donor_stats(&donor);
+        assert_eq!(stats.total_donated, 5 * STROOP);
+        assert_eq!(stats.badge, BadgeTier::Seedling);
+
+        assert!(client.has_nft(&donor, &BadgeTier::Seedling));
+
+        // Migrate HasDonated and ImpactNFT through the internal helper inside
+        // the contract context (no public getter returns their values).
+        env.as_contract(&cid, || {
+            let has_donated: Option<bool> =
+                read_persistent(&env, &DataKey::HasDonated(pid.clone(), donor.clone()));
+            assert_eq!(has_donated, Some(true));
+
+            let nft_opt: Option<ImpactNFT> = read_persistent(
+                &env,
+                &DataKey::ImpactNFT(donor.clone(), BadgeTier::Seedling),
+            );
+            assert!(
+                nft_opt.is_some(),
+                "ImpactNFT must be migrated to persistent storage"
+            );
+            assert_eq!(nft_opt.unwrap().total_donated, 5 * STROOP);
+        });
+
+        // After migration every per-entity record lives in persistent storage
+        // and the legacy instance entries are gone.
+        env.as_contract(&cid, || {
+            let migrated_project: Project = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Project(pid.clone()))
+                .expect("project must be migrated to persistent storage");
+            assert_eq!(migrated_project.total_raised, 5 * STROOP);
+            assert!(
+                !env.storage().instance().has(&DataKey::Project(pid.clone())),
+                "legacy instance project entry must be removed after migration"
+            );
+
+            let migrated_stats: DonorStats = env
+                .storage()
+                .persistent()
+                .get(&DataKey::DonorStats(donor.clone()))
+                .expect("donor stats must be migrated to persistent storage");
+            assert_eq!(migrated_stats.total_donated, 5 * STROOP);
+            assert!(
+                !env.storage()
+                    .instance()
+                    .has(&DataKey::DonorStats(donor.clone())),
+                "legacy instance donor stats entry must be removed after migration"
+            );
+
+            let has_donated: bool = env
+                .storage()
+                .persistent()
+                .get(&DataKey::HasDonated(pid.clone(), donor.clone()))
+                .expect("HasDonated must be migrated to persistent storage");
+            assert!(has_donated);
+            assert!(
+                !env.storage()
+                    .instance()
+                    .has(&DataKey::HasDonated(pid.clone(), donor.clone())),
+                "legacy instance HasDonated entry must be removed after migration"
+            );
+
+            let nft: ImpactNFT = env
+                .storage()
+                .persistent()
+                .get(&DataKey::ImpactNFT(donor.clone(), BadgeTier::Seedling))
+                .expect("ImpactNFT must be migrated to persistent storage");
+            assert_eq!(nft.total_donated, 5 * STROOP);
+            assert!(
+                !env.storage()
+                    .instance()
+                    .has(&DataKey::ImpactNFT(donor.clone(), BadgeTier::Seedling)),
+                "legacy instance ImpactNFT entry must be removed after migration"
+            );
+        });
+
+        // The migrated state remains fully functional through the contract,
+        // including the pre-existing HasDonated flag (donor_count stays 1).
+        let token_admin = Address::generate(&env);
+        let token = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_client = StellarAssetClient::new(&env, &token);
+        client.allow_token(&admin, &token);
+        token_client.mint(&donor, &STROOP);
+        client.donate(&token, &donor, &pid, &STROOP, &0u32);
+        assert_eq!(client.get_project(&pid).total_raised, 6 * STROOP);
+        assert_eq!(client.get_donor_stats(&donor).donation_count, 2);
+        assert_eq!(
+            client.get_project(&pid).donor_count,
+            1,
+            "migrated HasDonated flag must prevent donor_count inflation"
+        );
+    }
+
+    /// Registering hundreds of projects, with a subset receiving donations,
+    /// keeps every per-entity record in persistent storage (each with its own
+    /// TTL) instead of inflating the shared instance footprint.
+    ///
+    /// The donation set is kept smaller than the project set because the
+    /// Soroban test host's VM on Windows has a stack ceiling on many sequential
+    /// contract invocations in a single Env; the assertion that all records
+    /// live in persistent storage is what matters for this regression.
+    #[test]
+    fn test_scale_hundreds_of_projects_and_donors() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let cid = env.register_contract(None, GreenPayContract);
+        let client = GreenPayContractClient::new(&env, &cid);
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        let token_admin = Address::generate(&env);
+        let token = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_client = StellarAssetClient::new(&env, &token);
+        client.allow_token(&admin, &token);
+
+        // Register 100 projects ("hundreds" scale).
+        for i in 0..100u32 {
+            let pid = String::from_str(&env, &format!("proj-{:03}", i));
+            let wallet = Address::generate(&env);
+            client.register_project(
+                &admin,
+                &pid,
+                &String::from_str(&env, &format!("Project {}", i)),
+                &wallet,
+                &100u32,
+            );
+        }
+        assert_eq!(client.get_project_count(), 100);
+
+        // Donate to the first 10 projects using distinct donors.
+        for i in 0..10u32 {
+            let pid = String::from_str(&env, &format!("proj-{:03}", i));
+            let donor = Address::generate(&env);
+            token_client.mint(&donor, &STROOP);
+            client.donate(&token, &donor, &pid, &STROOP, &0u32);
+        }
+
+        assert_eq!(client.get_donation_count(), 10);
+        assert_eq!(client.get_global_total(), 10 * STROOP);
+
+        // Every project record — including the 90 without donations — lives in
+        // persistent storage, not the shared instance footprint.
+        env.as_contract(&cid, || {
+            for i in 0..100u32 {
+                let pid = String::from_str(&env, &format!("proj-{:03}", i));
+                let project: Project = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::Project(pid.clone()))
+                    .expect("project must be in persistent storage");
+                let expected = if i < 10 { STROOP } else { 0 };
+                assert_eq!(project.total_raised, expected);
+            }
+        });
+
+        // Spot-check getters remain correct across the range.
+        for i in (0..100u32).step_by(25) {
+            let pid = String::from_str(&env, &format!("proj-{:03}", i));
+            let expected = if i < 10 { STROOP } else { 0 };
+            assert_eq!(client.get_project(&pid).total_raised, expected);
+        }
+    }
+
+    /// Per-entity persistent entries have their TTL extended on every read and
+    /// write, so they survive long ledger jumps without manual intervention.
+    #[test]
+    fn test_persistent_ttl_extended_on_read_and_write() {
+        let (env, cid, client, admin, pid) = setup();
+        let donor = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_client = StellarAssetClient::new(&env, &token);
+        client.allow_token(&admin, &token);
+        token_client.mint(&donor, &STROOP);
+        client.donate(&token, &donor, &pid, &STROOP, &0u32);
+
+        // Extend the GreenPay instance config so it survives the jump; then
+        // jump beyond the default 4096-ledger instance entry TTL. Per-entity
+        // persistent entries were TTL-extended to PERSISTENT_TTL_EXTEND on
+        // write, so they must still be readable.
+        extend_ttl(&env, &cid);
+        env.ledger().set_sequence_number(5_000);
+
+        // Reading extends TTL again — per-entity persistent entries survive
+        // the jump because write-time TTL extension put them far beyond it.
+        let project = client.get_project(&pid);
+        assert_eq!(project.total_raised, STROOP);
+        let stats = client.get_donor_stats(&donor);
+        assert_eq!(stats.total_donated, STROOP);
+
+        // Writing extends TTL too: register a new project after the jump and
+        // read it back (avoids the SAC token balance TTL artifact).
+        let new_pid = String::from_str(&env, "proj-after-jump");
+        let wallet = Address::generate(&env);
+        client.register_project(
+            &admin,
+            &new_pid,
+            &String::from_str(&env, "After Jump"),
+            &wallet,
+            &100u32,
+        );
+        assert_eq!(client.get_project(&new_pid).total_raised, 0);
+        assert_eq!(client.get_project_count(), 2);
     }
 
     // ─── Governance tests ─────────────────────────────────────────────────────
