@@ -1,5 +1,4 @@
 #![no_std]
-extern crate alloc;
 #[cfg(all(test, feature = "testutils"))]
 mod fuzz_tests;
 
@@ -787,6 +786,7 @@ impl GreenPayContract {
 
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
     use super::*;
     use alloc::format;
     use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
