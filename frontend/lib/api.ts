@@ -251,11 +251,11 @@ export async function upsertProfile(
 }
 
 // ── Leaderboard ───────────────────────────────────────────────────────────────
-export async function fetchLeaderboard(limit = 20, period = "all") {
+export async function fetchLeaderboard(limit = 20, period = "all", offset = 0) {
   const { data } = await api.get<{
     success: boolean;
     data: LeaderboardEntry[];
-  }>("/api/leaderboard", { params: { limit, period } });
+  }>("/api/leaderboard", { params: { limit, period, offset } });
   return data.data;
 }
 
