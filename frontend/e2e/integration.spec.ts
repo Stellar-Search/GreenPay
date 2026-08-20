@@ -12,6 +12,11 @@ const OWNER_WALLET = "GDYO6GEXKXPU3UH5SWGTAVHMBBZZEKUHWHXUJ33PL2TJJVHZB7CG6BI5";
 const DONOR_WALLET = "GCXHYSEGSNPZF7WLHFZFWEAUUIPHTPEL55HI5RMLZ4WCKU2TLFYHHZWN";
 const DUMMY_TX_HASH = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
 
+// Must match the fixture credentials set for the backend webServer in
+// playwright.integration.config.ts (ADMIN_USERNAME/ADMIN_PASSWORD).
+const ADMIN_USERNAME = "admin";
+const ADMIN_PASSWORD = "e2e-test-admin-password";
+
 // Mock Freighter
 async function mockFreighter(page: Page, publicKey: string) {
   await page.addInitScript((pk) => {
@@ -154,7 +159,15 @@ test.describe("E2E Integration Tests (No API Mocking)", () => {
   });
 
   test("3. Admin Status Flow", async ({ page }) => {
-    // Connect wallet as project owner (admin)
+    // Log in as platform admin — required for the status-change endpoint,
+    // which only accepts a verified admin JWT (see backend/src/routes/projects.js).
+    await page.goto("/admin/login");
+    await page.getByLabel("Username").fill(ADMIN_USERNAME);
+    await page.getByLabel("Password").fill(ADMIN_PASSWORD);
+    await page.getByRole("button", { name: "Log In" }).click();
+    await expect(page).toHaveURL(/\/admin$/);
+
+    // Connect wallet as project owner — still required to view this project's admin page.
     await mockFreighter(page, OWNER_WALLET);
     await page.goto(`/admin/${SEEDED_PROJECT_ID}`);
 

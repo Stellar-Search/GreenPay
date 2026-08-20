@@ -3,7 +3,7 @@ import { useRouter } from "next/router";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import WalletConnect from "@/components/WalletConnect";
-import { createProjectUpdate, fetchProject, fetchProjectDonations, updateProjectStatus, registerProjectOnChain, confirmProjectRegistration, fetchProjectMatches, csrfFetch } from "@/lib/api";
+import { createProjectUpdate, fetchProject, fetchProjectDonations, updateProjectStatus, registerProjectOnChain, confirmProjectRegistration, fetchProjectMatches, csrfFetch, isAdminAuthenticated } from "@/lib/api";
 import { buildMilestoneTransaction, submitTransaction } from "@/lib/stellar";
 import { useDonationSocket } from "@/hooks/useDonationSocket";
 import { formatCO2, formatXLM, shortenAddress, timeAgo } from "@/utils/format";
@@ -60,6 +60,11 @@ export default function ProjectAdmin({ publicKey, onConnect }: AdminProps) {
   const [onChainMessage, setOnChainMessage] = useState<string | null>(null);
 
   const [matches, setMatches] = useState<any[]>([]);
+
+  const [isAdminAuthed, setIsAdminAuthed] = useState(false);
+  useEffect(() => {
+    setIsAdminAuthed(isAdminAuthenticated());
+  }, []);
 
   useEffect(() => {
     if (!projectId || typeof projectId !== "string") return;
@@ -571,36 +576,47 @@ export default function ProjectAdmin({ publicKey, onConnect }: AdminProps) {
           </div>
         )}
 
-        <div className="space-y-3">
-          <div>
-            <label className="block text-xs font-bold text-forest-800 uppercase tracking-widest mb-1 ms-1 opacity-50">
-              Reason for rejection (required)
-            </label>
-            <textarea
-              value={rejectionReason}
-              onChange={(e) => setRejectionReason(e.target.value)}
-              className="input-field min-h-[80px]"
-              placeholder="Provide a reason for this decision..."
-              maxLength={500}
-            />
+        {isAdminAuthed ? (
+          <div className="space-y-3">
+            <div>
+              <label className="block text-xs font-bold text-forest-800 uppercase tracking-widest mb-1 ms-1 opacity-50">
+                Reason for rejection (required)
+              </label>
+              <textarea
+                value={rejectionReason}
+                onChange={(e) => setRejectionReason(e.target.value)}
+                className="input-field min-h-[80px]"
+                placeholder="Provide a reason for this decision..."
+                maxLength={500}
+              />
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={handleApprove}
+                disabled={approvalState === "loading" || project.status === "active"}
+                className="btn-primary flex-1 disabled:opacity-50"
+              >
+                {approvalState === "loading" ? "Processing…" : "Approve"}
+              </button>
+              <button
+                onClick={handleReject}
+                disabled={approvalState === "loading" || !rejectionReason.trim() || project.status === "rejected"}
+                className="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold px-6 py-3 rounded-xl transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {approvalState === "loading" ? "Processing…" : "Reject"}
+              </button>
+            </div>
           </div>
-          <div className="flex gap-3">
-            <button
-              onClick={handleApprove}
-              disabled={approvalState === "loading" || project.status === "active"}
-              className="btn-primary flex-1 disabled:opacity-50"
-            >
-              {approvalState === "loading" ? "Processing…" : "Approve"}
-            </button>
-            <button
-              onClick={handleReject}
-              disabled={approvalState === "loading" || !rejectionReason.trim() || project.status === "rejected"}
-              className="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold px-6 py-3 rounded-xl transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              {approvalState === "loading" ? "Processing…" : "Reject"}
-            </button>
+        ) : (
+          <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-sm font-body">
+            <p className="text-amber-800 mb-2">
+              Changing a project&apos;s status requires a verified platform-admin login.
+            </p>
+            <Link href="/admin/login" className="text-forest-700 font-semibold hover:underline">
+              Log in as admin →
+            </Link>
           </div>
-        </div>
+        )}
       </div>
 
       {/* On-Chain Registration */}

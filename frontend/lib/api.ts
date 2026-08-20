@@ -57,6 +57,32 @@ api.interceptors.request.use(async (config) => {
   return config;
 });
 
+const ADMIN_TOKEN_STORAGE_KEY = "greenpay_admin_token";
+
+let adminToken: string | null =
+  typeof window !== "undefined" ? window.sessionStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) : null;
+
+export function setAdminToken(token: string | null) {
+  adminToken = token;
+  if (typeof window === "undefined") return;
+  if (token) {
+    window.sessionStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, token);
+  } else {
+    window.sessionStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
+  }
+}
+
+export function isAdminAuthenticated(): boolean {
+  return !!adminToken;
+}
+
+api.interceptors.request.use((config) => {
+  if (adminToken) {
+    config.headers.set("Authorization", `Bearer ${adminToken}`);
+  }
+  return config;
+});
+
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
@@ -344,6 +370,14 @@ export async function fetchGlobalStats(): Promise<GlobalStats> {
 }
 
 // ── Admin: Project Approval ──────────────────────────────────────
+export async function adminLogin(username: string, password: string): Promise<void> {
+  const { data } = await api.post<{ success: boolean; data: { token: string } }>(
+    "/api/admin/login",
+    { username, password },
+  );
+  setAdminToken(data.data.token);
+}
+
 export async function updateProjectStatus(
   projectId: string,
   status: "active" | "rejected" | "paused",

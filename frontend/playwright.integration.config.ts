@@ -39,6 +39,11 @@ export default defineConfig({
         HORIZON_URL: "https://horizon-testnet.stellar.org",
         ALLOWED_ORIGINS: "http://localhost:3000",
         CORS_ALLOW_CREDENTIALS: "true",
+        // Fixture credentials for the E2E admin-login step (backend/src/routes/admin.js).
+        // Not secrets — this backend only ever talks to the ephemeral CI/local Postgres instance.
+        ADMIN_USERNAME: "admin",
+        ADMIN_PASSWORD: "e2e-test-admin-password",
+        JWT_SECRET: "e2e-test-jwt-secret",
       },
     },
     {
