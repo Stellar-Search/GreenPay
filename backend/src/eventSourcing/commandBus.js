@@ -12,30 +12,30 @@ class CommandHandler {
   }
 }
 
-async function getProjectState(projectId) {
-  const result = await pool.query("SELECT * FROM projects WHERE id = $1", [projectId]);
+async function getProjectState(projectId, db = pool) {
+  const result = await db.query("SELECT * FROM projects WHERE id = $1", [projectId]);
   return ProjectAggregate.fromState(result.rows[0]);
 }
 
-async function getDonorState(donorAddress) {
-  const result = await pool.query("SELECT * FROM donor_stats WHERE public_key = $1", [donorAddress]);
+async function getDonorState(donorAddress, db = pool) {
+  const result = await db.query("SELECT * FROM donor_stats WHERE public_key = $1", [donorAddress]);
   return DonorAggregate.fromState(result.rows[0]);
 }
 
-async function getMatchState(matchId) {
-  const result = await pool.query("SELECT * FROM match_state WHERE match_id = $1", [matchId]);
+async function getMatchState(matchId, db = pool) {
+  const result = await db.query("SELECT * FROM match_state WHERE match_id = $1", [matchId]);
   return MatchAggregate.fromState(result.rows[0]);
 }
 
-async function getJobState(jobId) {
-  const result = await pool.query("SELECT * FROM jobs WHERE id = $1", [jobId]);
+async function getJobState(jobId, db = pool) {
+  const result = await db.query("SELECT * FROM jobs WHERE id = $1", [jobId]);
   if (!result.rows[0]) return null;
   return JobAggregate.fromState(result.rows[0]);
 }
 
-async function loadAggregateStream(aggregateType, aggregateId) {
+async function loadAggregateStream(aggregateType, aggregateId, db = pool) {
   const streamId = `${aggregateType}:${aggregateId}`;
-  const result = await pool.query(
+  const result = await db.query(
     `SELECT event_id, stream_id, aggregate_type, aggregate_id, event_type,
             version, aggregate_version, payload, actor, occurred_at, created_at
      FROM event_stream
@@ -50,11 +50,11 @@ async function loadAggregateStream(aggregateType, aggregateId) {
 }
 
 class DonationCommandHandler {
-  async handle(command) {
+  async handle(command, db = pool) {
     const errors = command.validate();
     if (errors.length > 0) throw new Error(errors.join("; "));
 
-    const existingCheck = await pool.query(
+    const existingCheck = await db.query(
       `SELECT event_id FROM event_stream
        WHERE aggregate_type = 'Donation' AND event_type = 'DonationRecorded'
          AND payload->'data'->>'transactionHash' = $1`,
@@ -62,20 +62,20 @@ class DonationCommandHandler {
     );
     if (existingCheck.rows.length > 0) {
       const existing = existingCheck.rows[0];
-      const row = await pool.query("SELECT * FROM event_stream WHERE event_id = $1", [existing.event_id]);
+      const row = await db.query("SELECT * FROM event_stream WHERE event_id = $1", [existing.event_id]);
       return { success: true, data: fromRow(row.rows[0]), deduplicated: true };
     }
 
-    const projectResult = await pool.query("SELECT id FROM projects WHERE id = $1", [command.payload.projectId]);
+    const projectResult = await db.query("SELECT id FROM projects WHERE id = $1", [command.payload.projectId]);
     if (!projectResult.rows[0]) throw new Error("Project not found");
 
     const amount = command.getAmount();
-    const project = await getProjectState(command.payload.projectId);
-    const donor = await getDonorState(command.payload.donorAddress);
+    const project = await getProjectState(command.payload.projectId, db);
+    const donor = await getDonorState(command.payload.donorAddress, db);
 
     const donationEvent = new (require("./events").DonationRecordedEvent)({
       aggregateId: `Donation:${command.getTransactionHash()}`,
-      version: await getNextVersion("Donation", `Donation:${command.getTransactionHash()}`),
+      version: await getNextVersion("Donation", `Donation:${command.getTransactionHash()}`, db),
       actor: command.actor,
       projectId: command.payload.projectId,
       donorAddress: command.payload.donorAddress,
@@ -91,11 +91,11 @@ class DonationCommandHandler {
     // DonationRecorded is projected by applyProjectProjection, which adds the
     // donation to raised_xlm atomically — so the total is deliberately not
     // written here (see storeProjectAggregate) to avoid counting it twice.
-    await storeProjectAggregate(pool, command.payload.projectId, project, { includeRaisedTotal: false });
-    await storeDonorAggregate(pool, command.payload.donorAddress);
+    await storeProjectAggregate(db, command.payload.projectId, project, { includeRaisedTotal: false });
+    await storeDonorAggregate(db, command.payload.donorAddress);
 
     const donationRow = donationEvent.toRow();
-    await pool.query(
+    await db.query(
       "INSERT INTO event_stream (event_id, stream_id, aggregate_type, aggregate_id, event_type, version, aggregate_version, payload, actor, occurred_at, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)",
       [
         donationRow.event_id,
@@ -117,14 +117,14 @@ class DonationCommandHandler {
 }
 
 class ApplyMatchCommandHandler {
-  async handle(command) {
+  async handle(command, db = pool) {
     const errors = command.validate();
     if (errors.length > 0) throw new Error(errors.join("; "));
 
     const matchId = command.payload.matchId;
 
     if (command.payload.originalTxHash) {
-      const existingMatchTx = await pool.query(
+      const existingMatchTx = await db.query(
         `SELECT event_id FROM event_stream
          WHERE aggregate_type = 'Match' AND event_type = 'MatchApplied'
            AND payload->'data'->>'originalTxHash' = $1
@@ -134,17 +134,17 @@ class ApplyMatchCommandHandler {
       if (existingMatchTx.rows.length > 0) return { success: true, data: null, deduplicated: true };
     }
 
-    const matchState = await getMatchState(matchId);
+    const matchState = await getMatchState(matchId, db);
     if (matchState) {
       matchState.validateApplyMatch(command.payload.matchAmount);
     }
 
     const donorAddress = command.payload.donorAddress;
-    const donor = await getDonorState(donorAddress);
+    const donor = await getDonorState(donorAddress, db);
 
     const matchEvent = new (require("./events").MatchAppliedEvent)({
       aggregateId: `Match:${matchId}`,
-      version: await getNextVersion("Match", `Match:${matchId}`),
+      version: await getNextVersion("Match", `Match:${matchId}`, db),
       actor: command.actor,
       matchId,
       projectId: command.payload.projectId,
@@ -155,10 +155,10 @@ class ApplyMatchCommandHandler {
     });
 
     donor.apply(matchEvent);
-    await storeDonorAggregate(pool, donorAddress);
+    await storeDonorAggregate(db, donorAddress);
 
     const matchRow = matchEvent.toRow();
-    await pool.query(
+    await db.query(
       "INSERT INTO event_stream (event_id, stream_id, aggregate_type, aggregate_id, event_type, version, aggregate_version, payload, actor, occurred_at, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)",
       [matchRow.event_id, matchRow.stream_id, matchRow.aggregate_type, matchRow.aggregate_id, matchRow.event_type, matchRow.version, matchRow.aggregate_version, JSON.stringify(matchRow.payload), matchRow.actor, matchRow.occurred_at, matchRow.created_at]
     );
@@ -168,11 +168,11 @@ class ApplyMatchCommandHandler {
 }
 
 class ChangeProjectStatusCommandHandler {
-  async handle(command) {
+  async handle(command, db = pool) {
     const errors = command.validate();
     if (errors.length > 0) throw new Error(errors.join("; "));
 
-    const projectResult = await pool.query("SELECT * FROM projects WHERE id = $1", [command.payload.projectId]);
+    const projectResult = await db.query("SELECT * FROM projects WHERE id = $1", [command.payload.projectId]);
     if (!projectResult.rows[0]) throw new Error("Project not found");
 
     const project = ProjectAggregate.fromState(projectResult.rows[0]);
@@ -184,7 +184,7 @@ class ChangeProjectStatusCommandHandler {
     const projectId = command.payload.projectId;
     const statusChangeEvent = new (require("./events").ProjectStatusChangedEvent)({
       aggregateId: `Project:${projectId}`,
-      version: await getNextVersion("Project", `Project:${projectId}`),
+      version: await getNextVersion("Project", `Project:${projectId}`, db),
       actor: command.actor,
       previousStatus: project.state.status,
       newStatus: command.payload.status,
@@ -192,10 +192,10 @@ class ChangeProjectStatusCommandHandler {
     });
 
     project.apply(statusChangeEvent);
-    await storeProjectAggregate(pool, projectId, project);
+    await storeProjectAggregate(db, projectId, project);
 
     const row = statusChangeEvent.toRow();
-    await pool.query(
+    await db.query(
       "INSERT INTO event_stream (event_id, stream_id, aggregate_type, aggregate_id, event_type, version, aggregate_version, payload, actor, occurred_at, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)",
       [row.event_id, row.stream_id, row.aggregate_type, row.aggregate_id, row.event_type, row.version, row.aggregate_version, JSON.stringify(row.payload), row.actor, row.occurred_at, row.created_at]
     );
@@ -205,14 +205,14 @@ class ChangeProjectStatusCommandHandler {
 }
 
 class ReachMilestoneCommandHandler {
-  async handle(command) {
+  async handle(command, db = pool) {
     const errors = command.validate();
     if (errors.length > 0) throw new Error(errors.join("; "));
 
     const milestoneId = command.payload.milestoneId;
     const milestoneEvent = new (require("./events").MilestoneReachedEvent)({
       aggregateId: `Milestone:${milestoneId}`,
-      version: await getNextVersion("Milestone", `Milestone:${milestoneId}`),
+      version: await getNextVersion("Milestone", `Milestone:${milestoneId}`, db),
       actor: command.actor,
       milestoneId,
       projectId: command.payload.projectId,
@@ -222,7 +222,7 @@ class ReachMilestoneCommandHandler {
     });
 
     const row = milestoneEvent.toRow();
-    await pool.query(
+    await db.query(
       "INSERT INTO event_stream (event_id, stream_id, aggregate_type, aggregate_id, event_type, version, aggregate_version, payload, actor, occurred_at, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)",
       [row.event_id, row.stream_id, row.aggregate_type, row.aggregate_id, row.event_type, row.version, row.aggregate_version, JSON.stringify(row.payload), row.actor, row.occurred_at, row.created_at]
     );
@@ -232,18 +232,18 @@ class ReachMilestoneCommandHandler {
 }
 
 class ReleaseEscrowCommandHandler {
-  async handle(command) {
+  async handle(command, db = pool) {
     const errors = command.validate();
     if (errors.length > 0) throw new Error(errors.join("; "));
 
     const jobId = command.payload.jobId;
-    const jobState = await getJobState(jobId);
+    const jobState = await getJobState(jobId, db);
     if (!jobState) throw new Error("Job not found");
-    const jobRow = await pool.query("SELECT * FROM jobs WHERE id = $1", [jobId]);
+    const jobRow = await db.query("SELECT * FROM jobs WHERE id = $1", [jobId]);
 
     const jobReleasedEvent = new (require("./events").JobReleasedEvent)({
       aggregateId: `Job:${jobId}`,
-      version: await getNextVersion("Job", `Job:${jobId}`),
+      version: await getNextVersion("Job", `Job:${jobId}`, db),
       actor: command.actor,
       clientPublicKey: jobRow.rows[0].client_public_key,
       freelancerPublicKey: jobRow.rows[0].freelancer_public_key,
@@ -252,7 +252,7 @@ class ReleaseEscrowCommandHandler {
     });
 
     const row = jobReleasedEvent.toRow();
-    await pool.query(
+    await db.query(
       "INSERT INTO event_stream (event_id, stream_id, aggregate_type, aggregate_id, event_type, version, aggregate_version, payload, actor, occurred_at, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)",
       [row.event_id, row.stream_id, row.aggregate_type, row.aggregate_id, row.event_type, row.version, row.aggregate_version, JSON.stringify(row.payload), row.actor, row.occurred_at, row.created_at]
     );
@@ -262,14 +262,14 @@ class ReleaseEscrowCommandHandler {
 }
 
 class CreateMatchOfferCommandHandler {
-  async handle(command) {
+  async handle(command, db = pool) {
     const errors = command.validate();
     if (errors.length > 0) throw new Error(errors.join("; "));
 
     const matchId = uuid();
     const matchCreatedEvent = new (require("./events").MatchCreatedEvent)({
       aggregateId: `Match:${command.payload.projectId}`,
-      version: await getNextVersion("Match", `Match:${command.payload.projectId}`),
+      version: await getNextVersion("Match", `Match:${command.payload.projectId}`, db),
       actor: command.actor,
       matchId,
       projectId: command.payload.projectId,
@@ -280,7 +280,7 @@ class CreateMatchOfferCommandHandler {
     });
 
     const row = matchCreatedEvent.toRow();
-    await pool.query(
+    await db.query(
       "INSERT INTO event_stream (event_id, stream_id, aggregate_type, aggregate_id, event_type, version, aggregate_version, payload, actor, occurred_at, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)",
       [row.event_id, row.stream_id, row.aggregate_type, row.aggregate_id, row.event_type, row.version, row.aggregate_version, JSON.stringify(row.payload), row.actor, row.occurred_at, row.created_at]
     );
@@ -348,8 +348,8 @@ async function storeDonorAggregate(pool, donorAddress) {
   );
 }
 
-async function getNextVersion(aggregateType, aggregateId) {
-  const result = await pool.query(
+async function getNextVersion(aggregateType, aggregateId, db = pool) {
+  const result = await db.query(
     "SELECT MAX(version) AS max_version FROM event_stream WHERE aggregate_type = $1 AND aggregate_id = $2",
     [aggregateType, aggregateId]
   );
@@ -381,10 +381,10 @@ const handlers = {
   CreateMatchOffer: new CreateMatchOfferCommandHandler(),
 };
 
-async function execute(command) {
+async function execute(command, db = pool) {
   const handler = handlers[command.commandType];
   if (!handler) throw new Error(`No handler registered for command: ${command.commandType}`);
-  return handler.handle(command);
+  return handler.handle(command, db);
 }
 
 module.exports = {

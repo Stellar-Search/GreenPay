@@ -275,6 +275,11 @@ jobs:
       - uses: ./.github/actions/setup-node-install
         with:
           working-directory: frontend
+      - name: Backend real-transaction integration test
+        working-directory: backend
+        run: npx jest src/services/indexerService.integration.test.js --runInBand
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/greenpay
       - run: npx playwright install chromium
       - run: npm run build
         env:

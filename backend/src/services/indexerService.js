@@ -130,7 +130,8 @@ async function handleDonation(projectId, op) {
         currency: "XLM",
         message: null,
         transactionHash: txHash,
-      })
+      }),
+      client
     );
 
     if (matchesResult.rows.length > 0 && !donationResult.deduplicated) {
@@ -151,7 +152,8 @@ async function handleDonation(projectId, op) {
               matchAmount,
               originalTxHash: txHash,
               multiplier: match.multiplier,
-            })
+            }),
+            client
           );
         }
       }
@@ -222,5 +224,6 @@ function getStatus() {
 module.exports = {
   startIndexer,
   stopIndexer,
-  getStatus
+  getStatus,
+  handleDonation
 };
