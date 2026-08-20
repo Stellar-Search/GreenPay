@@ -5,6 +5,22 @@
 //! or either party can `dispute` a stalled job for the admin to resolve via
 //! `resolve_dispute`. If a job's `expiry_ledger` passes with no release or
 //! dispute, the client can reclaim funds with `cancel_job`.
+//!
+//! Dispute timeout fallback: if the admin does not call `resolve_dispute`
+//! within `DISPUTE_TIMEOUT_LEDGERS` ledgers of the dispute being raised,
+//! either party (client or freelancer) may call `resolve_stale_dispute` to
+//! trigger an automatic 50/50 split of the remaining escrowed funds.
+
+/// Number of ledgers the admin has to resolve a dispute before the 50/50
+/// fallback becomes available. At ~5 s per ledger this is roughly 30 days.
+/// Adjust at deploy time by changing this constant.
+#[cfg(not(test))]
+const DISPUTE_TIMEOUT_LEDGERS: u32 = 518_400;
+
+/// Shorter timeout used in tests so the ledger can be advanced without
+/// archiving SAC persistent balance entries.
+#[cfg(test)]
+const DISPUTE_TIMEOUT_LEDGERS: u32 = 200;
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short, token, Address, Env, String,
@@ -30,6 +46,10 @@ pub struct Job {
     pub remaining_amount: i128,
     pub status: JobStatus,
     pub expiry_ledger: u32,
+    /// Set to `current_ledger + DISPUTE_TIMEOUT_LEDGERS` when `dispute()` is
+    /// called; zero while the job is not disputed.  Once this ledger passes
+    /// without admin resolution, `resolve_stale_dispute` becomes callable.
+    pub dispute_expiry_ledger: u32,
 }
 
 #[contracttype]
@@ -128,6 +148,7 @@ impl EscrowContract {
             remaining_amount: amount,
             status: JobStatus::Escrowed,
             expiry_ledger,
+            dispute_expiry_ledger: 0,
         };
         env.storage().instance().set(&DataKey::Job(job_id), &job);
     }
@@ -207,6 +228,11 @@ impl EscrowContract {
         }
 
         job.status = JobStatus::Disputed;
+        job.dispute_expiry_ledger = env
+            .ledger()
+            .sequence()
+            .checked_add(DISPUTE_TIMEOUT_LEDGERS)
+            .expect("Dispute expiry overflow");
         env.storage()
             .instance()
             .set(&DataKey::Job(job_id.clone()), &job);
@@ -252,6 +278,65 @@ impl EscrowContract {
         env.events().publish(
             (symbol_short!("resolved"), admin),
             (job_id, release_to_freelancer),
+        );
+    }
+
+    /// Fallback resolution: if the admin has not called `resolve_dispute` within
+    /// `DISPUTE_TIMEOUT_LEDGERS` ledgers of the dispute being raised, either the
+    /// client or the freelancer may call this function to split the remaining
+    /// escrowed funds 50/50.
+    ///
+    /// Odd-stroop remainder (when `remaining_amount` is odd) goes to the client
+    /// so the freelancer never receives more than their half.
+    ///
+    /// CEI ordering: all state writes happen before both token transfers.
+    pub fn resolve_stale_dispute(env: Env, caller: Address, job_id: String) {
+        caller.require_auth();
+
+        let mut job: Job = env
+            .storage()
+            .instance()
+            .get(&DataKey::Job(job_id.clone()))
+            .expect("Job not found");
+
+        // Checks
+        if caller != job.client && caller != job.freelancer {
+            panic!("Only the client or freelancer can trigger the fallback");
+        }
+        if job.status != JobStatus::Disputed {
+            panic!("Job is not disputed");
+        }
+        if env.ledger().sequence() <= job.dispute_expiry_ledger {
+            panic!("Dispute has not timed out yet");
+        }
+
+        // Effects: commit all state before any token transfer (CEI).
+        let remaining = job.remaining_amount;
+        let freelancer_share = remaining / 2;
+        let client_share = remaining
+            .checked_sub(freelancer_share)
+            .expect("Share arithmetic underflow");
+        job.remaining_amount = 0;
+        job.status = JobStatus::Refunded;
+        let client_addr = job.client.clone();
+        let freelancer_addr = job.freelancer.clone();
+        env.storage()
+            .instance()
+            .set(&DataKey::Job(job_id.clone()), &job);
+
+        // Interaction: token transfers last.
+        let token_client = token::Client::new(&env, &job.token);
+        let contract_addr = env.current_contract_address();
+        if freelancer_share > 0 {
+            token_client.transfer(&contract_addr, &freelancer_addr, &freelancer_share);
+        }
+        if client_share > 0 {
+            token_client.transfer(&contract_addr, &client_addr, &client_share);
+        }
+
+        env.events().publish(
+            (symbol_short!("stale_res"), caller),
+            (job_id, freelancer_share, client_share),
         );
     }
 
@@ -609,5 +694,321 @@ mod tests {
         assert_eq!(job.status, JobStatus::Refunded);
         assert_eq!(job.remaining_amount, 0);
         assert_eq!(token_client.balance(&client), 60);
+    }
+
+    // -------------------------------------------------------------------------
+    // Dispute timeout / stale-dispute fallback tests
+    // -------------------------------------------------------------------------
+
+    /// Extend instance TTL before a large ledger jump so storage isn't archived.
+    /// Extends both the escrow contract instance and the token contract instance.
+    fn extend_ttl(env: &Env, cid: &soroban_sdk::Address, token: &soroban_sdk::Address) {
+        env.as_contract(cid, || {
+            env.storage()
+                .instance()
+                .extend_ttl(DISPUTE_TIMEOUT_LEDGERS * 4, DISPUTE_TIMEOUT_LEDGERS * 4);
+        });
+        env.as_contract(token, || {
+            env.storage()
+                .instance()
+                .extend_ttl(DISPUTE_TIMEOUT_LEDGERS * 4, DISPUTE_TIMEOUT_LEDGERS * 4);
+        });
+    }
+
+    /// Like `setup()` but also returns the raw contract address for TTL extension.
+    fn setup_with_cid() -> (
+        Env,
+        Address, // contract id
+        EscrowContractClient<'static>,
+        Address, // admin
+        Address, // client
+        Address, // freelancer
+        Address, // token
+        String,  // job_id
+        i128,    // amount
+        u32,     // expiry_ledger
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let cid = env.register_contract(None, EscrowContract);
+        let client_handle = EscrowContractClient::new(&env, &cid);
+
+        let admin = Address::generate(&env);
+        client_handle.initialize(&admin);
+
+        let client = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_client = StellarAssetClient::new(&env, &token);
+
+        let amount = 100_i128;
+        token_client.mint(&client, &amount);
+
+        client_handle.allow_token(&admin, &token);
+
+        let job_id = String::from_str(&env, "job-1");
+        let expiry_ledger = env.ledger().sequence() + EXPIRY_WINDOW;
+        client_handle.create_job(
+            &client,
+            &freelancer,
+            &job_id,
+            &token,
+            &amount,
+            &expiry_ledger,
+        );
+
+        (
+            env,
+            cid,
+            client_handle,
+            admin,
+            client,
+            freelancer,
+            token,
+            job_id,
+            amount,
+            expiry_ledger,
+        )
+    }
+
+    /// Helper: dispute a job and return the ledger at which the timeout expires.
+    fn dispute_job_and_get_timeout(
+        _env: &Env,
+        contract: &EscrowContractClient,
+        caller: &Address,
+        job_id: &String,
+    ) -> u32 {
+        contract.dispute(caller, job_id);
+        let job = contract.get_job(job_id).unwrap();
+        job.dispute_expiry_ledger
+    }
+
+    // --- dispute() records dispute_expiry_ledger ---
+
+    #[test]
+    fn dispute_stamps_dispute_expiry_ledger() {
+        let (env, contract, _admin, client, _freelancer, _token, job_id, _amount, _expiry) =
+            setup();
+        let before = env.ledger().sequence();
+        contract.dispute(&client, &job_id);
+        let job = contract.get_job(&job_id).unwrap();
+        assert_eq!(job.status, JobStatus::Disputed);
+        assert_eq!(job.dispute_expiry_ledger, before + DISPUTE_TIMEOUT_LEDGERS);
+    }
+
+    // --- AC: fallback cannot be triggered before the timeout ---
+
+    #[test]
+    #[should_panic(expected = "Dispute has not timed out yet")]
+    fn resolve_stale_dispute_cannot_trigger_early_by_client() {
+        let (_env, _cid, contract, _admin, client, _freelancer, _token, job_id, _amount, _expiry) =
+            setup_with_cid();
+        contract.dispute(&client, &job_id);
+        // timeout has NOT elapsed — must panic
+        contract.resolve_stale_dispute(&client, &job_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "Dispute has not timed out yet")]
+    fn resolve_stale_dispute_cannot_trigger_early_by_freelancer() {
+        let (_env, _cid, contract, _admin, _client, freelancer, _token, job_id, _amount, _expiry) =
+            setup_with_cid();
+        contract.dispute(&freelancer, &job_id);
+        contract.resolve_stale_dispute(&freelancer, &job_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "Dispute has not timed out yet")]
+    fn resolve_stale_dispute_cannot_trigger_at_exact_expiry_ledger() {
+        // The guard is `sequence() <= dispute_expiry_ledger`, so triggering at
+        // exactly the expiry ledger must still be blocked.
+        let (env, cid, contract, _admin, client, _freelancer, token, job_id, _amount, _expiry) =
+            setup_with_cid();
+        let timeout = dispute_job_and_get_timeout(&env, &contract, &client, &job_id);
+        extend_ttl(&env, &cid, &token);
+        env.ledger().set_sequence_number(timeout); // at boundary — not yet past
+        contract.resolve_stale_dispute(&client, &job_id);
+    }
+
+    // --- AC: fallback triggers correctly after timeout (client calls) ---
+
+    #[test]
+    fn resolve_stale_dispute_after_timeout_splits_50_50_client_calls() {
+        let (env, cid, contract, _admin, client, freelancer, token, job_id, amount, _expiry) =
+            setup_with_cid();
+        let timeout = dispute_job_and_get_timeout(&env, &contract, &client, &job_id);
+        extend_ttl(&env, &cid, &token);
+        env.ledger().set_sequence_number(timeout + 1);
+
+        contract.resolve_stale_dispute(&client, &job_id);
+
+        let job = contract.get_job(&job_id).unwrap();
+        assert_eq!(job.status, JobStatus::Refunded);
+        assert_eq!(job.remaining_amount, 0);
+
+        let token_client = token::Client::new(&env, &token);
+        let freelancer_share = amount / 2;
+        let client_share = amount - freelancer_share;
+        assert_eq!(token_client.balance(&freelancer), freelancer_share);
+        assert_eq!(token_client.balance(&client), client_share);
+    }
+
+    // --- AC: fallback triggers correctly after timeout (freelancer calls) ---
+
+    #[test]
+    fn resolve_stale_dispute_after_timeout_splits_50_50_freelancer_calls() {
+        let (env, cid, contract, _admin, client, freelancer, token, job_id, amount, _expiry) =
+            setup_with_cid();
+        let timeout = dispute_job_and_get_timeout(&env, &contract, &freelancer, &job_id);
+        extend_ttl(&env, &cid, &token);
+        env.ledger().set_sequence_number(timeout + 1);
+
+        contract.resolve_stale_dispute(&freelancer, &job_id);
+
+        let job = contract.get_job(&job_id).unwrap();
+        assert_eq!(job.status, JobStatus::Refunded);
+        assert_eq!(job.remaining_amount, 0);
+
+        let token_client = token::Client::new(&env, &token);
+        let freelancer_share = amount / 2;
+        let client_share = amount - freelancer_share;
+        assert_eq!(token_client.balance(&freelancer), freelancer_share);
+        assert_eq!(token_client.balance(&client), client_share);
+    }
+
+    // --- Odd remainder goes to client ---
+
+    #[test]
+    fn resolve_stale_dispute_odd_remainder_goes_to_client() {
+        // Use an odd amount so integer division produces a remainder of 1.
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let cid = env.register_contract(None, EscrowContract);
+        let contract = EscrowContractClient::new(&env, &cid);
+        let admin = Address::generate(&env);
+        contract.initialize(&admin);
+
+        let client = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let sac = soroban_sdk::token::StellarAssetClient::new(&env, &token);
+
+        let odd_amount: i128 = 101;
+        sac.mint(&client, &odd_amount);
+        contract.allow_token(&admin, &token);
+
+        let job_id = String::from_str(&env, "job-odd");
+        let expiry_ledger = env.ledger().sequence() + EXPIRY_WINDOW;
+        contract.create_job(
+            &client,
+            &freelancer,
+            &job_id,
+            &token,
+            &odd_amount,
+            &expiry_ledger,
+        );
+
+        let timeout = dispute_job_and_get_timeout(&env, &contract, &client, &job_id);
+        extend_ttl(&env, &cid, &token);
+        env.ledger().set_sequence_number(timeout + 1);
+        contract.resolve_stale_dispute(&client, &job_id);
+
+        let token_client = token::Client::new(&env, &token);
+        // freelancer gets 50, client gets 51 (remainder goes to client)
+        assert_eq!(token_client.balance(&freelancer), 50);
+        assert_eq!(token_client.balance(&client), 51);
+    }
+
+    // --- AC: normal admin resolution still works (existing behaviour preserved) ---
+
+    #[test]
+    fn admin_resolves_before_timeout_still_works() {
+        let (env, contract, admin, _client, freelancer, token, job_id, amount, _expiry) = setup();
+        contract.dispute(&freelancer, &job_id);
+        // Admin resolves well before timeout — no ledger advance needed.
+        contract.resolve_dispute(&admin, &job_id, &true);
+
+        let job = contract.get_job(&job_id).unwrap();
+        assert_eq!(job.status, JobStatus::Released);
+        assert_eq!(job.remaining_amount, 0);
+        let token_client = token::Client::new(&env, &token);
+        assert_eq!(token_client.balance(&freelancer), amount);
+    }
+
+    // --- Fallback blocked for non-parties ---
+
+    #[test]
+    #[should_panic(expected = "Only the client or freelancer can trigger the fallback")]
+    fn resolve_stale_dispute_by_stranger_panics() {
+        let (env, cid, contract, _admin, client, _freelancer, token, job_id, _amount, _expiry) =
+            setup_with_cid();
+        let timeout = dispute_job_and_get_timeout(&env, &contract, &client, &job_id);
+        extend_ttl(&env, &cid, &token);
+        env.ledger().set_sequence_number(timeout + 1);
+        let stranger = Address::generate(&env);
+        contract.resolve_stale_dispute(&stranger, &job_id);
+    }
+
+    // --- Fallback blocked when job is not disputed ---
+
+    #[test]
+    #[should_panic(expected = "Job is not disputed")]
+    fn resolve_stale_dispute_on_escrowed_job_panics() {
+        let (env, cid, contract, _admin, client, _freelancer, token, job_id, _amount, _expiry) =
+            setup_with_cid();
+        // Advance ledger far enough that the timeout *would* pass if disputed —
+        // but the job was never disputed.
+        extend_ttl(&env, &cid, &token);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + DISPUTE_TIMEOUT_LEDGERS + 1);
+        contract.resolve_stale_dispute(&client, &job_id);
+    }
+
+    // --- Fallback cannot be called twice ---
+
+    #[test]
+    #[should_panic(expected = "Job is not disputed")]
+    fn resolve_stale_dispute_cannot_double_trigger() {
+        let (env, cid, contract, _admin, client, _freelancer, token, job_id, _amount, _expiry) =
+            setup_with_cid();
+        let timeout = dispute_job_and_get_timeout(&env, &contract, &client, &job_id);
+        extend_ttl(&env, &cid, &token);
+        env.ledger().set_sequence_number(timeout + 1);
+        contract.resolve_stale_dispute(&client, &job_id);
+        // Second call must fail — status is now Refunded, not Disputed.
+        contract.resolve_stale_dispute(&client, &job_id);
+    }
+
+    // --- Fallback after partial release only splits remaining_amount ---
+
+    #[test]
+    fn resolve_stale_dispute_after_partial_release_splits_remaining_only() {
+        let (env, cid, contract, _admin, client, freelancer, token, job_id, _amount, _expiry) =
+            setup_with_cid();
+
+        // Client already paid 40 to freelancer before the dispute arose.
+        contract.release_partial(&client, &job_id, &40);
+
+        let timeout = dispute_job_and_get_timeout(&env, &contract, &client, &job_id);
+        extend_ttl(&env, &cid, &token);
+        env.ledger().set_sequence_number(timeout + 1);
+        contract.resolve_stale_dispute(&client, &job_id);
+
+        // Remaining was 60 → freelancer gets 30, client gets 30.
+        let token_client = token::Client::new(&env, &token);
+        assert_eq!(token_client.balance(&freelancer), 40 + 30); // 40 from partial + 30 from split
+        assert_eq!(token_client.balance(&client), 30);
+
+        let job = contract.get_job(&job_id).unwrap();
+        assert_eq!(job.remaining_amount, 0);
+        assert_eq!(job.status, JobStatus::Refunded);
     }
 }
