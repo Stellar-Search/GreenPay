@@ -21,11 +21,11 @@ const { adminRequired } = require("../middleware/auth");
 
 // Rate limiter for admin update creation
 // Prevents admin update spam: 5 updates per admin per hour
-const updateCreationLimiter = createRateLimiter(5, 60);
+const updateCreationLimiter = createRateLimiter(5, 60, "update-create");
 
 // Rate limiter for like operations per donor
 // Prevents like enumeration/spam: 20 likes per donor per hour
-const likeLimiter = createRateLimiter(20, 1);
+const likeLimiter = createRateLimiter(20, 1, "update-like");
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 

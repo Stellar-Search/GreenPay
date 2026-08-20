@@ -8,7 +8,7 @@ const { v4: uuid } = require("uuid");
 const pool = require("../db/pool");
 const { createRateLimiter } = require("../middleware/rateLimiter");
 const { computeBadges, mapDonationRow } = require("../services/store");
-const donationLimiter = createRateLimiter(10, 1);
+const donationLimiter = createRateLimiter(10, 1, "donation-post");
 const { execute } = require("../eventSourcing/commandBus");
 const { DonationRecordedEvent, MatchAppliedEvent } = require("../eventSourcing/events"); // 10 requests per minute
 

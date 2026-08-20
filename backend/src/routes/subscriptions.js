@@ -24,7 +24,7 @@ const { createRateLimiter } = require("../middleware/rateLimiter");
 
 // Rate limiter for subscription operations per email address
 // Prevents subscription spam
-const subscriptionLimiter = createRateLimiter(3, 1); // 3 subscriptions per email per hour
+const subscriptionLimiter = createRateLimiter(3, 1, "subscription-post"); // 3 subscriptions per email per hour
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 

@@ -18,9 +18,9 @@ const request = require("supertest");
 const { createRateLimiter } = require("./rateLimiter");
 
 /** Build a minimal app that applies the given limiter to GET /ping. */
-function buildApp(maxRequests = 10, windowMinutes = 1) {
+function buildApp(maxRequests = 10, windowMinutes = 1, name = "test-limiter") {
   const app = express();
-  const limiter = createRateLimiter(maxRequests, windowMinutes);
+  const limiter = createRateLimiter(maxRequests, windowMinutes, name);
   app.use(limiter);
   app.get("/ping", (_req, res) => res.status(200).json({ ok: true }));
   return app;
@@ -95,5 +95,11 @@ describe("Rate limiting middleware — custom window", () => {
     // appB counter is untouched — first request must succeed
     const okOnB = await request(appB).get("/ping");
     expect(okOnB.status).toBe(200);
+  });
+});
+
+describe("Rate limiting middleware — name requirement", () => {
+  it("throws when constructed without a name", () => {
+    expect(() => createRateLimiter(10, 1)).toThrow(/requires a unique `name`/);
   });
 });

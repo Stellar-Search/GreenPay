@@ -12,7 +12,7 @@ function validateKey(k) {
   if (!k || !/^G[A-Z0-9]{55}$/.test(k)) { const e = new Error("Invalid public key"); e.status = 400; throw e; }
 }
 
-const profilePostLimiter = createRateLimiter(20, 1);
+const profilePostLimiter = createRateLimiter(20, 1, "profile-post");
 
 router.get("/:publicKey", async (req, res, next) => {
   try {

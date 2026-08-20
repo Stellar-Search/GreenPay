@@ -13,7 +13,7 @@ const { mapProjectRatingRow } = require("../services/store");
  * Submits a rating for a project.
  * Rate-limited per donor address to prevent review-bombing a single project.
  */
-const ratingLimiter = require("../middleware/rateLimiter").createRateLimiter(5, 1);
+const ratingLimiter = require("../middleware/rateLimiter").createRateLimiter(5, 1, "rating-post");
 
 router.post("/", ratingLimiter, async (req, res, next) => {
   try {

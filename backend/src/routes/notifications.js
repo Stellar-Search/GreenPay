@@ -16,7 +16,7 @@ const { createRateLimiter } = require("../middleware/rateLimiter");
 
 // Rate limiter for follow/unfollow operations per donor address
 // Prevents enumeration and follow/unfollow spam
-const notificationLimiter = createRateLimiter(10, 1); // 10 follows/unfollows per donor per hour
+const notificationLimiter = createRateLimiter(10, 1, "notification-follow"); // 10 follows/unfollows per donor per hour
 
 // POST /api/notifications/register
 // Register or update a device token
