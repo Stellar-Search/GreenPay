@@ -135,6 +135,9 @@ async function startServer() {
   const { start: startSummaryQueue } = require("./services/summaryQueue");
   await startSummaryQueue(io);
 
+  const { start: startPushReceiptQueue } = require("./services/push");
+  await startPushReceiptQueue();
+
   startIndexer(io).catch(err => console.error("[Indexer Error]", err.message));
 
   server.listen(PORT, () => {
