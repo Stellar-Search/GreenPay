@@ -8,6 +8,7 @@
 import React from 'react';
 import { render, waitFor } from '@testing-library/react-native';
 import axios from 'axios';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ThemeProvider } from '../app/theme';
 
 jest.mock('expo-router', () => ({
@@ -78,5 +79,24 @@ describe('HomeScreen', () => {
 
     const { getByText } = renderHomeScreen();
     await waitFor(() => expect(getByText('Stellar GreenPay')).toBeTruthy());
+  });
+
+  it('shows a staleness banner when serving expired cached projects', async () => {
+    const stale = JSON.stringify({
+      data: [MOCK_PROJECT],
+      timestamp: Date.now() - 11 * 60 * 1000,
+    });
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValue(stale);
+    (axios.get as jest.Mock).mockRejectedValue(new Error('network error'));
+
+    const { getByText, getByTestId } = renderHomeScreen();
+
+    await waitFor(() => {
+      expect(getByText('Amazon Reforestation Initiative')).toBeTruthy();
+      expect(getByTestId('stale-cache-banner')).toBeTruthy();
+      expect(
+        getByText(/Showing cached data from .+ — fundraising totals may be out of date/),
+      ).toBeTruthy();
+    });
   });
 });

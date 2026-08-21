@@ -4,10 +4,11 @@
  */
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput } from 'react-native';
 import { useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
 import { useTheme } from '../theme';
-import { getCachedData, setCachedData } from '../../utils/cache';
+import { useCachedResource } from '../../hooks/useCachedResource';
+import { StaleCacheBanner } from '../../components/StaleCacheBanner';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
 const CACHE_KEY_PROJECTS = 'projects:list';
@@ -27,50 +28,34 @@ interface ClimateProject {
 export default function ProjectsScreen() {
   const router = useRouter();
   const { colors } = useTheme();
-  const [projects, setProjects] = useState<ClimateProject[]>([]);
-  const [filteredProjects, setFilteredProjects] = useState<ClimateProject[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [isOffline, setIsOffline] = useState(false);
+  const [filteredProjects, setFilteredProjects] = useState<ClimateProject[]>([]);
 
-  useEffect(() => {
-    loadProjects();
+  const fetchProjects = useCallback(async () => {
+    const res = await axios.get(`${API_URL}/api/projects`);
+    return res.data.data as ClimateProject[];
   }, []);
+  const {
+    data: projects,
+    isStale,
+    cachedAt,
+    fromCache,
+    loading,
+  } = useCachedResource<ClimateProject[]>(CACHE_KEY_PROJECTS, fetchProjects);
 
   useEffect(() => {
+    const source = projects ?? [];
     if (searchQuery) {
       setFilteredProjects(
-        projects.filter(p =>
+        source.filter(p =>
           p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
           p.category.toLowerCase().includes(searchQuery.toLowerCase())
         )
       );
     } else {
-      setFilteredProjects(projects);
+      setFilteredProjects(source);
     }
   }, [searchQuery, projects]);
-
-  const loadProjects = async () => {
-    try {
-      const res = await axios.get(`${API_URL}/api/projects`);
-      const data = res.data.data;
-      setProjects(data);
-      setFilteredProjects(data);
-      setIsOffline(false);
-      await setCachedData(CACHE_KEY_PROJECTS, data);
-    } catch (error) {
-      const cached = await getCachedData<ClimateProject[]>(CACHE_KEY_PROJECTS);
-      if (cached) {
-        setProjects(cached.data);
-        setFilteredProjects(cached.data);
-        setIsOffline(true);
-      } else {
-        console.error('Error loading projects:', error);
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const progressPercent = (raised: string, goal: string) => {
     const r = parseFloat(raised);
@@ -89,10 +74,8 @@ export default function ProjectsScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      {isOffline && (
-        <View style={styles.offlineBanner}>
-          <Text style={styles.offlineBannerText}>Offline — showing cached data</Text>
-        </View>
+      {fromCache && cachedAt != null && (
+        <StaleCacheBanner cachedAt={cachedAt} isStale={isStale} />
       )}
       <TextInput
         style={[styles.searchInput, { backgroundColor: colors.inputBackground, borderColor: colors.inputBorder, color: colors.primaryText }]}
@@ -207,15 +190,5 @@ const styles = StyleSheet.create({
   donorCount: {
     fontSize: 12,
     marginTop: 8,
-  },
-  offlineBanner: {
-    backgroundColor: '#f5a623',
-    padding: 8,
-    alignItems: 'center',
-  },
-  offlineBannerText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '600',
   },
 });

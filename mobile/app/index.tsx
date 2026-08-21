@@ -11,11 +11,12 @@ import {
   RefreshControl,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback } from 'react';
 import axios from 'axios';
 import { useTheme } from './theme';
-import { getCachedData, setCachedData } from '../utils/cache';
 import { useDonationSync } from '../hooks/useDonationSync';
+import { useCachedResource } from '../hooks/useCachedResource';
+import { StaleCacheBanner } from '../components/StaleCacheBanner';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
 const CACHE_KEY_PROJECTS = 'home:projects_list';
@@ -103,36 +104,22 @@ export default function HomeScreen() {
   const router = useRouter();
   const { colors } = useTheme();
   const { queue: syncQueue } = useDonationSync();
-  const [projects, setProjects] = useState<ClimateProject[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [networkError, setNetworkError] = useState(false);
-
-  const loadProjects = useCallback(async (isPullRefresh = false) => {
-    if (isPullRefresh) setRefreshing(true);
-    setNetworkError(false);
-
-    try {
-      const res = await axios.get(`${API_URL}/api/projects`);
-      const data: ClimateProject[] = res.data.data ?? res.data;
-      setProjects(data);
-      await setCachedData(CACHE_KEY_PROJECTS, data);
-    } catch {
-      const cached = await getCachedData<ClimateProject[]>(CACHE_KEY_PROJECTS);
-      if (cached) {
-        setProjects(cached.data);
-      } else {
-        setNetworkError(true);
-      }
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
+  const fetchProjects = useCallback(async () => {
+    const res = await axios.get(`${API_URL}/api/projects`);
+    return (res.data.data ?? res.data) as ClimateProject[];
   }, []);
+  const {
+    data: projects,
+    isStale,
+    cachedAt,
+    fromCache,
+    loading,
+    refreshing,
+    error: networkError,
+    reload: loadProjects,
+  } = useCachedResource<ClimateProject[]>(CACHE_KEY_PROJECTS, fetchProjects);
 
-  useEffect(() => {
-    loadProjects();
-  }, [loadProjects]);
+  const list = projects ?? [];
 
   const renderSkeleton = () => (
     <FlatList
@@ -156,7 +143,7 @@ export default function HomeScreen() {
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <FlatList
-        data={projects}
+        data={list}
         keyExtractor={(item: ClimateProject) => item.id}
         renderItem={({ item }: { item: ClimateProject }) => (
           <ProjectCard
@@ -166,7 +153,14 @@ export default function HomeScreen() {
           />
         )}
         contentContainerStyle={styles.listContent}
-        ListHeaderComponent={<Header colors={colors} onScanPress={() => router.push('/scan')} />}
+        ListHeaderComponent={
+          <>
+            <Header colors={colors} onScanPress={() => router.push('/scan')} />
+            {fromCache && cachedAt != null ? (
+              <StaleCacheBanner cachedAt={cachedAt} isStale={isStale} />
+            ) : null}
+          </>
+        }
         ListEmptyComponent={
           networkError ? (
             <View style={styles.errorContainer}>
@@ -175,7 +169,7 @@ export default function HomeScreen() {
               </Text>
               <TouchableOpacity
                 style={[styles.retryButton, { backgroundColor: colors.primary }]}
-                onPress={() => { setLoading(true); loadProjects(); }}
+                onPress={() => { loadProjects(); }}
               >
                 <Text style={[styles.retryText, { color: colors.buttonText }]}>Retry</Text>
               </TouchableOpacity>

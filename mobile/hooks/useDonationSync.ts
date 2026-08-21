@@ -30,7 +30,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert } from 'react-native';
 import axios from 'axios';
-import NetInfo from '@react-native-community/netinfo';
 import { Horizon } from '@stellar/stellar-sdk';
 const StellarServer = (require('@stellar/stellar-sdk') as any).Server || Horizon.Server;
 import {
@@ -45,6 +44,7 @@ import {
   FEE_BUFFER_STROOPS,
   isBalanceSufficient,
 } from '../utils/amount';
+import { useNetworkReconnect } from './useNetworkReconnect';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
 const HORIZON_URL = process.env.EXPO_PUBLIC_HORIZON_URL || 'https://horizon-testnet.stellar.org';
@@ -194,7 +194,6 @@ async function preflightCheck(
 export function useDonationSync() {
   const [queue, setQueue] = useState<QueuedDonation[]>([]);
   const [syncing, setSyncing] = useState(false);
-  const wasOnlineRef = useRef<boolean | null>(null);
   const syncingRef = useRef(false);
 
   const refresh = useCallback(async () => {
@@ -265,24 +264,9 @@ export function useDonationSync() {
 
   useEffect(() => {
     refresh();
+  }, [refresh]);
 
-    NetInfo.fetch().then((state: any) => {
-      wasOnlineRef.current = state?.isConnected !== false;
-    });
-
-    const unsubscribe = NetInfo.addEventListener((state: any) => {
-      const isOnline = state?.isConnected !== false;
-      if (isOnline && wasOnlineRef.current === false) {
-        syncNow();
-      }
-      wasOnlineRef.current = isOnline;
-    });
-
-    return () => {
-      if (typeof unsubscribe === 'function') unsubscribe();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  useNetworkReconnect(syncNow);
 
   return { queue, syncing, refresh, syncNow, resolve };
 }

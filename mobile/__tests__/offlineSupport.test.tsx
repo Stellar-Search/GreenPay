@@ -53,7 +53,7 @@ describe('ProjectsScreen — offline support', () => {
 
     await waitFor(() => {
       expect(getByText('Amazon Reforestation')).toBeTruthy();
-      expect(getByText('Offline — showing cached data')).toBeTruthy();
+      expect(getByText(/Showing cached data from/)).toBeTruthy();
     });
   });
 
@@ -63,7 +63,7 @@ describe('ProjectsScreen — offline support', () => {
     const { queryByText } = renderProjectsScreen();
 
     await waitFor(() => {
-      expect(queryByText('Offline — showing cached data')).toBeNull();
+      expect(queryByText(/Showing cached data from/)).toBeNull();
       expect(queryByText('Amazon Reforestation')).toBeTruthy();
     });
   });
@@ -78,6 +78,23 @@ describe('ProjectsScreen — offline support', () => {
         'projects:list',
         expect.stringContaining('Amazon Reforestation')
       );
+    });
+  });
+
+  it('shows a staleness warning when cached projects are older than the TTL', async () => {
+    const entry = JSON.stringify({
+      data: MOCK_PROJECTS,
+      timestamp: Date.now() - 11 * 60 * 1000,
+    });
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValue(entry);
+    (axios.get as jest.Mock).mockRejectedValue(new Error('Network Error'));
+
+    const { getByText, getByTestId } = renderProjectsScreen();
+
+    await waitFor(() => {
+      expect(getByText('Amazon Reforestation')).toBeTruthy();
+      expect(getByTestId('stale-cache-banner')).toBeTruthy();
+      expect(getByText(/fundraising totals may be out of date/)).toBeTruthy();
     });
   });
 });
