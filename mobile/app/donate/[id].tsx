@@ -267,14 +267,27 @@ export default function DonateScreen() {
     } catch (error) {
       console.error('Donation backend confirmation failed:', error);
       if (queueEntry) {
+        // Queue-originated donation: stamp the hash onto the existing entry.
         await updateQueuedDonation(queueEntry.id, { horizonTransactionHash: transactionHash });
         setQueueEntry({ ...queueEntry, horizonTransactionHash: transactionHash });
+      } else {
+        // Plain online donation (no prior queue entry): the payment already
+        // reached Horizon, so we must never resubmit it. Create a rescue entry
+        // with the tx hash pre-stamped so the hash survives navigation/restart
+        // and the background sync can retry backend confirmation on reconnect.
+        const rescue = await enqueueDonation({
+          projectId: selectedProject.id,
+          projectName: selectedProject.name,
+          donorAddress: publicKey,
+          amountXLM: formattedAmount,
+          message: message.trim() || undefined,
+        });
+        await updateQueuedDonation(rescue.id, { horizonTransactionHash: transactionHash });
+        setQueueEntry({ ...rescue, horizonTransactionHash: transactionHash });
       }
       setStatusType('info');
       setStatusMessage(
-        `Your donation reached the blockchain (tx ${transactionHash}) but we couldn't confirm it with our server yet. It's saved and won't be submitted twice${
-          queueEntry ? ' — tap Donate again to retry confirming it' : ''
-        }.`
+        `Your donation reached the blockchain (tx ${transactionHash}) but we couldn't confirm it with our server yet. It's saved and won't be submitted twice — tap Donate again to retry confirming it.`
       );
       setSecretKey('');
     } finally {
