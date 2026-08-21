@@ -12,6 +12,7 @@ const { mapProjectRow, mapProjectMilestoneRow } = require("../services/store");
 const { getOnChainProject, CONTRACT_ID, server, NETWORK_PASSPHRASE } = require("../services/stellar");
 const { enqueueAISummary } = require("../services/summaryQueue");
 const { Contract, TransactionBuilder } = require("@stellar/stellar-sdk");
+const { createChallenge, consumeChallenge, createProjectOwnerToken, projectOwnerRequired, verifySignedChallengeTransaction } = require("../middleware/projectOwnerAuth");
 
 const VALID_STATUSES = ["active", "completed", "paused"];
 const VALID_CATEGORIES = [
@@ -108,6 +109,67 @@ router.get("/featured", async (req, res, next) => {
   }
 });
 
+router.post("/:id/auth/challenge", async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    const projectResult = await pool.query(
+      "SELECT wallet_address FROM projects WHERE id = $1",
+      [projectId],
+    );
+    const project = projectResult.rows[0];
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const nonce = createChallenge(projectId, project.wallet_address);
+    res.json({ success: true, data: { nonce, walletAddress: project.wallet_address } });
+  } catch (e) {
+    res.status(500).json({ success: false, error: "Failed to create challenge" });
+  }
+});
+
+router.post("/:id/auth/verify", async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    const { signedXDR } = req.body || {};
+
+    if (!signedXDR || typeof signedXDR !== "string") {
+      return res.status(400).json({ error: "signedXDR is required" });
+    }
+
+    const projectResult = await pool.query(
+      "SELECT wallet_address FROM projects WHERE id = $1",
+      [projectId],
+    );
+    const project = projectResult.rows[0];
+    if (!project) return res.status(404).json({ error: "Project not found" });
+
+    const challengeResult = await pool.query(
+      "SELECT nonce FROM project_auth_challenges WHERE project_id = $1 AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1",
+      [projectId],
+    );
+
+    if (!challengeResult.rows[0]) {
+      return res.status(400).json({ error: "No active challenge. Request a new challenge first." });
+    }
+
+    const nonce = challengeResult.rows[0].nonce;
+    const isValid = await verifySignedChallengeTransaction(signedXDR, nonce, project.wallet_address);
+
+    if (!isValid) {
+      return res.status(401).json({ error: "Invalid signature or mismatched wallet" });
+    }
+
+    const consumed = await consumeChallenge(nonce, project.wallet_address);
+    if (!consumed) {
+      return res.status(400).json({ error: "Challenge already used or expired" });
+    }
+
+    const token = createProjectOwnerToken(projectId, project.wallet_address);
+    res.json({ success: true, data: { token } });
+  } catch (e) {
+    res.status(500).json({ success: false, error: "Failed to verify signature" });
+  }
+});
+
 router.get("/", async (req, res, next) => {
   try {
     const { category, status, verified, search, limit = 50 } = req.query;
@@ -199,8 +261,12 @@ router.get("/:id/verify", async (req, res) => {
   }
 });
 
-router.post("/:id/campaigns", async (req, res, next) => {
+router.post("/:id/campaigns", projectOwnerRequired, async (req, res, next) => {
   try {
+    if (req.projectOwner.projectId !== req.params.id) {
+      return res.status(403).json({ error: "Only the project owner can create campaigns" });
+    }
+
     const { title, goalXLM, deadline, description } = req.body || {};
     const trimmedTitle = typeof title === "string" ? title.trim() : "";
     const trimmedDescription = typeof description === "string" ? description.trim() : "";
@@ -236,7 +302,7 @@ router.post("/:id/campaigns", async (req, res, next) => {
     );
 
     logAdminAction({
-      actor: req.body?.adminAddress || "unknown",
+      actor: req.projectOwner.walletAddress,
       action: "project.campaign.create",
       targetType: "project_campaign",
       targetId: result.rows[0].id,
@@ -275,8 +341,12 @@ router.get("/:id/milestones", async (req, res, next) => {
   }
 });
 
-router.post("/:id/milestones", async (req, res, next) => {
+router.post("/:id/milestones", projectOwnerRequired, async (req, res, next) => {
   try {
+    if (req.projectOwner.projectId !== req.params.id) {
+      return res.status(403).json({ error: "Only the project owner can create milestones" });
+    }
+
     const { title, percentage } = req.body;
     if (!title || typeof percentage !== "number") {
       return res.status(400).json({ error: "title and percentage (number) are required" });
@@ -289,7 +359,7 @@ router.post("/:id/milestones", async (req, res, next) => {
     );
 
     logAdminAction({
-      actor: req.body?.adminAddress || "unknown",
+      actor: req.projectOwner.walletAddress,
       action: "project.milestone.create",
       targetType: "project_milestone",
       targetId: result.rows[0].id,
@@ -472,11 +542,10 @@ router.get("/:id", async (req, res, next) => {
  * Response: { success: true, data: { aiSummary, aiSummaryGeneratedAt,
  *                                    aiSummaryModel, aiSummarySourceHash } }
  */
-router.post("/:id/generate-summary", async (req, res, next) => {
+router.post("/:id/generate-summary", projectOwnerRequired, async (req, res, next) => {
   try {
-    const { adminAddress } = req.body || {};
-    if (!adminAddress || typeof adminAddress !== "string") {
-      return res.status(400).json({ error: "adminAddress is required" });
+    if (req.projectOwner.projectId !== req.params.id) {
+      return res.status(403).json({ error: "Only the project owner can generate a summary" });
     }
 
     const projectResult = await pool.query(
@@ -485,19 +554,16 @@ router.post("/:id/generate-summary", async (req, res, next) => {
     );
     const project = projectResult.rows[0];
     if (!project) return res.status(404).json({ error: "Project not found" });
-    if (project.wallet_address !== adminAddress) {
-      return res.status(403).json({ error: "Only the project owner can generate a summary" });
-    }
 
     await enqueueAISummary(req.params.id, {
       name: project.name,
       category: project.category,
       description: project.description,
-      adminAddress,
+      adminAddress: req.projectOwner.walletAddress,
     });
 
     logAdminAction({
-      actor: adminAddress,
+      actor: req.projectOwner.walletAddress,
       action: "project.summary.enqueued",
       targetType: "project",
       targetId: req.params.id,
@@ -602,14 +668,46 @@ router.get("/:id/matching", async (req, res, next) => {
 /**
  * PATCH /api/projects/:id/status
  * Approve or reject a project. Body: { status: "active" | "rejected", reason?: string }
- * `adminAddress` must match the project wallet (owner) or be a platform admin.
+ * Accepts either a project-owner Bearer token or a platform-admin Bearer token.
  */
 router.patch("/:id/status", async (req, res, next) => {
   try {
-    const { status, reason, adminAddress } = req.body || {};
+    const { status, reason } = req.body || {};
     const validStatuses = ["active", "rejected", "paused"];
     if (!status || !validStatuses.includes(status)) {
       return res.status(400).json({ error: `status must be one of: ${validStatuses.join(", ")}` });
+    }
+
+    const authHeader = req.headers.authorization;
+    let isOwner = false;
+    let actor = "unknown";
+
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      const token = authHeader.slice(7);
+      try {
+        const decoded = require("../middleware/projectOwnerAuth").verifyProjectOwnerToken(token);
+        if (decoded.role === "projectOwner" && decoded.projectId === req.params.id) {
+          isOwner = true;
+          actor = decoded.walletAddress;
+        }
+      } catch {
+        // Not a valid project-owner token; try admin below.
+      }
+
+      if (!isOwner) {
+        try {
+          const decoded = require("../middleware/auth").verifyToken(token);
+          if (decoded.role === "admin") {
+            actor = decoded.sub || "admin";
+          }
+        } catch {
+          // fall through to 401
+        }
+      }
+    }
+
+    if (!isOwner && actor === "unknown") {
+      return res.status(401).json({ error: "Missing or invalid Authorization header" });
     }
 
     const projectResult = await pool.query("SELECT * FROM projects WHERE id = $1", [req.params.id]);
@@ -628,7 +726,7 @@ router.patch("/:id/status", async (req, res, next) => {
     );
 
     logAdminAction({
-      actor: adminAddress || "unknown",
+      actor,
       action: `project.status.${status}`,
       targetType: "project",
       targetId: req.params.id,
