@@ -54,6 +54,12 @@ ingress:
 
 backend:
   replicas: 3
+  hpa:
+    minReplicas: 2
+    maxReplicas: 12
 
 frontend:
   replicas: 3
+  hpa:
+    minReplicas: 2
+    maxReplicas: 10

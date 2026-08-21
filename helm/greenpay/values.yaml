@@ -35,6 +35,32 @@ backend:
   pdb:
     enabled: true
     maxUnavailable: 1
+  # HPA targets the Argo Rollout (not a Deployment). minReplicas matches the
+  # HA floor so topologySpreadConstraints (maxSkew: 1) still have two pods to
+  # place. CPU uses metrics-server; latency/queue-depth need prometheus-adapter.
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    cpuUtilization: 60
+    latency:
+      enabled: true
+      metric: greenpay_backend_request_latency_p95_ms
+      targetValue: "400"
+    queueDepth:
+      enabled: true
+      metric: greenpay_backend_queue_depth
+      targetValue: "25"
+    behavior:
+      scaleUp:
+        stabilizationWindowSeconds: 0
+        pods: 4
+        percent: 100
+        periodSeconds: 15
+      scaleDown:
+        stabilizationWindowSeconds: 300
+        percent: 25
+        periodSeconds: 60
   canary:
     steps:
       initialWeight: 10
@@ -59,6 +85,26 @@ frontend:
   pdb:
     enabled: true
     maxUnavailable: 1
+  # HPA targets the frontend Rollout. CPU + per-pod RPS (prometheus-adapter).
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+    cpuUtilization: 70
+    rps:
+      enabled: true
+      metric: http_requests_per_second
+      targetAverageValue: "40"
+    behavior:
+      scaleUp:
+        stabilizationWindowSeconds: 0
+        pods: 4
+        percent: 100
+        periodSeconds: 15
+      scaleDown:
+        stabilizationWindowSeconds: 300
+        percent: 25
+        periodSeconds: 60
   canary:
     steps:
       initialWeight: 10
