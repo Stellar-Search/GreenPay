@@ -129,6 +129,26 @@ secrets:
 ingress:
   host: greenpay.local
   className: nginx
+  # TLS is off in the testnet defaults (HTTP on greenpay.local). The mainnet
+  # overlay turns it on. ingress.tls.enabled is the enableTLS switch;
+  # ingress.tls.secretName is the tlsSecretName the Ingress spec.tls block
+  # and cert-manager both write into.
   tls:
     enabled: false
     secretName: greenpay-tls
+    # Empty here so testnet renders no cert-manager annotation. Mainnet sets
+    # this to the ClusterIssuer the chart (or the operator) creates.
+    clusterIssuer: ""
+
+# cert-manager ClusterIssuer the production overlay enables. The chart does
+# not install cert-manager itself — that is a cluster prerequisite (see
+# docs/deployment-mainnet.md). Disabled on testnet so `helm template` of the
+# defaults never emits a cluster-scoped ACME issuer.
+certManager:
+  enabled: false
+  clusterIssuerName: letsencrypt-prod
+  acme:
+    # REQUIRED at deploy time on mainnet: --set certManager.acme.email=ops@...
+    email: ""
+    server: https://acme-v02.api.letsencrypt.org/directory
+    privateKeySecretName: letsencrypt-prod-account-key

@@ -5,8 +5,17 @@ metadata:
   namespace: greenpay
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # Production uses cert-manager via the Helm overlay
+    # (ingress.tls.clusterIssuer). Local clusters populate greenpay-tls
+    # out-of-band (mkcert / self-signed) — Let's Encrypt will not issue
+    # for the .local host below.
 spec:
   ingressClassName: nginx
+  tls:
+    - hosts:
+        - greenpay.local
+      secretName: greenpay-tls
   rules:
     - host: greenpay.local
       http:

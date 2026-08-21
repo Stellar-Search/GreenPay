@@ -51,6 +51,15 @@ ingress:
   tls:
     enabled: true
     secretName: greenpay-tls
+    clusterIssuer: letsencrypt-prod
+
+# Renders helm/greenpay/templates/cluster-issuer.yaml and is referenced by
+# the Ingress cert-manager.io/cluster-issuer annotation above. Install
+# cert-manager in the cluster before the first mainnet helm upgrade.
+# REQUIRED at deploy time: --set certManager.acme.email=ops@your-real-domain
+certManager:
+  enabled: true
+  clusterIssuerName: letsencrypt-prod
 
 backend:
   replicas: 3

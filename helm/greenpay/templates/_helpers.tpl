@@ -17,3 +17,31 @@ whichever is actually served or the browser CORS check fails.
 {{- define "greenpay.publicScheme" -}}
 {{- if .Values.ingress.tls.enabled -}}https{{- else -}}http{{- end -}}
 {{- end -}}
+
+{{/*
+TLS-related Ingress annotations. The cert-manager cluster-issuer annotation is
+only rendered when both TLS and a ClusterIssuer name are set, so testnet stays
+HTTP-only and a mainnet deploy that already has an issuer outside this chart
+can still point the Ingress at it via ingress.tls.clusterIssuer.
+*/}}
+{{- define "greenpay.ingress.tlsAnnotations" -}}
+{{- if .Values.ingress.tls.enabled }}
+nginx.ingress.kubernetes.io/ssl-redirect: "true"
+{{- if .Values.ingress.tls.clusterIssuer }}
+cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer | quote }}
+{{- end }}
+{{- end }}
+{{- end -}}
+
+{{/*
+spec.tls block shared by every Ingress the chart renders. All of them must
+reference the same Secret so nginx and the canary pair terminate the same cert.
+*/}}
+{{- define "greenpay.ingress.tls" -}}
+{{- if .Values.ingress.tls.enabled }}
+tls:
+  - hosts:
+      - {{ .Values.ingress.host | quote }}
+    secretName: {{ .Values.ingress.tls.secretName }}
+{{- end }}
+{{- end -}}

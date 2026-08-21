@@ -28,6 +28,7 @@ Because the merged values are the only input, the pre-deploy guard (§4) can che
 - `Rust + Cargo`
 - `cargo install --locked stellar-cli`
 - `helm` 3.x and `kubectl`, with your context pointed at the production cluster
+- [cert-manager](https://cert-manager.io/docs/installation/) v1.14+ installed in that cluster (the chart renders a `ClusterIssuer`; it does not install cert-manager itself)
 - A funded Stellar Mainnet account for contract deployment and admin operations
 - `freighter` or another Stellar wallet for admin key management
 
@@ -110,6 +111,7 @@ node scripts/validate-helm-release.js \
   --set config.contractId=<contract-id> \
   --set ingress.host=app.greenpay.example \
   --set config.emailFrom="GreenPay <updates@greenpay.example>" \
+  --set certManager.acme.email=ops@greenpay.example \
   --expect-network mainnet
 ```
 
@@ -124,6 +126,7 @@ helm upgrade --install greenpay helm/greenpay \
   --set config.contractId=<contract-id> \
   --set ingress.host=app.greenpay.example \
   --set config.emailFrom="GreenPay <updates@greenpay.example>" \
+  --set certManager.acme.email=ops@greenpay.example \
   --namespace greenpay
 ```
 
@@ -134,6 +137,7 @@ Values supplied at deploy time — the overlay deliberately leaves them empty so
 | `config.contractId` | printed by `scripts/deploy-contract.sh mainnet` (step 3) |
 | `ingress.host` | the production hostname (§7) |
 | `config.emailFrom` | the production transactional sender address |
+| `certManager.acme.email` | Let's Encrypt account contact; required for the ClusterIssuer the overlay renders |
 
 ### 4.4 Verify what the cluster actually received
 
@@ -212,12 +216,61 @@ Use a dedicated deployer/admin identity for contract initialization and project 
 
 ### TLS and DNS
 
-The Mainnet overlay sets `ingress.tls.enabled: true`, so the chart renders a `tls:` block referencing the Secret named in `ingress.tls.secretName` (default `greenpay-tls`). The certificate itself still has to exist:
+The Mainnet overlay turns TLS on and wires cert-manager so the certificate is issued, not assumed:
 
-1. Point a real DNS record (e.g. `app.greenpay.example`) at the ingress load balancer (`kubectl -n greenpay get svc` → `EXTERNAL-IP` for the nginx ingress controller).
-2. Install a certificate issuer, e.g. `cert-manager` with a `ClusterIssuer` (Let's Encrypt staging first, then prod), and have it issue into `greenpay-tls` in the `greenpay` namespace.
-3. Deploy with `--set ingress.host=<that hostname>` as in §4.3. No manifest editing is required — `k8s/ingress.yaml` is the dev-cluster manifest and is not used for Mainnet.
-4. Verify with `curl -I https://app.greenpay.example/api/health` and a browser cert check.
+| Value | Overlay default | What it does |
+| --- | --- | --- |
+| `ingress.tls.enabled` | `true` | Renders `spec.tls` on every Ingress (combined + canary pair) |
+| `ingress.tls.secretName` | `greenpay-tls` | Secret cert-manager writes the leaf cert into |
+| `ingress.tls.clusterIssuer` | `letsencrypt-prod` | Sets the `cert-manager.io/cluster-issuer` annotation |
+| `certManager.enabled` | `true` | Renders `helm/greenpay/templates/cluster-issuer.yaml` |
+| `certManager.clusterIssuerName` | `letsencrypt-prod` | Must match `ingress.tls.clusterIssuer` |
+| `certManager.acme.email` | empty | Let's Encrypt account contact — set at deploy time |
+| `certManager.acme.server` | `https://acme-v02.api.letsencrypt.org/directory` | Production ACME. Use the staging directory first (below). |
+
+`k8s/ingress.yaml` is the local/dev manifest (`greenpay.local` + a `tls` block pointing at `greenpay-tls`). It is not applied to Mainnet; populate that Secret with mkcert or a self-signed cert if you need HTTPS on a local cluster.
+
+#### Provision the certificate
+
+1. **Install cert-manager** in the cluster if it is not already there (once per cluster, not per release):
+
+   ```bash
+   # Current release: https://cert-manager.io/docs/installation/
+   kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
+   kubectl -n cert-manager rollout status deploy/cert-manager deploy/cert-manager-webhook
+   ```
+
+2. **Point DNS** at the ingress load balancer. Wait until the hostname you will pass as `ingress.host` resolves to that address:
+
+   ```bash
+   kubectl -n ingress-nginx get svc ingress-nginx-controller -o wide
+   ```
+
+3. **Issue from staging first.** Let's Encrypt production has tight rate limits; a first cutover should use the staging ACME directory so a mis-pointed DNS record does not burn the quota. Deploy as in §4.3 plus:
+
+   ```bash
+   --set certManager.clusterIssuerName=letsencrypt-staging \
+   --set ingress.tls.clusterIssuer=letsencrypt-staging \
+   --set certManager.acme.server=https://acme-staging-v02.api.letsencrypt.org/directory \
+   --set certManager.acme.privateKeySecretName=letsencrypt-staging-account-key \
+   --set certManager.acme.email=ops@greenpay.example
+   ```
+
+   The chart renders a `ClusterIssuer` named `letsencrypt-staging` and annotates every Ingress with `cert-manager.io/cluster-issuer: "letsencrypt-staging"`. cert-manager then creates a `Certificate` and fills `Secret/greenpay-tls` in the `greenpay` namespace.
+
+4. **Confirm the staging cert landed**, then switch to production ACME (the overlay defaults) and helm-upgrade again with only `--set certManager.acme.email=...` as in §4.3:
+
+   ```bash
+   kubectl -n greenpay get certificate
+   kubectl -n greenpay get secret greenpay-tls
+   kubectl -n greenpay describe certificate
+   ```
+
+   `Ready=True` on the Certificate and a `tls.crt`/`tls.key` in `greenpay-tls` means termination is live. Staging certificates are untrusted in browsers; that is expected until this step uses the production directory.
+
+5. **Verify** with `curl -I https://app.greenpay.example/api/health` and a browser cert check. HTTP should 308/301 to HTTPS (`nginx.ingress.kubernetes.io/ssl-redirect` is set when TLS is on).
+
+If the cluster already has a `ClusterIssuer`, leave `certManager.enabled: false` (or `--set certManager.enabled=false`) and point `ingress.tls.clusterIssuer` at that existing issuer. The Ingress `tls` block and annotation still render; the chart just does not create a second issuer.
 
 `ALLOWED_ORIGINS` is derived from `ingress.host` and follows `ingress.tls.enabled`, so the backend's CORS origin always matches the scheme actually served. The guard rejects a Mainnet release whose origins are not `https`.
 
@@ -237,6 +290,9 @@ Public Global Stellar Network ; September 2015
 - Backend reports `network: testnet` on Mainnet: the release was rendered from the base values only. Re-run §4.2 with `--expect-network mainnet` — the guard fails on exactly this.
 - `Soroban RPC` errors: check `SOROBAN_RPC_URL` in the ConfigMap; override with `--set config.sorobanRpcUrl=...` if your provider differs.
 - Guard reports `'helm' not found on PATH`: install Helm 3, or set `HELM_BIN` to its location.
+- Ingress stays HTTP-only / `curl -I` never redirects to https: the release was rendered without `ingress.tls.enabled` (base values only). Re-run §4.2 with `--expect-network mainnet`.
+- `Certificate` stuck `Ready=False` / `greenpay-tls` has no `tls.crt`: cert-manager is missing, the webhook is not up, DNS does not yet point at the ingress controller, or ACME HTTP-01 cannot reach `/.well-known/acme-challenge` on port 80. `kubectl -n greenpay describe certificate` and `kubectl -n cert-manager logs deploy/cert-manager` show the solver error. Fix DNS first; do not retry production ACME in a loop.
+- `ClusterIssuer` already exists / helm complains on install: the cluster already has an issuer. Deploy with `--set certManager.enabled=false --set ingress.tls.clusterIssuer=<existing-name>`.
 
 ## 9. Optional follow-up
 
