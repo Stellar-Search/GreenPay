@@ -16,13 +16,16 @@
 const express = require("express");
 const request = require("supertest");
 const { createRateLimiter } = require("./rateLimiter");
+const { apiEnvelope, errorHandler } = require("./apiEnvelope");
 
 /** Build a minimal app that applies the given limiter to GET /ping. */
 function buildApp(maxRequests = 10, windowMinutes = 1, name = "test-limiter") {
   const app = express();
   const limiter = createRateLimiter(maxRequests, windowMinutes, name);
+  app.use(apiEnvelope);
   app.use(limiter);
-  app.get("/ping", (_req, res) => res.status(200).json({ ok: true }));
+  app.get("/api/ping", (_req, res) => res.status(200).json({ ok: true }));
+  app.use(errorHandler);
   return app;
 }
 
@@ -36,47 +39,52 @@ describe("Rate limiting middleware — donation endpoint", () => {
 
   it("allows up to 10 requests within the time window", async () => {
     for (let i = 1; i <= 10; i++) {
-      const res = await request(app).get("/ping");
+      const res = await request(app).get("/api/ping");
       expect(res.status).toBe(200);
     }
   });
 
   it("blocks the 11th request with HTTP 429", async () => {
     for (let i = 0; i < 10; i++) {
-      await request(app).get("/ping");
+      await request(app).get("/api/ping");
     }
 
-    const res = await request(app).get("/ping");
+    const res = await request(app).get("/api/ping");
     expect(res.status).toBe(429);
   });
 
   it("returns a Retry-After header on the 429 response", async () => {
     for (let i = 0; i < 10; i++) {
-      await request(app).get("/ping");
+      await request(app).get("/api/ping");
     }
 
-    const res = await request(app).get("/ping");
+    const res = await request(app).get("/api/ping");
     expect(res.status).toBe(429);
     expect(res.headers["retry-after"]).toBeDefined();
   });
 
   it("returns a JSON body with a human-readable message on 429", async () => {
     for (let i = 0; i < 10; i++) {
-      await request(app).get("/ping");
+      await request(app).get("/api/ping");
     }
 
-    const res = await request(app).get("/ping");
+    const res = await request(app).get("/api/ping");
     expect(res.status).toBe(429);
-    expect(res.body).toHaveProperty("message");
-    expect(typeof res.body.message).toBe("string");
+    expect(res.body).toMatchObject({
+      success: false,
+      error: {
+        code: "RATE_LIMITED",
+        message: expect.any(String),
+      },
+    });
   });
 
   it("still blocks request 12 after the 11th was already rejected", async () => {
     for (let i = 0; i < 12; i++) {
-      await request(app).get("/ping");
+      await request(app).get("/api/ping");
     }
 
-    const res = await request(app).get("/ping");
+    const res = await request(app).get("/api/ping");
     expect(res.status).toBe(429);
   });
 });
@@ -87,13 +95,13 @@ describe("Rate limiting middleware — custom window", () => {
     const appB = buildApp(2, 1);
 
     // Exhaust appA
-    await request(appA).get("/ping");
-    await request(appA).get("/ping");
-    const blockedOnA = await request(appA).get("/ping");
+    await request(appA).get("/api/ping");
+    await request(appA).get("/api/ping");
+    const blockedOnA = await request(appA).get("/api/ping");
     expect(blockedOnA.status).toBe(429);
 
     // appB counter is untouched — first request must succeed
-    const okOnB = await request(appB).get("/ping");
+    const okOnB = await request(appB).get("/api/ping");
     expect(okOnB.status).toBe(200);
   });
 });

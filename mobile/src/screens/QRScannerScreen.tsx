@@ -2,11 +2,9 @@ import React, { useRef, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { BarCodeScanner, BarCodeScannerResult } from 'expo-barcode-scanner';
 import { useRouter } from 'expo-router';
-import axios from 'axios';
 import { parseSep7PayUri } from '../../utils/sep7';
 import { parseGreenPayDonationLink } from '../../utils/qrPayload';
-
-const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
+import { apiGet } from '../../utils/api';
 
 interface ClimateProject {
   id: string;
@@ -23,8 +21,7 @@ interface ClimateProject {
  */
 async function findActiveProjectByWalletAddress(destination: string): Promise<ClimateProject | null> {
   try {
-    const res = await axios.get(`${API_URL}/api/projects`);
-    const list: ClimateProject[] = Array.isArray(res.data?.data) ? res.data.data : [];
+    const list = await apiGet<ClimateProject[]>('/api/projects');
     const match = list.find(
       (project) => project.status === 'active' && project.walletAddress === destination
     );

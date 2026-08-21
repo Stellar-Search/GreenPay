@@ -2,6 +2,7 @@
 const express = require("express");
 const request = require("supertest");
 const { signToken, adminRequired } = require("../middleware/auth");
+const { apiEnvelope, errorHandler } = require("../middleware/apiEnvelope");
 
 jest.mock("../middleware/rateLimiter", () => ({
   createRateLimiter: () => (req, res, next) => next(),
@@ -25,7 +26,9 @@ const { enqueueAISummary } = require("../services/summaryQueue");
 function buildApp() {
   const app = express();
   app.use(express.json());
+  app.use(apiEnvelope);
   app.use("/api/admin", require("./admin"));
+  app.use(errorHandler);
   return app;
 }
 
@@ -182,7 +185,7 @@ describe("GET /api/admin/ai-summary-failures", () => {
       errorMessage: "content policy rejection",
       status: "failed",
     });
-    expect(res.body.pagination.total).toBe(1);
+    expect(res.body.meta.pagination.total).toBe(1);
   });
 });
 
@@ -251,7 +254,9 @@ describe("adminRequired middleware", () => {
   beforeEach(() => {
     app = express();
     app.use(express.json());
+    app.use(apiEnvelope);
     app.get("/protected", adminRequired, (req, res) => res.json({ ok: true, user: req.admin }));
+    app.use(errorHandler);
   });
 
   it("allows requests with valid token", async () => {

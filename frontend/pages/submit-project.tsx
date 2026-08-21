@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useRouter } from "next/router";
-import { submitProject } from "@/lib/api";
+import { getApiErrorMessage, submitProject } from "@/lib/api";
 import { PROJECT_CATEGORIES } from "@/utils/format";
 
 type Step = "org" | "project" | "wallet" | "methodology" | "done";
@@ -158,12 +158,8 @@ export default function SubmitProjectPage() {
       const data = await submitProject(payload);
       setReviewTimeline(data?.reviewTimeline ?? "5–10 business days");
       setStep("done");
-    } catch (err: any) {
-      const msg =
-        err?.response?.data?.message ??
-        err?.response?.data?.error ??
-        "Submission failed. Please try again.";
-      setServerError(msg);
+    } catch (err: unknown) {
+      setServerError(getApiErrorMessage(err, "Submission failed. Please try again."));
     } finally {
       setSubmitting(false);
     }

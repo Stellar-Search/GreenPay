@@ -51,13 +51,13 @@ describe('HomeScreen', () => {
   });
 
   it('renders the app title', async () => {
-    (axios.get as jest.Mock).mockResolvedValue({ data: { data: [MOCK_PROJECT] } });
+    (axios.get as jest.Mock).mockResolvedValue({ data: { success: true, data: [MOCK_PROJECT] } });
     const { getByText } = renderHomeScreen();
     await waitFor(() => expect(getByText('Stellar GreenPay')).toBeTruthy());
   });
 
   it('renders global stats after data loads', async () => {
-    (axios.get as jest.Mock).mockResolvedValue({ data: { data: [MOCK_PROJECT] } });
+    (axios.get as jest.Mock).mockResolvedValue({ data: { success: true, data: [MOCK_PROJECT] } });
 
     const { getByText } = renderHomeScreen();
     await waitFor(() => {
@@ -66,7 +66,7 @@ describe('HomeScreen', () => {
   });
 
   it('renders the featured project name after data loads', async () => {
-    (axios.get as jest.Mock).mockResolvedValue({ data: { data: [MOCK_PROJECT] } });
+    (axios.get as jest.Mock).mockResolvedValue({ data: { success: true, data: [MOCK_PROJECT] } });
 
     const { getByText } = renderHomeScreen();
     await waitFor(() =>

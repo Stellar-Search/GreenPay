@@ -40,7 +40,7 @@ router.get("/", async (req, res, next) => {
       projectsSupported: p.projects_supported,
       topBadge: p.badges?.[0]?.tier || null,
     }));
-    res.json({ success: true, data: entries });
+    res.json(entries);
   } catch (e) {
     next(e);
   }

@@ -1,6 +1,7 @@
 const rateLimit = require("express-rate-limit");
 const RedisStore = require("rate-limit-redis");
 const redisClient = require("../cache/redisClient");
+const { createApiError } = require("./apiEnvelope");
 
 /**
  * Factory function to create reusable rate limiters
@@ -28,11 +29,9 @@ const createRateLimiter = (maxRequests, windowMinutes, name) => {
         sendCommand: (...args) => redisClient.call(...args),
       })
       : undefined,
-    handler: (req, res) => {
+    handler: (req, res, next) => {
       res.set("Retry-After", Math.ceil(windowMinutes * 60));
-      return res.status(429).json({
-        message: "Too many requests — Try again later.",
-      });
+      return next(createApiError(429, "RATE_LIMITED", "Too many requests. Try again later."));
     },
   });
 };

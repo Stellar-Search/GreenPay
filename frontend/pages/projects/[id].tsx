@@ -11,7 +11,7 @@ import WalletConnect from "@/components/WalletConnect";
 import CircularProgress from "@/components/CircularProgress";
 import MonthlyGivingSetup from "@/components/MonthlyGivingSetup";
 import DescriptionAccordion from "@/components/DescriptionAccordion";
-import { fetchProject, fetchProjectUpdates, subscribeToProject, fetchSubscriberCount, createProjectCampaign, fetchProjectMatches, generateProjectSummary, toggleUpdateLike } from "@/lib/api";
+import { createProjectCampaign, fetchProject, fetchProjectMatches, fetchProjectUpdates, fetchSubscriberCount, generateProjectSummary, getApiErrorMessage, subscribeToProject, toggleUpdateLike } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import { formatXLM, formatCO2, progressPercent, timeAgo, statusClass, statusLabel, CATEGORY_ICONS, copyToClipboard, shortenAddress } from "@/utils/format";
 import { accountUrl, fetchProjectDiscussion, type ProjectDiscussionMessage } from "@/lib/stellar";
@@ -608,9 +608,7 @@ export default function ProjectDetail({
       setSubEmail("");
       setSubscriberCount((c) => (c !== null ? c + 1 : null));
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { error?: string } } })
-        ?.response?.data?.error;
-      setSubError(msg || "Could not subscribe. Try again.");
+      setSubError(getApiErrorMessage(err, "Could not subscribe. Try again."));
       setSubState("error");
     }
   };
@@ -633,9 +631,7 @@ export default function ProjectDetail({
       setCampaignState("success");
       window.setTimeout(() => setCampaignState("idle"), 2000);
     } catch (err: unknown) {
-      const message = (err as { response?: { data?: { error?: string } } })
-        ?.response?.data?.error;
-      setCampaignError(message || "Could not create campaign.");
+      setCampaignError(getApiErrorMessage(err, "Could not create campaign."));
       setCampaignState("error");
     }
   };

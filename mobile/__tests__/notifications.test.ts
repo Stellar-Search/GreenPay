@@ -27,7 +27,14 @@ describe('notification registration', () => {
   });
 
   it('returns false and queues a retry when registration gets a 4xx response', async () => {
-    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 401 });
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: false,
+      status: 401,
+      json: jest.fn().mockResolvedValue({
+        success: false,
+        error: { code: 'UNAUTHORIZED', message: 'Unauthorized' },
+      }),
+    });
 
     await expect(registerDeviceToken('ExponentPushToken[test]', 'GB123')).resolves.toBe(false);
 
@@ -38,7 +45,14 @@ describe('notification registration', () => {
   });
 
   it('returns false and queues a retry when registration gets a 5xx response', async () => {
-    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500 });
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: jest.fn().mockResolvedValue({
+        success: false,
+        error: { code: 'INTERNAL_ERROR', message: 'Internal server error' },
+      }),
+    });
 
     await expect(registerDeviceToken('ExponentPushToken[test]')).resolves.toBe(false);
 
@@ -50,7 +64,11 @@ describe('notification registration', () => {
 
   it('clears any pending retry after successful registration', async () => {
     store['greenpay:pendingPushRegistration'] = JSON.stringify({ token: 'old-token' });
-    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 });
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: jest.fn().mockResolvedValue({ success: true, data: null }),
+    });
 
     await expect(registerDeviceToken('ExponentPushToken[test]')).resolves.toBe(true);
 

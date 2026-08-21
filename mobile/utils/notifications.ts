@@ -5,6 +5,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import { AppState, Platform } from 'react-native';
+import { API_URL, parseApiFetchResponse } from './api';
 
 const PENDING_REGISTRATION_KEY = 'greenpay:pendingPushRegistration';
 
@@ -56,8 +57,10 @@ async function postJson(url: string, body: Record<string, unknown>): Promise<boo
     body: JSON.stringify(body),
   });
 
-  if (!response.ok) {
-    console.error(`Push notification request failed with HTTP ${response.status}`);
+  try {
+    await parseApiFetchResponse<unknown>(response);
+  } catch (error) {
+    console.error('Push notification request failed:', error);
     return false;
   }
 
@@ -111,7 +114,6 @@ export async function registerDeviceToken(
   walletAddress?: string
 ): Promise<boolean> {
   try {
-    const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
     const platform = Platform.OS;
     
     const registered = await postJson(`${API_URL}/api/notifications/register`, {
@@ -144,8 +146,6 @@ export async function followProject(
   walletAddress?: string
 ): Promise<boolean> {
   try {
-    const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
-    
     const followed = await postJson(`${API_URL}/api/notifications/follow`, {
       projectId,
       token,
@@ -170,8 +170,6 @@ export async function unfollowProject(
   token: string
 ): Promise<boolean> {
   try {
-    const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
-    
     const unfollowed = await postJson(`${API_URL}/api/notifications/unfollow`, {
       projectId,
       token,
@@ -192,21 +190,8 @@ export async function unfollowProject(
  */
 export async function getFollowedProjects(token: string): Promise<any[]> {
   try {
-    const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
-    
     const response = await fetch(`${API_URL}/api/notifications/follows?token=${token}`);
-    if (!response.ok) {
-      console.error(`Failed to get followed projects with HTTP ${response.status}`);
-      return [];
-    }
-
-    const data = await response.json();
-    
-    if (data.success) {
-      return data.data;
-    }
-    
-    return [];
+    return await parseApiFetchResponse<any[]>(response);
   } catch (error) {
     console.error('Error getting followed projects:', error);
     return [];

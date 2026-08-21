@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/router";
-import { adminLogin } from "@/lib/api";
+import { adminLogin, getApiErrorMessage } from "@/lib/api";
 
 export default function AdminLogin() {
   const router = useRouter();
@@ -16,8 +16,8 @@ export default function AdminLogin() {
     try {
       await adminLogin(username, password);
       router.push("/admin");
-    } catch (e: any) {
-      setError(e.response?.data?.error || "Invalid credentials");
+    } catch (e: unknown) {
+      setError(getApiErrorMessage(e, "Invalid credentials"));
       setState("error");
     }
   };

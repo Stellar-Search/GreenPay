@@ -7,6 +7,7 @@ const router = express.Router();
 const { v4: uuid } = require("uuid");
 const pool = require("../db/pool");
 const { mapProjectRatingRow } = require("../services/store");
+const { createApiError } = require("../middleware/apiEnvelope");
 
 /**
  * POST /api/ratings
@@ -19,10 +20,10 @@ router.post("/", ratingLimiter, async (req, res, next) => {
   try {
     const { projectId, donorAddress, rating, review } = req.body;
     if (!projectId || !donorAddress || !rating) {
-      return res.status(400).json({ error: "projectId, donorAddress, and rating are required" });
+      throw createApiError(400, "RATING_FIELDS_REQUIRED", "projectId, donorAddress, and rating are required");
     }
     if (rating < 1 || rating > 5) {
-      return res.status(400).json({ error: "rating must be between 1 and 5" });
+      throw createApiError(400, "RATING_OUT_OF_RANGE", "rating must be between 1 and 5");
     }
 
     const result = await pool.query(
@@ -34,7 +35,7 @@ router.post("/", ratingLimiter, async (req, res, next) => {
       [uuid(), projectId, donorAddress, rating, review || null],
     );
 
-    res.status(201).json({ success: true, data: mapProjectRatingRow(result.rows[0]) });
+    res.status(201).json(mapProjectRatingRow(result.rows[0]));
   } catch (e) {
     next(e);
   }
@@ -48,7 +49,7 @@ router.get("/pending", async (req, res, next) => {
   try {
     const { donorAddress } = req.query;
     if (!donorAddress) {
-      return res.status(400).json({ error: "donorAddress is required" });
+      throw createApiError(400, "DONOR_ADDRESS_REQUIRED", "donorAddress is required");
     }
 
     const result = await pool.query(
@@ -65,7 +66,7 @@ router.get("/pending", async (req, res, next) => {
       [donorAddress],
     );
 
-    res.json({ success: true, data: result.rows[0] || null });
+    res.json(result.rows[0] || null);
   } catch (e) {
     next(e);
   }

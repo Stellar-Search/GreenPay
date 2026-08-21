@@ -8,6 +8,10 @@ const API_BASE = 'https://api.stellar-greenpay.app';
 const sessionArea = chrome.storage.session ?? chrome.storage.local;
 const state = new WorkerSessionState(sessionArea, chrome.storage.local);
 
+type ApiEnvelope<T> =
+  | { success: true; data: T }
+  | { success: false; error: { code: string; message: string } };
+
 function toProjectSummary(value: unknown): ProjectSummary | null {
   if (typeof value !== 'object' || value === null) return null;
   const project = value as Record<string, unknown>;
@@ -27,14 +31,15 @@ async function fetchProjects(query?: string): Promise<ProjectSummary[]> {
   const params = new URLSearchParams({ limit: query ? '5' : '3' });
   if (query) params.set('search', query);
   const response = await fetch(`${API_BASE}/api/projects?${params}`);
+  const payload = await response.json() as ApiEnvelope<unknown[]>;
+
+  if (payload.success === false) {
+    throw new Error(`${payload.error.code}: ${payload.error.message}`);
+  }
+
   if (!response.ok) throw new Error(`Project request failed (${response.status})`);
 
-  const payload = await response.json();
-  const values = Array.isArray(payload?.data)
-    ? payload.data
-    : Array.isArray(payload)
-      ? payload
-      : [];
+  const values = Array.isArray(payload.data) ? payload.data : [];
   const projects = values
     .map(toProjectSummary)
     .filter((project: ProjectSummary | null): project is ProjectSummary => project !== null);

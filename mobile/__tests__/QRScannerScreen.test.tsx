@@ -47,7 +47,7 @@ describe('QRScannerScreen', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
-    (axios.get as jest.Mock).mockResolvedValue({ data: { data: MOCK_PROJECTS } });
+    (axios.get as jest.Mock).mockResolvedValue({ data: { success: true, data: MOCK_PROJECTS } });
   });
 
   afterEach(() => {

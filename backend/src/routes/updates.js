@@ -18,6 +18,7 @@ const { sendUpdateNotifications } = require("../services/email");
 const { sendUpdatePushNotifications } = require("../services/push");
 
 const { adminRequired } = require("../middleware/auth");
+const { createApiError } = require("../middleware/apiEnvelope");
 
 // Rate limiter for admin update creation
 // Prevents admin update spam: 5 updates per admin per hour
@@ -36,7 +37,7 @@ router.get("/:projectId", async (req, res, next) => {
       "SELECT * FROM project_updates WHERE project_id = $1 ORDER BY created_at DESC",
       [req.params.projectId],
     );
-    res.json({ success: true, data: result.rows.map(mapProjectUpdateRow) });
+    res.json(result.rows.map(mapProjectUpdateRow));
   } catch (e) {
     next(e);
   }
@@ -49,18 +50,20 @@ router.post("/", adminRequired, updateCreationLimiter, async (req, res, next) =>
     const { projectId, title, body } = req.body;
 
     if (!projectId || typeof projectId !== "string") {
-      return res.status(400).json({ error: "projectId is required" });
+      throw createApiError(400, "PROJECT_ID_REQUIRED", "projectId is required");
     }
     if (!title || typeof title !== "string" || !title.trim()) {
-      return res.status(400).json({ error: "title is required" });
+      throw createApiError(400, "TITLE_REQUIRED", "title is required");
     }
     if (!body || typeof body !== "string" || !body.trim()) {
-      return res.status(400).json({ error: "body is required" });
+      throw createApiError(400, "BODY_REQUIRED", "body is required");
     }
 
     // Verify project exists
     const projResult = await pool.query("SELECT * FROM projects WHERE id = $1", [projectId]);
-    if (!projResult.rows[0]) return res.status(404).json({ error: "Project not found" });
+    if (!projResult.rows[0]) {
+      throw createApiError(404, "PROJECT_NOT_FOUND", "Project not found");
+    }
     const project = mapProjectRow(projResult.rows[0]);
 
     // Insert update
@@ -89,7 +92,7 @@ router.post("/", adminRequired, updateCreationLimiter, async (req, res, next) =>
       console.error("[updates] Failed to send push notifications:", err.message);
     });
 
-    res.status(201).json({ success: true, data: update });
+    res.status(201).json(update);
   } catch (e) {
     next(e);
   }
@@ -102,7 +105,7 @@ router.get("/:projectId", async (req, res, next) => {
       "SELECT * FROM project_updates WHERE project_id = $1 ORDER BY created_at DESC",
       [req.params.projectId],
     );
-    res.json({ success: true, data: result.rows.map(mapProjectUpdateRow) });
+    res.json(result.rows.map(mapProjectUpdateRow));
   } catch (e) {
     next(e);
   }
@@ -114,7 +117,7 @@ router.post("/:updateId/like", likeLimiter, async (req, res, next) => {
   try {
     const { donorAddress } = req.body || {};
     if (!donorAddress || typeof donorAddress !== "string") {
-      return res.status(400).json({ error: "donorAddress is required" });
+      throw createApiError(400, "DONOR_ADDRESS_REQUIRED", "donorAddress is required");
     }
 
     const updateResult = await pool.query(
@@ -122,7 +125,7 @@ router.post("/:updateId/like", likeLimiter, async (req, res, next) => {
       [req.params.updateId],
     );
     if (!updateResult.rows[0]) {
-      return res.status(404).json({ error: "Update not found" });
+      throw createApiError(404, "UPDATE_NOT_FOUND", "Update not found");
     }
 
     // Check if already liked
@@ -152,11 +155,8 @@ router.post("/:updateId/like", likeLimiter, async (req, res, next) => {
     );
 
     res.json({
-      success: true,
-      data: {
-        liked: !existing.rows[0],
-        likeCount: parseInt(countResult.rows[0].count),
-      },
+      liked: !existing.rows[0],
+      likeCount: parseInt(countResult.rows[0].count),
     });
   } catch (e) {
     next(e);
@@ -180,11 +180,8 @@ router.get("/:updateId/likes", async (req, res, next) => {
       liked = !!existing.rows[0];
     }
     res.json({
-      success: true,
-      data: {
-        likeCount: parseInt(countResult.rows[0].count),
-        liked,
-      },
+      likeCount: parseInt(countResult.rows[0].count),
+      liked,
     });
   } catch (e) {
     next(e);

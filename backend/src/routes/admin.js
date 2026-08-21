@@ -5,6 +5,7 @@ const pool = require("../db/pool");
 const { signToken, adminRequired } = require("../middleware/auth");
 const { createRateLimiter } = require("../middleware/rateLimiter");
 const { validate } = require("../middleware/validate");
+const { createApiError } = require("../middleware/apiEnvelope");
 const { AdminLoginSchema, AdminRefreshSchema, AdminAuditQuerySchema } = require("../schemas/admin");
 const { logAdminAction } = require("../services/audit");
 const { enqueueAISummary } = require("../services/summaryQueue");
@@ -20,23 +21,20 @@ router.post("/login", loginLimiter, validate(AdminLoginSchema), (req, res) => {
   const adminPass = process.env.ADMIN_PASSWORD;
 
   if (!adminPass) {
-    return res.status(503).json({ error: "Admin authentication not configured on this server" });
+    throw createApiError(503, "ADMIN_AUTH_NOT_CONFIGURED", "Admin authentication not configured on this server");
   }
 
   if (username !== adminUser || password !== adminPass) {
-    return res.status(401).json({ error: "Invalid credentials" });
+    throw createApiError(401, "INVALID_CREDENTIALS", "Invalid credentials");
   }
 
   const token = signToken({ role: "admin", sub: adminUser }, TOKEN_EXPIRY);
   const refreshToken = signToken({ role: "admin", sub: adminUser, type: "refresh" }, REFRESH_EXPIRY);
 
   res.json({
-    success: true,
-    data: {
-      token,
-      refreshToken,
-      expiresIn: 3600,
-    },
+    token,
+    refreshToken,
+    expiresIn: 3600,
   });
 });
 
@@ -83,15 +81,14 @@ router.get("/audit", adminRequired, validate(AdminAuditQuerySchema, { source: "q
       createdAt: new Date(row.created_at).toISOString(),
     }));
 
-    res.json({
-      success: true,
-      data: rows,
+    res.apiMeta({
       pagination: {
         total: parseInt(countResult.rows[0].total, 10),
         limit: Number.parseInt(limit, 10) || 50,
         offset: Number.parseInt(offset, 10) || 0,
       },
     });
+    res.json(rows);
   } catch (e) {
     next(e);
   }
@@ -133,15 +130,14 @@ router.get("/ai-summary-failures", adminRequired, async (req, res, next) => {
       resolvedAt: row.resolved_at ? new Date(row.resolved_at).toISOString() : null,
     }));
 
-    res.json({
-      success: true,
-      data: rows,
+    res.apiMeta({
       pagination: {
         total: parseInt(countResult.rows[0].total, 10),
         limit,
         offset,
       },
     });
+    res.json(rows);
   } catch (e) {
     next(e);
   }
@@ -161,10 +157,10 @@ router.post("/ai-summary-failures/:id/retry", adminRequired, async (req, res, ne
     );
     const failure = failureResult.rows[0];
     if (!failure) {
-      return res.status(404).json({ error: "Failure record not found" });
+      throw createApiError(404, "AI_SUMMARY_FAILURE_NOT_FOUND", "Failure record not found");
     }
     if (failure.status === "retried") {
-      return res.status(409).json({ error: "Failure has already been retried" });
+      throw createApiError(409, "AI_SUMMARY_FAILURE_ALREADY_RETRIED", "Failure has already been retried");
     }
 
     await enqueueAISummary(failure.project_id, failure.payload || {});
@@ -186,7 +182,7 @@ router.post("/ai-summary-failures/:id/retry", adminRequired, async (req, res, ne
       ipAddress: req.ip,
     });
 
-    res.json({ success: true, data: { status: "retried" } });
+    res.json({ status: "retried" });
   } catch (e) {
     next(e);
   }
@@ -195,31 +191,25 @@ router.post("/ai-summary-failures/:id/retry", adminRequired, async (req, res, ne
 router.post("/refresh", validate(AdminRefreshSchema), (req, res) => {
   const { refreshToken } = req.body || {};
   if (!refreshToken) {
-    return res.status(400).json({ error: "refreshToken is required" });
+    throw createApiError(400, "REFRESH_TOKEN_REQUIRED", "refreshToken is required");
   }
 
   try {
     const decoded = require("../middleware/auth").verifyToken(refreshToken);
     if (decoded.type !== "refresh") {
-      return res.status(401).json({ error: "Invalid refresh token" });
+      throw createApiError(401, "INVALID_REFRESH_TOKEN", "Invalid refresh token");
     }
     const token = signToken({ role: "admin", sub: decoded.sub }, TOKEN_EXPIRY);
-    res.json({
-      success: true,
-      data: { token, expiresIn: 3600 },
-    });
+    res.json({ token, expiresIn: 3600 });
   } catch {
-    return res.status(401).json({ error: "Invalid or expired refresh token" });
+    throw createApiError(401, "INVALID_REFRESH_TOKEN", "Invalid or expired refresh token");
   }
 });
 
 router.get("/me", adminRequired, (req, res) => {
   res.json({
-    success: true,
-    data: {
-      username: req.admin.sub,
-      role: req.admin.role,
-    },
+    username: req.admin.sub,
+    role: req.admin.role,
   });
 });
 

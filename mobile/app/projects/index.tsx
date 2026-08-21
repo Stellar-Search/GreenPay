@@ -5,12 +5,11 @@
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
-import axios from 'axios';
 import { useTheme } from '../theme';
 import { useCachedResource } from '../../hooks/useCachedResource';
 import { StaleCacheBanner } from '../../components/StaleCacheBanner';
+import { apiGet } from '../../utils/api';
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
 const CACHE_KEY_PROJECTS = 'projects:list';
 
 interface ClimateProject {
@@ -32,8 +31,7 @@ export default function ProjectsScreen() {
   const [filteredProjects, setFilteredProjects] = useState<ClimateProject[]>([]);
 
   const fetchProjects = useCallback(async () => {
-    const res = await axios.get(`${API_URL}/api/projects`);
-    return res.data.data as ClimateProject[];
+    return apiGet<ClimateProject[]>('/api/projects');
   }, []);
   const {
     data: projects,

@@ -12,13 +12,12 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useCallback } from 'react';
-import axios from 'axios';
 import { useTheme } from './theme';
+import { apiGet } from '../utils/api';
 import { useDonationSync } from '../hooks/useDonationSync';
 import { useCachedResource } from '../hooks/useCachedResource';
 import { StaleCacheBanner } from '../components/StaleCacheBanner';
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
 const CACHE_KEY_PROJECTS = 'home:projects_list';
 
 interface ClimateProject {
@@ -105,8 +104,7 @@ export default function HomeScreen() {
   const { colors } = useTheme();
   const { queue: syncQueue } = useDonationSync();
   const fetchProjects = useCallback(async () => {
-    const res = await axios.get(`${API_URL}/api/projects`);
-    return (res.data.data ?? res.data) as ClimateProject[];
+    return apiGet<ClimateProject[]>('/api/projects');
   }, []);
   const {
     data: projects,

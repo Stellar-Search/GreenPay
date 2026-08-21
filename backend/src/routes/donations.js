@@ -7,6 +7,7 @@ const router  = express.Router();
 const { v4: uuid } = require("uuid");
 const pool = require("../db/pool");
 const { createRateLimiter } = require("../middleware/rateLimiter");
+const { createApiError } = require("../middleware/apiEnvelope");
 const { z } = require("zod");
 const { validateBody, validate } = require("../middleware/validate");
 const { DonationCreateSchema } = require("../schemas/donations");
@@ -44,9 +45,7 @@ async function recordDonation(req, res, next) {
 
     const projectResult = await pool.query("SELECT id FROM projects WHERE id = $1", [projectId]);
     if (!projectResult.rows[0]) {
-      const e = new Error("Project not found");
-      e.status = 404;
-      throw e;
+      throw createApiError(404, "PROJECT_NOT_FOUND", "Project not found");
     }
 
     let result;
@@ -73,7 +72,8 @@ async function recordDonation(req, res, next) {
         );
         if (existing.rows[0]) {
           logger.info({ msg: "donation deduplicated", transactionHash, donationId: existing.rows[0].event_id });
-          return res.json({ success: true, data: { id: existing.rows[0].event_id, ...existing.rows[0].payload.data }, deduplicated: true });
+          res.apiMeta({ deduplicated: true });
+          return res.json({ id: existing.rows[0].event_id, ...existing.rows[0].payload.data });
         }
       }
       throw err;
@@ -81,15 +81,14 @@ async function recordDonation(req, res, next) {
 
     if (result.deduplicated) {
       logger.info({ msg: "donation deduplicated", transactionHash });
-      return res.json({ success: true, data: result.data, deduplicated: true });
+      res.apiMeta({ deduplicated: true });
+      return res.json(result.data);
     }
 
     const donationEvents = result.events || [];
     const mainEvent = donationEvents.find((e) => e.eventType === "DonationRecorded");
     if (!mainEvent) {
-      const e = new Error("Expected DonationRecorded event not produced");
-      e.status = 500;
-      throw e;
+      throw createApiError(500, "DONATION_EVENT_MISSING", "Expected DonationRecorded event not produced");
     }
 
     const io = req.app?.get("io");
@@ -111,7 +110,7 @@ async function recordDonation(req, res, next) {
       transactionHash,
     });
 
-    res.status(201).json({ success: true, data: { id: mainEvent.eventId, ...mainEvent.data } });
+    res.status(201).json({ id: mainEvent.eventId, ...mainEvent.data });
   } catch (e) {
     logger.error({ msg: "donation failed", error: e.message, status: e.status || 500 });
     next(e);
@@ -134,7 +133,7 @@ router.get("/project/:projectId/messages", async (req, res, next) => {
        LIMIT $2`,
       [req.params.projectId, limit],
     );
-    res.json({ success: true, data: result.rows.map(mapDonationRow) });
+    res.json(result.rows.map(mapDonationRow));
   } catch (e) {
     next(e);
   }
@@ -164,7 +163,8 @@ router.get("/project/:projectId", async (req, res, next) => {
     const result = hasMore ? donations.slice(0, limit) : donations;
     const nextCursor = hasMore ? result[result.length - 1].createdAt : null;
 
-    res.json({ success: true, data: result, nextCursor });
+    res.apiMeta({ nextCursor });
+    res.json(result);
   } catch (e) {
     next(e);
   }
@@ -179,7 +179,7 @@ router.get("/donor/:publicKey", validate(donorKeyParamsSchema, { source: "params
        ORDER BY created_at DESC`,
       [req.params.publicKey],
     );
-    res.json({ success: true, data: result.rows.map(mapDonationRow) });
+    res.json(result.rows.map(mapDonationRow));
   } catch (e) { next(e); }
 });
 

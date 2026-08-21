@@ -5,10 +5,8 @@
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
-import axios from 'axios';
+import { apiGet, API_URL, parseApiFetchResponse } from '../../utils/api';
 import { getPushToken, followProject, unfollowProject } from '../../utils/notifications';
-
-const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
 
 interface ClimateProject {
   id: string;
@@ -58,12 +56,9 @@ export default function ProjectDetailScreen() {
   const checkFollowStatus = async (projectId: string, token: string) => {
     try {
       const response = await fetch(`${API_URL}/api/notifications/follows?token=${token}`);
-      const data = await response.json();
-      if (data.success) {
-        const followedProjects = data.data;
-        const isFollowed = followedProjects.some((p: any) => p.id === projectId);
-        setIsFollowing(isFollowed);
-      }
+      const followedProjects = await parseApiFetchResponse<Array<{ id: string }>>(response);
+      const isFollowed = followedProjects.some((p) => p.id === projectId);
+      setIsFollowing(isFollowed);
     } catch (error) {
       console.error('Error checking follow status:', error);
     }
@@ -71,8 +66,8 @@ export default function ProjectDetailScreen() {
 
   const loadProject = async (projectId: string) => {
     try {
-      const res = await axios.get(`${API_URL}/api/projects/${projectId}`);
-      setProject(res.data.data);
+      const data = await apiGet<ClimateProject>(`/api/projects/${projectId}`);
+      setProject(data);
     } catch (error) {
       console.error('Error loading project:', error);
     } finally {

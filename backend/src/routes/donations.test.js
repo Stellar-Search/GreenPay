@@ -48,12 +48,33 @@ function createMockResponse() {
   return {
     statusCode: 200,
     body: null,
+    meta: undefined,
     status(code) {
       this.statusCode = code;
       return this;
     },
+    apiMeta(meta) {
+      this.meta = meta;
+      return this;
+    },
     json(payload) {
-      this.body = payload;
+      if (this.statusCode >= 400) {
+        this.body = {
+          success: false,
+          error: {
+            code: payload.code || "ERROR",
+            message: payload.message || payload.error,
+          },
+        };
+      } else {
+        this.body = {
+          success: true,
+          data: payload,
+        };
+        if (this.meta !== undefined) {
+          this.body.meta = this.meta;
+        }
+      }
       return this;
     },
   };
@@ -64,7 +85,7 @@ async function invokeRecordDonation(body) {
   const res = createMockResponse();
   const next = jest.fn((err) => {
     if (err) {
-      res.status(err.status || 500).json({ error: err.message || "Internal server error" });
+      res.status(err.status || 500).json({ code: err.code || "ERROR", message: err.message || "Internal server error" });
     }
   });
 
@@ -190,7 +211,7 @@ describe("POST /api/donations", () => {
 
     expect(next).toHaveBeenCalledTimes(1);
     expect(res.statusCode).toBe(404);
-    expect(res.body.error).toBe("Project not found");
+    expect(res.body.error).toMatchObject({ code: "PROJECT_NOT_FOUND", message: "Project not found" });
     expect(execute).not.toHaveBeenCalled();
   });
 
@@ -204,7 +225,7 @@ describe("POST /api/donations", () => {
 
     expect(next).toHaveBeenCalledTimes(1);
     expect(res.statusCode).toBe(400);
-    expect(res.body.error).toBe("Invalid Stellar public key");
+    expect(res.body.error).toMatchObject({ code: "VALIDATION_FAILED", message: "Invalid Stellar public key" });
     expect(pool.query).not.toHaveBeenCalled();
   });
 
@@ -218,7 +239,7 @@ describe("POST /api/donations", () => {
 
     expect(next).toHaveBeenCalledTimes(1);
     expect(res.statusCode).toBe(400);
-    expect(res.body.error).toBe("Invalid transaction hash");
+    expect(res.body.error).toMatchObject({ code: "VALIDATION_FAILED", message: "Invalid transaction hash" });
     expect(pool.query).not.toHaveBeenCalled();
   });
 
@@ -248,7 +269,7 @@ describe("POST /api/donations", () => {
         amountXlm: 25,
       }),
     );
-    expect(res.body.deduplicated).toBe(true);
+    expect(res.body.meta.deduplicated).toBe(true);
   });
 
   test("propagates command bus failures to the error handler", async () => {

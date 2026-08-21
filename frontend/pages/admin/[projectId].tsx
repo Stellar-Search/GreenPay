@@ -3,7 +3,7 @@ import { useRouter } from "next/router";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import WalletConnect from "@/components/WalletConnect";
-import { createProjectUpdate, fetchProject, fetchProjectDonations, updateProjectStatus, registerProjectOnChain, confirmProjectRegistration, fetchProjectMatches, csrfFetch, isAdminAuthenticated } from "@/lib/api";
+import { confirmProjectRegistration, createProjectUpdate, csrfFetch, fetchProject, fetchProjectDonations, fetchProjectMatches, isAdminAuthenticated, parseApiFetchResponse, registerProjectOnChain, updateProjectStatus } from "@/lib/api";
 import { buildMilestoneTransaction, submitTransaction } from "@/lib/stellar";
 import { useDonationSocket } from "@/hooks/useDonationSocket";
 import { formatCO2, formatXLM, shortenAddress, timeAgo } from "@/utils/format";
@@ -188,9 +188,8 @@ export default function ProjectAdmin({ publicKey, onConnect }: AdminProps) {
         method: "POST",
         body: JSON.stringify({ title: newMilestoneTitle.trim(), percentage: newMilestonePercentage }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to add milestone");
-      setMilestones([...milestones, data.data].sort((a, b) => a.percentage - b.percentage));
+      const data = await parseApiFetchResponse<any>(res);
+      setMilestones([...milestones, data].sort((a, b) => a.percentage - b.percentage));
       setNewMilestoneTitle("");
       setMilestoneActionState("success");
       setTimeout(() => setMilestoneActionState("idle"), 2000);
@@ -222,10 +221,9 @@ export default function ProjectAdmin({ publicKey, onConnect }: AdminProps) {
         method: "POST",
         body: JSON.stringify({ transactionHash: result.hash }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to update milestone status");
+      const data = await parseApiFetchResponse<any>(res);
       
-      setMilestones(milestones.map(m => m.id === milestone.id ? data.data : m));
+      setMilestones(milestones.map(m => m.id === milestone.id ? data : m));
       setMilestoneActionState("success");
       setTimeout(() => setMilestoneActionState("idle"), 2000);
     } catch (e: any) {

@@ -5,6 +5,11 @@ info:
   description: |
     REST API for the Stellar GreenPay climate donation platform.
     Every donation is recorded on the Stellar blockchain via Soroban smart contracts.
+    All `/api/v1/*` JSON responses use a single envelope. Successful responses
+    are `{ success: true, data, meta? }`; error responses are
+    `{ success: false, error: { code, message, details? } }`. The unversioned
+    `/api/*` paths are legacy aliases that redirect to `/api/v1/*`; clients
+    should migrate to `/api/v1/*` and branch on `error.code`, never message text.
   license:
     name: MIT
 
@@ -30,16 +35,44 @@ components:
   schemas:
     Success:
       type: object
+      required: [success, data]
+      additionalProperties: false
       properties:
         success:
           type: boolean
+          enum: [true]
           example: true
+        data:
+          description: Endpoint-specific response payload.
+        meta:
+          type: object
+          additionalProperties: true
+          description: Optional response metadata such as pagination or cursors.
 
     Error:
       type: object
+      required: [success, error]
+      additionalProperties: false
       properties:
+        success:
+          type: boolean
+          enum: [false]
+          example: false
         error:
-          type: string
+          type: object
+          required: [code, message]
+          additionalProperties: false
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code.
+              example: PROJECT_NOT_FOUND
+            message:
+              type: string
+              description: Human-readable display message.
+              example: Project not found
+            details:
+              description: Optional structured diagnostic details.
 
     Project:
       type: object
@@ -477,12 +510,15 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  xdr:
-                    type: string
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          xdr:
+                            type: string
         '500':
           description: Error
           content:
@@ -1456,12 +1492,15 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  message:
-                    type: string
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          message:
+                            type: string
         '400':
           description: Validation error
           content:
@@ -1499,12 +1538,15 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  count:
-                    type: integer
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          count:
+                            type: integer
 
   # ── Jobs ─────────────────────────────────────────────────────────────────────
   /api/jobs:
@@ -1897,5 +1939,8 @@ paths:
                         type: array
                         items:
                           $ref: '#/components/schemas/AuditLog'
-                      pagination:
-                        $ref: '#/components/schemas/Pagination'
+                      meta:
+                        type: object
+                        properties:
+                          pagination:
+                            $ref: '#/components/schemas/Pagination'

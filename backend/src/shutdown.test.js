@@ -36,7 +36,12 @@ describe("createShutdownHandler", () => {
 
   it("drains an in-flight request, stops new connections, and shuts dependencies down in order", async () => {
     let finishRequest;
+    let requestStarted;
+    const started = new Promise((resolve) => {
+      requestStarted = resolve;
+    });
     server = http.createServer((req, res) => {
+      requestStarted();
       new Promise((resolve) => {
         finishRequest = resolve;
       }).then(() => res.end("done"));
@@ -59,7 +64,7 @@ describe("createShutdownHandler", () => {
     });
 
     const inFlight = get(port, "/slow");
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await started;
 
     const shutdownPromise = shutdown("SIGTERM");
     await new Promise((resolve) => setTimeout(resolve, 20));

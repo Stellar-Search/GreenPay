@@ -5,7 +5,6 @@
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, Alert, ActivityIndicator } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import axios from 'axios';
 import NetInfo from '@react-native-community/netinfo';
 import { authenticate } from '../../hooks/useBiometricAuth';
 import { Keypair, Horizon, TransactionBuilder, Networks, Operation, Asset, Memo } from '@stellar/stellar-sdk';
@@ -20,8 +19,8 @@ import {
   updateQueuedDonation,
   QueuedDonation,
 } from '../../utils/donationQueue';
+import { apiGet, apiPost } from '../../utils/api';
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
 const HORIZON_URL = process.env.EXPO_PUBLIC_HORIZON_URL || 'https://horizon-testnet.stellar.org';
 
 interface ClimateProject {
@@ -76,8 +75,7 @@ export default function DonateScreen() {
     setStatusMessage(null);
 
     try {
-      const res = await axios.get(`${API_URL}/api/projects`);
-      const list: ClimateProject[] = Array.isArray(res.data.data) ? res.data.data : [];
+      const list = await apiGet<ClimateProject[]>('/api/projects');
       setProjects(list);
       const initialProjectId = (id as string | undefined) || list[0]?.id;
       setSelectedProjectId(initialProjectId);
@@ -102,7 +100,7 @@ export default function DonateScreen() {
     setStatusType('info');
     setStatusMessage('Confirming your donation with the server...');
     try {
-      await axios.post(`${API_URL}/api/donations`, {
+      await apiPost('/api/donations', {
         projectId: entry.projectId,
         donorAddress: entry.donorAddress,
         amountXLM: entry.amountXLM,
@@ -237,7 +235,7 @@ export default function DonateScreen() {
       console.error('Donation failed:', error);
       setStatusType('error');
       setStatusMessage(
-        error?.response?.data?.message || error?.message || 'Donation failed. Please try again.'
+        error?.message || 'Donation failed. Please try again.'
       );
       setSubmitting(false);
       return;
@@ -246,7 +244,7 @@ export default function DonateScreen() {
     // Horizon has already accepted the payment at this point — it must never
     // be resubmitted, even if the backend confirmation below fails.
     try {
-      await axios.post(`${API_URL}/api/donations`, {
+      await apiPost('/api/donations', {
         projectId: selectedProject.id,
         donorAddress: publicKey,
         amountXLM: formattedAmount,

@@ -29,7 +29,6 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert } from 'react-native';
-import axios from 'axios';
 import { Horizon } from '@stellar/stellar-sdk';
 const StellarServer = (require('@stellar/stellar-sdk') as any).Server || Horizon.Server;
 import {
@@ -45,8 +44,8 @@ import {
   isBalanceSufficient,
 } from '../utils/amount';
 import { useNetworkReconnect } from './useNetworkReconnect';
+import { apiGet } from '../utils/api';
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
 const HORIZON_URL = process.env.EXPO_PUBLIC_HORIZON_URL || 'https://horizon-testnet.stellar.org';
 /** Small reserve added on top of the donation amount to account for network fees. */
 const FEE_BUFFER_XLM = 0.5;
@@ -116,8 +115,7 @@ async function preflightCheck(
   }
 
   try {
-    const projectsRes = await axios.get(`${API_URL}/api/projects`);
-    const list = Array.isArray(projectsRes.data?.data) ? projectsRes.data.data : [];
+    const list = await apiGet<any[]>('/api/projects');
     const project = list.find((p: any) => p.id === entry.projectId);
 
     if (!project || project.status !== 'active') {

@@ -60,7 +60,8 @@ describe('DonateScreen – biometric auth gate', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockSearchParams = { id: 'proj-1' };
-    (axios.get as jest.Mock).mockResolvedValue({ data: { data: [MOCK_PROJECT] } });
+    (axios.get as jest.Mock).mockResolvedValue({ data: { success: true, data: [MOCK_PROJECT] } });
+    (axios.post as jest.Mock).mockResolvedValue({ data: { success: true, data: null } });
     (LocalAuthentication.hasHardwareAsync as jest.Mock).mockResolvedValue(true);
     (LocalAuthentication.isEnrolledAsync as jest.Mock).mockResolvedValue(true);
     (NetInfo.fetch as jest.Mock).mockResolvedValue({ isConnected: true, isInternetReachable: true });
@@ -133,7 +134,8 @@ describe('DonateScreen – offline queueing', () => {
     jest.clearAllMocks();
     mockSearchParams = { id: 'proj-1' };
     await AsyncStorage.clear();
-    (axios.get as jest.Mock).mockResolvedValue({ data: { data: [MOCK_PROJECT] } });
+    (axios.get as jest.Mock).mockResolvedValue({ data: { success: true, data: [MOCK_PROJECT] } });
+    (axios.post as jest.Mock).mockResolvedValue({ data: { success: true, data: null } });
     (LocalAuthentication.hasHardwareAsync as jest.Mock).mockResolvedValue(true);
     (LocalAuthentication.isEnrolledAsync as jest.Mock).mockResolvedValue(true);
   });
@@ -213,7 +215,7 @@ describe('DonateScreen – completing a queued donation ("Complete now")', () =>
     jest.clearAllMocks();
     await AsyncStorage.clear();
     mockSearchParams = { id: 'proj-1' };
-    (axios.get as jest.Mock).mockResolvedValue({ data: { data: [MOCK_PROJECT] } });
+    (axios.get as jest.Mock).mockResolvedValue({ data: { success: true, data: [MOCK_PROJECT] } });
     (LocalAuthentication.hasHardwareAsync as jest.Mock).mockResolvedValue(true);
     (LocalAuthentication.isEnrolledAsync as jest.Mock).mockResolvedValue(true);
     (LocalAuthentication.authenticateAsync as jest.Mock).mockResolvedValue({ success: true });

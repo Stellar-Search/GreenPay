@@ -58,7 +58,7 @@ describe('ProjectsScreen — offline support', () => {
   });
 
   it('does not show Offline banner when network succeeds', async () => {
-    (axios.get as jest.Mock).mockResolvedValue({ data: { data: MOCK_PROJECTS } });
+    (axios.get as jest.Mock).mockResolvedValue({ data: { success: true, data: MOCK_PROJECTS } });
 
     const { queryByText } = renderProjectsScreen();
 
@@ -69,7 +69,7 @@ describe('ProjectsScreen — offline support', () => {
   });
 
   it('writes fresh data to cache on successful load', async () => {
-    (axios.get as jest.Mock).mockResolvedValue({ data: { data: MOCK_PROJECTS } });
+    (axios.get as jest.Mock).mockResolvedValue({ data: { success: true, data: MOCK_PROJECTS } });
 
     renderProjectsScreen();
 
