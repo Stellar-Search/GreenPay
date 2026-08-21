@@ -51,6 +51,7 @@ export default function ProjectDetail({
   const [subscriberCount, setSubscriberCount] = useState<number | null>(null);
   const [showMonthlySetup, setShowMonthlySetup] = useState(false);
   const [subEmail, setSubEmail] = useState("");
+  const [serverOffset, setServerOffset] = useState(0);
   const [countdownNow, setCountdownNow] = useState(Date.now());
   const [campaignForm, setCampaignForm] = useState({
     title: "",
@@ -90,6 +91,9 @@ export default function ProjectDetail({
         setProject(p);
         setUpdates(u);
         setMatches(m);
+        if (p.serverNow) {
+          setServerOffset(p.serverNow - Date.now());
+        }
       })
       .catch(() => router.push("/projects"))
       .finally(() => setLoading(false));
@@ -112,9 +116,9 @@ export default function ProjectDetail({
   }, [id]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => setCountdownNow(Date.now()), 1000);
+    const timer = window.setInterval(() => setCountdownNow(Date.now() + serverOffset), 1000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [serverOffset]);
 
   const handleCopyWallet = async () => {
     if (!project) return;

@@ -149,3 +149,13 @@ see `backend/src/scripts/reconcile-subscriptions.test.js` for exercised
 scenarios (on-time, missed cycle, double charge, date mismatch, unexpected
 charge, and a property-based "perfectly on schedule never flags drift"
 check).
+
+## Campaign Deadlines & Server-Authoritative Time
+
+Like recurring donation schedules, campaign deadlines must not be left to the mercy of a donor's local clock. Browsers can be skewed by arbitrary user settings or host-machine drift, leading to visual countdowns that contradict the backend's enforcement. 
+
+To prevent this:
+1. **Server-Authoritative Enforcement:** The completion status of a campaign is exclusively computed on the backend (e.g., `mapCampaignRow` in `backend/src/routes/projects.js`) by comparing the campaign deadline against the server's `Date.now()`.
+2. **Synchronized Client Countdown:** The API responds with `serverNow: Date.now()` injected into the project response. The frontend derives an offset (`project.serverNow - Date.now()`) and applies this offset to every subsequent tick of the countdown. 
+
+This ensures that the countdown shown in the donor's browser perfectly aligns with the server's strict definition of the deadline, and the "Ends in..." display reaches zero at the exact moment the server begins rejecting new donations.

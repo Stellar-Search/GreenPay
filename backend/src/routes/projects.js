@@ -89,7 +89,7 @@ router.get("/featured", async (req, res, next) => {
   try {
     const now = Date.now();
     if (featuredCache && now < featuredCacheExpiry) {
-      return res.json({ success: true, data: featuredCache });
+      return res.json({ success: true, data: { ...featuredCache, serverNow: Date.now() } });
     }
 
     const result = await pool.query(
@@ -105,7 +105,7 @@ router.get("/featured", async (req, res, next) => {
 
     featuredCache = mapProjectRow(result.rows[0]);
     featuredCacheExpiry = now + 24 * 60 * 60 * 1000; // 24 hours
-    res.json({ success: true, data: featuredCache });
+    res.json({ success: true, data: { ...featuredCache, serverNow: Date.now() } });
   } catch (e) {
     next(e);
   }
@@ -149,7 +149,7 @@ router.get("/", async (req, res, next) => {
 
     const result = await pool.query(query, values);
 
-    res.json({ success: true, data: result.rows.map(mapProjectRow) });
+    res.json({ success: true, data: result.rows.map(row => ({ ...mapProjectRow(row), serverNow: Date.now() })) });
   } catch (e) {
     next(e);
   }
@@ -446,6 +446,7 @@ router.get("/:id", async (req, res, next) => {
       success: true,
       data: {
         ...mapProjectRow(projectResult.rows[0]),
+        serverNow: Date.now(),
         onChainVerified: Boolean(onChainProject) || Boolean(projectResult.rows[0].on_chain_verified),
         contractRegisteredAt: onChainProject ? Number(onChainProject.registered_at) : null,
         totalRaisedOnChain: onChainProject ? stroopsToXlm(onChainProject.total_raised) : "0.0000000",

@@ -61,6 +61,7 @@ export interface ClimateProject {
   aiSummaryGeneratedAt?: string | null;
   aiSummaryModel?: string | null;
   aiSummarySourceHash?: string | null;
+  serverNow?: number;
 }
 
 /**
