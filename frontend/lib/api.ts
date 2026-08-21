@@ -12,6 +12,8 @@ import type {
   EscrowJob,
   ProjectCampaign,
 } from "@/utils/types";
+import { server, NETWORK_PASSPHRASE } from "@/lib/stellar";
+import { TransactionBuilder, Memo } from "@stellar/stellar-sdk";
 
 const api = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000",
@@ -135,10 +137,14 @@ export interface AISummaryResponse {
 export async function generateProjectSummary(
   projectId: string,
   adminAddress: string,
+  authToken?: string,
 ): Promise<AISummaryResponse> {
+  const headers: Record<string, string> = {};
+  if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
   const { data } = await api.post<{ success: boolean; data: AISummaryResponse }>(
     `/api/projects/${projectId}/generate-summary`,
     { adminAddress },
+    { headers },
   );
   return data.data;
 }
@@ -151,10 +157,14 @@ export async function createProjectCampaign(
     deadline: string;
     description?: string;
   },
+  authToken?: string,
 ) {
+  const headers: Record<string, string> = {};
+  if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
   const { data } = await api.post<{ success: boolean; data: ProjectCampaign }>(
     `/api/projects/${projectId}/campaigns`,
     payload,
+    { headers },
   );
   return data.data;
 }
@@ -348,10 +358,30 @@ export async function updateProjectStatus(
   projectId: string,
   status: "active" | "rejected" | "paused",
   reason?: string,
+  authToken?: string,
 ) {
+  const headers: Record<string, string> = {};
+  if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
   const { data } = await api.patch<{ success: boolean; data: ClimateProject }>(
     `/api/projects/${projectId}/status`,
     { status, reason },
+    { headers },
+  );
+  return data.data;
+}
+
+export async function createProjectMilestone(
+  projectId: string,
+  title: string,
+  percentage: number,
+  authToken?: string,
+) {
+  const headers: Record<string, string> = {};
+  if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+  const { data } = await api.post<{ success: boolean; data: any }>(
+    `/api/projects/${projectId}/milestones`,
+    { title, percentage },
+    { headers },
   );
   return data.data;
 }
@@ -534,4 +564,45 @@ export async function fetchTransactionGraph(limit?: number): Promise<Transaction
     { params: limit ? { limit } : undefined },
   );
   return data.data;
+}
+
+// ── Project Owner Authentication ──────────────────────────────────────────────
+export async function authenticateProjectOwner(
+  projectId: string,
+  publicKey: string,
+  signTransaction: (xdr: string) => Promise<string>,
+): Promise<string> {
+  const challengeRes = await api.get<{ success: boolean; data: { nonce: string; walletAddress: string } }>(
+    `/api/projects/${projectId}/auth/challenge`,
+  );
+  const { nonce, walletAddress } = challengeRes.data.data;
+
+  if (walletAddress !== publicKey) {
+    throw new Error("Connected wallet does not match project owner");
+  }
+
+  const source = await server.loadAccount(publicKey);
+  const tx = new TransactionBuilder(source, {
+    fee: "100",
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(
+      Operation.payment({
+        destination: publicKey,
+        asset: Asset.native(),
+        amount: "0.00001",
+      }),
+    )
+    .addMemo(Memo.text(nonce.slice(-28)))
+    .setTimeout(60)
+    .build();
+
+  const signedXDR = await signTransaction(tx.toXDR());
+
+  const verifyRes = await api.post<{ success: boolean; data: { token: string } }>(
+    `/api/projects/${projectId}/auth/verify`,
+    { signedXDR },
+  );
+
+  return verifyRes.data.data.token;
 }

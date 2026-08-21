@@ -11,7 +11,7 @@ import WalletConnect from "@/components/WalletConnect";
 import CircularProgress from "@/components/CircularProgress";
 import MonthlyGivingSetup from "@/components/MonthlyGivingSetup";
 import DescriptionAccordion from "@/components/DescriptionAccordion";
-import { fetchProject, fetchProjectUpdates, subscribeToProject, fetchSubscriberCount, createProjectCampaign, fetchProjectMatches, generateProjectSummary, toggleUpdateLike } from "@/lib/api";
+import { fetchProject, fetchProjectUpdates, subscribeToProject, fetchSubscriberCount, createProjectCampaign, fetchProjectMatches, generateProjectSummary, toggleUpdateLike, authenticateProjectOwner } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import { formatXLM, formatCO2, progressPercent, timeAgo, statusClass, statusLabel, CATEGORY_ICONS, copyToClipboard, shortenAddress } from "@/utils/format";
 import { accountUrl, fetchProjectDiscussion, type ProjectDiscussionMessage } from "@/lib/stellar";
@@ -617,7 +617,18 @@ export default function ProjectDetail({
     setCampaignState("saving");
     setCampaignError(null);
     try {
-      await createProjectCampaign(project.id, campaignForm);
+      let authToken: string | undefined;
+      if (publicKey && publicKey === project.walletAddress) {
+        authToken = await authenticateProjectOwner(
+          project.id,
+          publicKey,
+          async (xdr: string) => {
+            const { signedXDR } = await (window as any).stellarWallets.signTransaction(xdr);
+            return signedXDR;
+          },
+        );
+      }
+      await createProjectCampaign(project.id, campaignForm, authToken);
       const updatedProject = await fetchProject(project.id);
       setProject(updatedProject);
       setCampaignForm({
@@ -1035,7 +1046,15 @@ export default function ProjectDetail({
                       setAiSummaryState("loading");
                       setAiSummaryError(null);
                       try {
-                        const result = await generateProjectSummary(project.id, publicKey);
+                        const token = await authenticateProjectOwner(
+                          project.id,
+                          publicKey,
+                          async (xdr: string) => {
+                            const { signedXDR } = await (window as any).stellarWallets.signTransaction(xdr);
+                            return signedXDR;
+                          },
+                        );
+                        const result = await generateProjectSummary(project.id, publicKey, token);
                         setProject({ ...project, ...result });
                         setAiSummaryState("idle");
                       } catch (err: unknown) {

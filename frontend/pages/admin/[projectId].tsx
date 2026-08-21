@@ -3,7 +3,7 @@ import { useRouter } from "next/router";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import WalletConnect from "@/components/WalletConnect";
-import { createProjectUpdate, fetchProject, fetchProjectDonations, updateProjectStatus, registerProjectOnChain, confirmProjectRegistration, fetchProjectMatches, csrfFetch } from "@/lib/api";
+import { createProjectUpdate, fetchProject, fetchProjectDonations, updateProjectStatus, registerProjectOnChain, confirmProjectRegistration, fetchProjectMatches, csrfFetch, authenticateProjectOwner, createProjectMilestone } from "@/lib/api";
 import { buildMilestoneTransaction, submitTransaction } from "@/lib/stellar";
 import { useDonationSocket } from "@/hooks/useDonationSocket";
 import { formatCO2, formatXLM, shortenAddress, timeAgo } from "@/utils/format";
@@ -60,6 +60,23 @@ export default function ProjectAdmin({ publicKey, onConnect }: AdminProps) {
   const [onChainMessage, setOnChainMessage] = useState<string | null>(null);
 
   const [matches, setMatches] = useState<any[]>([]);
+
+  const [ownerAuthToken, setOwnerAuthToken] = useState<string | null>(null);
+
+  const ensureOwnerAuth = async (): Promise<string> => {
+    if (ownerAuthToken) return ownerAuthToken;
+    if (!publicKey || !projectId || typeof projectId !== "string") throw new Error("Wallet not connected");
+    const token = await authenticateProjectOwner(
+      projectId,
+      publicKey,
+      async (xdr: string) => {
+        const { signedXDR } = await (window as any).stellarWallets.signTransaction(xdr);
+        return signedXDR;
+      },
+    );
+    setOwnerAuthToken(token);
+    return token;
+  };
 
   useEffect(() => {
     if (!projectId || typeof projectId !== "string") return;
@@ -179,13 +196,9 @@ export default function ProjectAdmin({ publicKey, onConnect }: AdminProps) {
     if (!project || !newMilestoneTitle.trim()) return;
     setMilestoneActionState("loading");
     try {
-      const res = await csrfFetch(`${process.env.NEXT_PUBLIC_API_URL || ""}/api/v1/projects/${project.id}/milestones`, {
-        method: "POST",
-        body: JSON.stringify({ title: newMilestoneTitle.trim(), percentage: newMilestonePercentage }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to add milestone");
-      setMilestones([...milestones, data.data].sort((a, b) => a.percentage - b.percentage));
+      const token = await ensureOwnerAuth();
+      const data = await createProjectMilestone(project.id, newMilestoneTitle.trim(), newMilestonePercentage, token);
+      setMilestones([...milestones, data].sort((a, b) => a.percentage - b.percentage));
       setNewMilestoneTitle("");
       setMilestoneActionState("success");
       setTimeout(() => setMilestoneActionState("idle"), 2000);
@@ -234,7 +247,8 @@ export default function ProjectAdmin({ publicKey, onConnect }: AdminProps) {
     setApprovalState("loading");
     setApprovalMessage(null);
     try {
-      const updated = await updateProjectStatus(project.id, "active");
+      const token = await ensureOwnerAuth();
+      const updated = await updateProjectStatus(project.id, "active", undefined, token);
       setProject(updated);
       setApprovalMessage("Project approved successfully");
       setApprovalState("success");
@@ -250,7 +264,8 @@ export default function ProjectAdmin({ publicKey, onConnect }: AdminProps) {
     setApprovalState("loading");
     setApprovalMessage(null);
     try {
-      const updated = await updateProjectStatus(project.id, "rejected", rejectionReason.trim());
+      const token = await ensureOwnerAuth();
+      const updated = await updateProjectStatus(project.id, "rejected", rejectionReason.trim(), token);
       setProject(updated);
       setApprovalMessage("Project rejected");
       setApprovalState("success");

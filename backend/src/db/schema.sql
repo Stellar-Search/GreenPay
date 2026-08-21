@@ -117,6 +117,21 @@ CREATE TABLE IF NOT EXISTS project_milestones (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS project_auth_challenges (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  nonce TEXT NOT NULL UNIQUE,
+  wallet_address TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_auth_challenges_project
+  ON project_auth_challenges (project_id);
+
+CREATE INDEX IF NOT EXISTS idx_project_auth_challenges_expires
+  ON project_auth_challenges (expires_at);
+
 CREATE TABLE IF NOT EXISTS project_ratings (
   id UUID PRIMARY KEY,
   project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
