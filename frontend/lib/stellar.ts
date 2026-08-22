@@ -575,6 +575,18 @@ export function hashMessage(message: string): number {
 }
 
 /**
+ * A Horizon paging token (the opaque cursor Horizon's streaming endpoints
+ * expect). Branded so it can't be confused with — or accidentally passed as
+ * — an unrelated identifier such as a backend donation ID.
+ */
+declare const HORIZON_PAGING_TOKEN_BRAND: unique symbol;
+export type HorizonPagingToken = string & { readonly [HORIZON_PAGING_TOKEN_BRAND]: true };
+
+function toHorizonPagingToken(value: string): HorizonPagingToken {
+  return value as HorizonPagingToken;
+}
+
+/**
  * Stream real-time payments to a wallet address using Horizon SSE.
  * Returns a cleanup function to close the stream.
  */
@@ -582,13 +594,15 @@ export function streamProjectPayments(
   walletAddress: string,
   onPayment: (payment: {
     id: string;
+    pagingToken: HorizonPagingToken;
     from: string;
     amount: string;
     asset: string;
     createdAt: string;
     transactionHash: string;
   }) => void,
-  cursor?: string,
+  cursor?: HorizonPagingToken,
+  onStreamError?: (err: unknown) => void,
 ): () => void {
   const builder = server
     .payments()
@@ -601,6 +615,7 @@ export function streamProjectPayments(
       if (record.type !== "payment" && record.type !== "create_account") return;
       onPayment({
         id: record.id,
+        pagingToken: toHorizonPagingToken(record.paging_token),
         from: record.from || record.funder || record.source_account,
         amount: record.amount || record.starting_balance || "0",
         asset: record.asset_code || "XLM",
@@ -610,6 +625,7 @@ export function streamProjectPayments(
     },
     onerror: (err: any) => {
       console.error("Horizon SSE stream error:", err);
+      onStreamError?.(err);
     },
   });
 
