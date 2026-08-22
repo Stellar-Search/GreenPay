@@ -81,6 +81,14 @@ function isProject(value: unknown): value is ProjectSummary {
 /**
  * Owns the state that may be cached in the MV3 worker. Every mutation is
  * persisted before it is exposed so a terminated worker can reconstruct it.
+ *
+ * Trust boundary:
+ * Session mutations (`setWallet`, `clearWallet`) and worker snapshots represent
+ * privileged operations. The background listener strictly restricts these
+ * messages to extension-page origins (`sender.id === chrome.runtime.id` and
+ * `sender.tab === undefined`, e.g. popup). Untrusted content scripts injected
+ * into arbitrary host web pages are unprivileged and rejected at the messaging
+ * boundary, preventing wallet session poisoning or unauthorized session clearing.
  */
 export class WorkerSessionState {
   private wallet: WalletSession | null = null;
