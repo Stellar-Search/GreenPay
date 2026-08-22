@@ -3,7 +3,7 @@
  * Donation form for a climate project.
  */
 import { useState, useEffect } from "react";
-import { buildDonationTransaction, buildContractDonationTransaction, buildChangeTrustTransaction, submitTransaction, submitAndConfirmDonation, DonationSubmissionError, explorerUrl, getXLMBalance, getAssetBalance, getDonorStats, hashMessage, CONTRACT_ID } from "@/lib/stellar";
+import { buildDonationTransaction, buildContractDonationTransaction, buildChangeTrustTransaction, submitTransaction, submitAndConfirmDonation, DonationSubmissionError, explorerUrl, getXLMBalance, getAssetBalance, getDonorStats, hashMessage, CONTRACT_ID, NATIVE_ASSET_CONTRACT_ID } from "@/lib/stellar";
 import { signTransactionWithWallet } from "@/lib/wallet";
 import { recordDonation } from "@/lib/api";
 import { formatXLM, formatCO2 } from "@/utils/format";
@@ -191,13 +191,11 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
       if (useContract) {
         setStep("building");
 
-        // Get native XLM token address (for testnet/mainnet)
-        const nativeTokenAddress = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"; // Native XLM on testnet
         const msgHash = message.trim() ? hashMessage(message.trim()) : 0;
 
         tx = await buildContractDonationTransaction({
           contractId: CONTRACT_ID,
-          tokenAddress: nativeTokenAddress,
+          tokenAddress: NATIVE_ASSET_CONTRACT_ID,
           donor: publicKey,
           projectId: project.id,
           amount: stroopsToXLM(amountStroops),

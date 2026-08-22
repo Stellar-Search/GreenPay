@@ -1,7 +1,7 @@
 /**
  * lib/stellar.ts — Stellar SDK helpers for GreenPay
  */
-import { Horizon, Networks, Asset, Operation, TransactionBuilder, Transaction, Memo, rpc, Contract, scValToNative, Address, nativeToScVal, Account, xdr } from "@stellar/stellar-sdk";
+import { Horizon, Networks, Asset, Operation, TransactionBuilder, Transaction, Memo, rpc, Contract, scValToNative, Address, nativeToScVal, Account, xdr, StrKey } from "@stellar/stellar-sdk";
 import { parseToStroops } from "@/utils/amount";
 
 export const NETWORK = (process.env.NEXT_PUBLIC_STELLAR_NETWORK || "testnet") as "testnet" | "mainnet";
@@ -15,6 +15,40 @@ export const CONTRACT_ID = process.env.NEXT_PUBLIC_CONTRACT_ID || "";
 
 /** Soroban escrow contract (deploy `contracts/escrow-contract`). */
 export const ESCROW_CONTRACT_ID = process.env.NEXT_PUBLIC_ESCROW_CONTRACT_ID || "";
+
+/**
+ * The Stellar Asset Contract (SAC) address for native XLM is deterministic —
+ * it's derived from the asset and the network passphrase, not a fixed
+ * literal. Deriving it here means a mainnet build automatically gets the
+ * mainnet SAC address instead of silently reusing testnet's.
+ */
+export function getNativeAssetContractId(networkPassphrase: string): string {
+  return Asset.native().contractId(networkPassphrase);
+}
+
+export const NATIVE_ASSET_CONTRACT_ID = getNativeAssetContractId(NETWORK_PASSPHRASE);
+
+/**
+ * Fails fast at import time (rather than at donation time, buried behind a
+ * simulation error) if any configured contract ID isn't even a well-formed
+ * contract address for the active network's passphrase.
+ */
+function assertContractIdsAreWellFormed() {
+  const configured: Array<[string, string]> = [
+    ["NATIVE_ASSET_CONTRACT_ID", NATIVE_ASSET_CONTRACT_ID],
+    ["NEXT_PUBLIC_CONTRACT_ID", CONTRACT_ID],
+    ["NEXT_PUBLIC_ESCROW_CONTRACT_ID", ESCROW_CONTRACT_ID],
+  ];
+  for (const [name, id] of configured) {
+    if (!id) continue; // CONTRACT_ID / ESCROW_CONTRACT_ID are optional
+    if (!StrKey.isValidContract(id)) {
+      throw new Error(
+        `${name} ("${id}") is not a valid contract address for NEXT_PUBLIC_STELLAR_NETWORK=${NETWORK}.`,
+      );
+    }
+  }
+}
+assertContractIdsAreWellFormed();
 
 export async function getXLMBalance(publicKey: string): Promise<string> {
   try {
@@ -166,7 +200,7 @@ export async function buildContractDonationTransaction({
     // Prepare the transaction with simulation results
     return rpc.assembleTransaction(tx, simulated).build();
   } else {
-    throw formatSimulationFailure(simulated);
+    throw formatSimulationFailure(simulated, { contractId });
   }
 }
 
@@ -207,7 +241,7 @@ export async function buildReleaseEscrowTransaction({
   if (rpc.Api.isSimulationSuccess(simulated)) {
     return rpc.assembleTransaction(tx, simulated).build();
   }
-  throw formatSimulationFailure(simulated);
+  throw formatSimulationFailure(simulated, { contractId });
 }
 
 /**
@@ -240,7 +274,10 @@ export async function buildMilestoneTransaction({
 }
 
 /** Maps Soroban simulation errors to short, user-facing messages. */
-export function formatSimulationFailure(simulated: unknown): Error {
+export function formatSimulationFailure(
+  simulated: unknown,
+  context?: { contractId?: string },
+): Error {
   const raw = JSON.stringify(simulated);
   if (/underfunded|insufficient/i.test(raw) && /balance|fee|Fund/i.test(raw)) {
     return new Error(
@@ -257,6 +294,17 @@ export function formatSimulationFailure(simulated: unknown): Error {
   }
   if (raw.includes("Already released")) {
     return new Error("This escrow was already released on-chain.");
+  }
+  // A "MissingValue" storage error while invoking a contract instance is what
+  // Soroban raises when the contract ID has no instance on the currently
+  // configured RPC's network — e.g. NEXT_PUBLIC_STELLAR_NETWORK points at
+  // mainnet but a contract ID was only ever deployed on testnet (or vice
+  // versa). Surface that distinctly from a generic host error.
+  if (/MissingValue/i.test(raw) && /contract instance/i.test(raw)) {
+    const id = context?.contractId ? ` (${context.contractId})` : "";
+    return new Error(
+      `Contract${id} was not found on ${NETWORK}. This usually means NEXT_PUBLIC_STELLAR_NETWORK ("${NETWORK}") doesn't match the network this contract was deployed to.`,
+    );
   }
   if (raw.includes("HostError") || raw.includes("VmValidation")) {
     return new Error(
