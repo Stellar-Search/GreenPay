@@ -286,7 +286,7 @@ jobs:
           working-directory: frontend
       - name: Backend real-transaction integration test
         working-directory: backend
-        run: npx jest src/services/indexerService.integration.test.js --runInBand
+        run: npx jest src/services/indexerService.integration.test.js src/routes/leaderboard.integration.test.js --runInBand
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/greenpay
       - name: Start local Stellar protocol 21 network

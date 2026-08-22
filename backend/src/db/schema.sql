@@ -56,6 +56,11 @@ ALTER TABLE donations ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'com
 ALTER TABLE donations ADD COLUMN IF NOT EXISTS saga_step TEXT NOT NULL DEFAULT 'donation_recorded';
 ALTER TABLE donations ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
+-- Speeds up the leaderboard's period=month/year donor aggregation, which
+-- joins donations onto profiles by donor_address (donor_stats has no
+-- per-donation timestamp, so that path can't read from the aggregate table).
+CREATE INDEX IF NOT EXISTS idx_donations_donor_address ON donations(donor_address);
+
 CREATE TABLE IF NOT EXISTS profiles (
   public_key TEXT PRIMARY KEY,
   display_name TEXT,
