@@ -13,12 +13,14 @@ WORKDIR /app
 
 ENV NODE_ENV production
 
-# Copy package files and production dependencies
+# Copy package files and production dependencies with non-root ownership
 COPY package*.json ./
-COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 
-# Copy source code
-COPY . .
+# Copy source code with non-root ownership
+COPY --chown=node:node . .
+
+USER node
 
 EXPOSE 4000
 

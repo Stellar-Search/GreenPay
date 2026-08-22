@@ -87,14 +87,26 @@ export default function RecurringScreen() {
   const [donations, setDonations] = useState<RecurringDonation[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    const all = await loadRecurringDonations();
-    setDonations(all.filter((d) => d.status === 'active'));
-    setLoading(false);
-  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      let isActive = true;
 
-  useFocusEffect(refresh);
+      const refresh = async () => {
+        setLoading(true);
+        const all = await loadRecurringDonations();
+        if (isActive) {
+          setDonations(all.filter((d) => d.status === 'active'));
+          setLoading(false);
+        }
+      };
+
+      refresh();
+
+      return () => {
+        isActive = false;
+      };
+    }, [])
+  );
 
   const handleCancel = async (id: string) => {
     await cancelRecurringDonation(id);

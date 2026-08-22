@@ -1,0 +1,40 @@
+name: 'Setup Node & Install Dependencies'
+description: 'Sets up Node.js with npm caching and runs npm ci, with a clear diagnostic when package.json and package-lock.json are out of sync'
+
+inputs:
+  working-directory:
+    description: 'Directory containing package.json and package-lock.json'
+    required: true
+  node-version:
+    description: 'Node.js version to install'
+    required: false
+    default: '20'
+
+runs:
+  using: 'composite'
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: 'npm'
+        cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+    - name: Install dependencies (npm ci)
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        set +e
+        npm_output=$(npm ci 2>&1)
+        status=$?
+        set -e
+
+        echo "$npm_output"
+
+        if [ $status -ne 0 ]; then
+          if echo "$npm_output" | grep -qiE "EUSAGE|in sync|Missing:"; then
+            echo "::error::npm ci failed in '${{ inputs.working-directory }}' because package.json and package-lock.json are out of sync. Run 'npm install' inside that directory and commit the updated package-lock.json."
+          else
+            echo "::error::npm ci failed in '${{ inputs.working-directory }}' for a reason unrelated to lockfile sync — see the log above for details."
+          fi
+          exit $status
+        fi

@@ -302,8 +302,15 @@ async function generatePreSignedTransactions({
  */
 function startTurretsServer(port = 3001) {
   const express = require("express");
+  const {
+    apiEnvelope,
+    createApiError,
+    errorHandler,
+    notFoundHandler,
+  } = require("../middleware/apiEnvelope");
   const app = express();
 
+  app.use(apiEnvelope({ shouldEnvelope: () => true }));
   app.use(express.json());
   app.use(require("cors")());
 
@@ -313,18 +320,25 @@ function startTurretsServer(port = 3001) {
   });
 
   // txFunction endpoint for matching donations
-  app.post("/txfunction/matchDonation", async (req, res) => {
+  app.post("/txfunction/matchDonation", async (req, res, next) => {
     try {
       const result = await matchDonationTxFunction(req.body);
+      if (result.success === false) {
+        throw createApiError(
+          422,
+          "MATCHING_PAYMENT_UNAVAILABLE",
+          result.reason || result.error || "Matching payment unavailable",
+          result
+        );
+      }
       res.json(result);
     } catch (error) {
-      console.error("Error in txFunction:", error);
-      res.status(500).json({ error: error.message });
+      next(error);
     }
   });
 
   // Endpoint to generate pre-signed transactions
-  app.post("/admin/presign", async (req, res) => {
+  app.post("/admin/presign", async (req, res, next) => {
     try {
       const {
         matcherAddress,
@@ -336,7 +350,11 @@ function startTurretsServer(port = 3001) {
       } = req.body;
 
       if (!matcherAddress || !matcherSecret || !projectWallet) {
-        return res.status(400).json({ error: "Missing required parameters" });
+        throw createApiError(
+          400,
+          "MISSING_REQUIRED_PARAMETERS",
+          "Missing required parameters"
+        );
       }
 
       const transactions = await generatePreSignedTransactions({
@@ -348,12 +366,14 @@ function startTurretsServer(port = 3001) {
         projectId
       });
 
-      res.json({ success: true, transactions });
+      res.json({ transactions });
     } catch (error) {
-      console.error("Error generating pre-signed transactions:", error);
-      res.status(500).json({ error: error.message });
+      next(error);
     }
   });
+
+  app.use(notFoundHandler);
+  app.use(errorHandler);
 
   app.listen(port, () => {
     console.log(`Turrets server listening on port ${port}`);

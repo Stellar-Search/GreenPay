@@ -7,12 +7,21 @@
 "use strict";
 
 const crypto = require("crypto");
+const { v4: uuid } = require("uuid");
 const PgBoss = require("pg-boss");
 const pool = require("../db/pool");
 const { generateProjectSummary } = require("./claude");
 const { logAdminAction } = require("./audit");
+const { logger: rootLogger, getCorrelationId, runWithCorrelationId } = require("../utils/logger");
+
+const logger = rootLogger.child({ service: "summary-queue" });
 
 const QUEUE = "ai-summary";
+const DEAD_LETTER_QUEUE = "ai-summary-dlq";
+const RETRY_LIMIT = 3;
+const RETRY_DELAY = 10;
+
+const ALERT_WEBHOOK_URL = process.env.SUMMARY_FAILURE_ALERT_WEBHOOK_URL || "";
 
 let boss = null;
 
@@ -29,12 +38,49 @@ async function start(io) {
 
   boss = new PgBoss(connectionString);
 
-  boss.on("error", (err) => console.error("[summaryQueue] pg-boss error:", err.message));
+  boss.on("error", (err) => logger.error({ msg: "pg-boss error", error: err.message }));
 
   await boss.start();
 
-  await boss.work(QUEUE, { teamSize: 2, teamConcurrency: 1 }, async (job) => {
-    const { projectId, name, category, description, adminAddress } = job.data;
+  // pg-boss v10 requires queues to be created before send()/work() will do
+  // anything with them — createQueue() is what wires up retryLimit/retryDelay
+  // and the deadLetter routing below. The dead-letter queue must be created
+  // first: pg-boss's own schema has a foreign key from a queue's
+  // `dead_letter` column to another queue's name, so ai-summary-dlq has to
+  // exist before ai-summary can reference it.
+  await boss.createQueue(DEAD_LETTER_QUEUE);
+  await boss.createQueue(QUEUE, { retryLimit: RETRY_LIMIT, retryDelay: RETRY_DELAY, deadLetter: DEAD_LETTER_QUEUE });
+
+  await boss.work(QUEUE, { teamSize: 2, teamConcurrency: 1 }, handleSummaryJob(io));
+  await boss.work(DEAD_LETTER_QUEUE, { includeMetadata: true }, handlePermanentFailure);
+
+  logger.info({ msg: "pg-boss started, worker registered", queue: QUEUE });
+}
+
+function handleSummaryJob(io) {
+  // pg-boss v10 always invokes a work() callback with an array of jobs (the
+  // fetched batch), even when exactly one job was fetched — never a bare job.
+  return async (jobs) => {
+    for (const job of jobs) {
+      await processSummaryJob(io, job);
+    }
+  };
+}
+
+async function processSummaryJob(io, job) {
+  const { projectId, name, category, description, adminAddress, correlationId } = job.data;
+
+  // Re-enter the original correlation context so every log line emitted
+  // during this job (including retries in later sessions) carries the id
+  // that was set when the HTTP request that triggered the job was handled.
+  // runWithCorrelationId is a no-op when correlationId is falsy (jobs
+  // enqueued before this change have no id).
+  const run = (fn) =>
+    correlationId ? runWithCorrelationId(correlationId, fn) : fn();
+
+  await run(async () => {
+    const jobLogger = logger.child({ projectId, jobId: job.id });
+    jobLogger.info({ msg: "summary job started" });
 
     let summaryResult;
     try {
@@ -42,10 +88,10 @@ async function start(io) {
     } catch (err) {
       if (err.code === "MISSING_API_KEY") {
         // Permanent misconfiguration — log and give up without retrying.
-        console.error("[summaryQueue] ANTHROPIC_API_KEY not set; skipping job", projectId);
+        jobLogger.error({ msg: "ANTHROPIC_API_KEY not set; skipping job" });
         return;
       }
-      throw err; // pg-boss will retry according to retryLimit
+      throw err; // pg-boss will retry according to retryLimit, then dead-letter
     }
 
     const sourceHash = crypto
@@ -85,9 +131,80 @@ async function start(io) {
       metadata: { model: summaryResult.model },
       ipAddress: null,
     });
+
+    jobLogger.info({ msg: "summary job completed", model: summaryResult.model });
+  });
+}
+
+/**
+ * Runs once a summary-generation job has exhausted RETRY_LIMIT attempts and
+ * pg-boss has routed it to the dead-letter queue. Records the failure where
+ * project admins can see it, logs it distinctly from a normal in-progress
+ * retry, and fires the alerting hook.
+ */
+async function handlePermanentFailure(jobs) {
+  for (const job of jobs) {
+    await recordPermanentFailure(job);
+  }
+}
+
+async function recordPermanentFailure(job) {
+  const { projectId, ...payload } = job.data || {};
+  const error = job.output || {};
+  const correlationId = payload.correlationId;
+
+  const failLogger = logger.child({ projectId, ...(correlationId && { correlationId }) });
+
+  failLogger.error({
+    msg: "job permanently failed after exhausting retries",
+    error: error.message || "unknown error",
   });
 
-  console.log("[summaryQueue] pg-boss started, worker registered on queue:", QUEUE);
+  try {
+    await pool.query(
+      `INSERT INTO ai_summary_job_failures (id, project_id, payload, error_message, error_stack)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [uuid(), projectId, JSON.stringify(payload), error.message || null, error.stack || null],
+    );
+  } catch (err) {
+    failLogger.error({ msg: "failed to record permanent job failure", error: err.message });
+  }
+
+  await module.exports.notifyRepeatedFailure({
+    projectId,
+    errorMessage: error.message || "unknown error",
+    retryLimit: RETRY_LIMIT,
+  });
+}
+
+/**
+ * Alerting hook for a summary-generation job that has permanently failed
+ * (i.e. failed repeatedly, exhausting every retry). No third-party alerting
+ * provider exists in this codebase today, so this posts to a generic webhook
+ * when one is configured (mirroring the RESEND_API_KEY-gated pattern in
+ * services/email.js) and otherwise just logs — a clear extension point for
+ * whichever alerting provider is wired up later.
+ */
+async function notifyRepeatedFailure({ projectId, errorMessage, retryLimit }) {
+  if (!ALERT_WEBHOOK_URL) {
+    logger.warn({ msg: "SUMMARY_FAILURE_ALERT_WEBHOOK_URL not set — skipping alert", projectId });
+    return;
+  }
+
+  try {
+    await fetch(ALERT_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        event: "ai_summary_generation_permanently_failed",
+        projectId,
+        errorMessage,
+        retryLimit,
+      }),
+    });
+  } catch (err) {
+    logger.error({ msg: "failed to deliver failure alert", error: err.message });
+  }
 }
 
 /**
@@ -101,8 +218,17 @@ async function enqueueAISummary(projectId, projectData) {
   if (!boss) {
     throw new Error("summaryQueue not started — call start(io) first");
   }
-  const jobId = await boss.send(QUEUE, { projectId, ...projectData }, { retryLimit: 3, retryDelay: 10 });
+  // Capture the correlation id from the current HTTP-request context
+  // (AsyncLocalStorage) and embed it in the job payload so the background
+  // worker can re-enter the same context even sessions later.
+  const correlationId = getCorrelationId();
+  const jobId = await boss.send(
+    QUEUE,
+    { projectId, ...projectData, ...(correlationId && { correlationId }) },
+    { retryLimit: RETRY_LIMIT, retryDelay: RETRY_DELAY, deadLetter: DEAD_LETTER_QUEUE },
+  );
+  logger.info({ msg: "AI summary job enqueued", projectId, jobId });
   return jobId;
 }
 
-module.exports = { start, enqueueAISummary };
+module.exports = { start, enqueueAISummary, notifyRepeatedFailure };

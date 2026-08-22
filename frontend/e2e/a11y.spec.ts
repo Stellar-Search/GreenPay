@@ -135,4 +135,22 @@ test.describe("Accessibility (axe)", () => {
     await page.waitForFunction(() => document.title && document.title.trim().length > 0);
     await assertNoCriticalViolations(page);
   });
+
+  test("donate flow has no critical/serious violations", async ({ page }) => {
+    await mockApi(page);
+    await page.goto(`/donate/${MOCK_PROJECT_ID}`);
+    await assertNoCriticalViolations(page);
+  });
+
+  test("admin dashboard has no critical/serious violations", async ({ page }) => {
+    await mockApi(page);
+    await page.goto("/admin");
+    await assertNoCriticalViolations(page);
+  });
+
+  test("project submission flow has no critical/serious violations", async ({ page }) => {
+    await mockApi(page);
+    await page.goto("/submit-project");
+    await assertNoCriticalViolations(page);
+  });
 });

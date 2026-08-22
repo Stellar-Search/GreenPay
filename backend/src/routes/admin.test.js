@@ -2,20 +2,38 @@
 const express = require("express");
 const request = require("supertest");
 const { signToken, adminRequired } = require("../middleware/auth");
+const { apiEnvelope, errorHandler } = require("../middleware/apiEnvelope");
 
 jest.mock("../middleware/rateLimiter", () => ({
   createRateLimiter: () => (req, res, next) => next(),
+}));
+
+jest.mock("../db/pool", () => ({
+  query: jest.fn(),
+}));
+
+jest.mock("../services/summaryQueue", () => ({
+  enqueueAISummary: jest.fn().mockResolvedValue("job-id"),
 }));
 
 process.env.ADMIN_USERNAME = "admin";
 process.env.ADMIN_PASSWORD = "testpass";
 process.env.JWT_SECRET = "test-secret-for-jest";
 
+const pool = require("../db/pool");
+const { enqueueAISummary } = require("../services/summaryQueue");
+
 function buildApp() {
   const app = express();
   app.use(express.json());
+  app.use(apiEnvelope);
   app.use("/api/admin", require("./admin"));
+  app.use(errorHandler);
   return app;
+}
+
+function adminToken() {
+  return signToken({ role: "admin", sub: "admin" }, "1h");
 }
 
 describe("POST /api/admin/login", () => {
@@ -25,9 +43,9 @@ describe("POST /api/admin/login", () => {
     app = buildApp();
   });
 
-  it("returns 401 when no credentials are sent", async () => {
+  it("returns 400 when no credentials are sent (schema validation)", async () => {
     const res = await request(app).post("/api/admin/login").send({});
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(400);
   });
 
   it("returns 401 for wrong username", async () => {
@@ -122,13 +140,123 @@ describe("GET /api/admin/me", () => {
   });
 });
 
+describe("GET /api/admin/ai-summary-failures", () => {
+  let app;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    app = buildApp();
+  });
+
+  it("returns 401 without a valid admin token", async () => {
+    const res = await request(app).get("/api/admin/ai-summary-failures");
+    expect(res.status).toBe(401);
+    expect(pool.query).not.toHaveBeenCalled();
+  });
+
+  it("returns the paginated list of failed jobs for an authorized admin", async () => {
+    pool.query
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: "failure-1",
+            project_id: "project-1",
+            payload: { name: "Reef Cleanup" },
+            error_message: "content policy rejection",
+            error_stack: "Error: content policy rejection",
+            status: "failed",
+            created_at: new Date("2026-01-01T00:00:00Z"),
+            resolved_at: null,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [{ total: "1" }] });
+
+    const res = await request(app)
+      .get("/api/admin/ai-summary-failures")
+      .set("Authorization", `Bearer ${adminToken()}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0]).toMatchObject({
+      id: "failure-1",
+      projectId: "project-1",
+      errorMessage: "content policy rejection",
+      status: "failed",
+    });
+    expect(res.body.meta.pagination.total).toBe(1);
+  });
+});
+
+describe("POST /api/admin/ai-summary-failures/:id/retry", () => {
+  let app;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    app = buildApp();
+  });
+
+  it("returns 401 without a valid admin token", async () => {
+    const res = await request(app).post("/api/admin/ai-summary-failures/failure-1/retry");
+    expect(res.status).toBe(401);
+    expect(enqueueAISummary).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 when the failure record does not exist", async () => {
+    pool.query.mockResolvedValueOnce({ rows: [] });
+
+    const res = await request(app)
+      .post("/api/admin/ai-summary-failures/missing/retry")
+      .set("Authorization", `Bearer ${adminToken()}`);
+
+    expect(res.status).toBe(404);
+    expect(enqueueAISummary).not.toHaveBeenCalled();
+  });
+
+  it("re-enqueues via enqueueAISummary and marks the failure retried for an authorized admin", async () => {
+    pool.query
+      .mockResolvedValueOnce({
+        rows: [{ id: "failure-1", project_id: "project-1", payload: { name: "Reef Cleanup" }, status: "failed" }],
+      })
+      .mockResolvedValueOnce({ rows: [] }); // UPDATE ... SET status = 'retried'
+
+    const res = await request(app)
+      .post("/api/admin/ai-summary-failures/failure-1/retry")
+      .set("Authorization", `Bearer ${adminToken()}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(enqueueAISummary).toHaveBeenCalledWith("project-1", { name: "Reef Cleanup" });
+    expect(pool.query).toHaveBeenCalledWith(
+      expect.stringContaining("SET status = 'retried'"),
+      ["failure-1"],
+    );
+  });
+
+  it("rejects retrying a failure that was already retried", async () => {
+    pool.query.mockResolvedValueOnce({
+      rows: [{ id: "failure-1", project_id: "project-1", payload: {}, status: "retried" }],
+    });
+
+    const res = await request(app)
+      .post("/api/admin/ai-summary-failures/failure-1/retry")
+      .set("Authorization", `Bearer ${adminToken()}`);
+
+    expect(res.status).toBe(409);
+    expect(enqueueAISummary).not.toHaveBeenCalled();
+  });
+});
+
 describe("adminRequired middleware", () => {
   let app;
 
   beforeEach(() => {
     app = express();
     app.use(express.json());
+    app.use(apiEnvelope);
     app.get("/protected", adminRequired, (req, res) => res.json({ ok: true, user: req.admin }));
+    app.use(errorHandler);
   });
 
   it("allows requests with valid token", async () => {

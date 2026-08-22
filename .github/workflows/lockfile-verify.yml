@@ -1,0 +1,82 @@
+name: Lockfile Verification
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run daily at midnight UTC
+    - cron: '0 0 * * *'
+
+jobs:
+  verify:
+    name: Verify ${{ matrix.ecosystem }} Lockfile
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ecosystem: Backend
+            dir: backend
+            type: npm
+          - ecosystem: Frontend
+            dir: frontend
+            type: npm
+          - ecosystem: Mobile
+            dir: mobile
+            type: npm
+          - ecosystem: Extension
+            dir: extension
+            type: npm
+          - ecosystem: Contracts
+            dir: contracts
+            type: cargo
+          - ecosystem: Scheduler
+            dir: scheduler
+            type: go
+          - ecosystem: Docker
+            dir: .
+            type: docker
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # NPM ecosystems (Backend, Frontend, Mobile, Extension)
+      - name: Verify Node/NPM Lockfile
+        if: matrix.type == 'npm'
+        uses: ./.github/actions/setup-node-install
+        with:
+          working-directory: ${{ matrix.dir }}
+
+      # Cargo ecosystem (Contracts)
+      - name: Setup Rust
+        if: matrix.type == 'cargo'
+        uses: dtolnay/rust-toolchain@stable
+      - name: Verify Cargo Lockfile
+        if: matrix.type == 'cargo'
+        working-directory: ${{ matrix.dir }}
+        run: cargo metadata --locked
+
+      # Go ecosystem (Scheduler)
+      - name: Setup Go
+        if: matrix.type == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: scheduler/go.sum
+      - name: Verify Go Lockfile
+        if: matrix.type == 'go'
+        working-directory: ${{ matrix.dir }}
+        run: go mod verify
+
+      # Docker ecosystem
+      - name: Verify Docker Compose Configuration
+        if: matrix.type == 'docker'
+        run: |
+          docker compose config
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml config
+          test -f backend/Dockerfile
+          test -f frontend/Dockerfile
+          test -f scheduler/Dockerfile

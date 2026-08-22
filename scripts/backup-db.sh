@@ -2,7 +2,8 @@
 
 # Database Backup Script
 # Backs up PostgreSQL database and uploads to S3 or GCS
-# Supports both AWS S3 and Google Cloud Storage
+# Supports AWS S3, Google Cloud Storage, and a 'local' mode (dump stays on
+# disk only) used by scripts/db-restore-drill.sh and CI restore testing.
 
 set -euo pipefail
 
@@ -34,54 +35,6 @@ log_error() {
     echo "[ERROR] $(date '+%Y-%m-%d %H:%M:%S') $1" >&2
 }
 
-# Create backup directory
-mkdir -p "${BACKUP_DIR}"
-
-log_info "Starting database backup..."
-log_info "Database: $DB_NAME on $DB_HOST:$DB_PORT"
-log_info "Backup file: $BACKUP_FILE"
-
-# Export password if provided
-if [ -n "$DB_PASSWORD" ]; then
-    export PGPASSWORD="$DB_PASSWORD"
-fi
-
-# Create the backup
-if ! pg_dump \
-    -h "$DB_HOST" \
-    -p "$DB_PORT" \
-    -U "$DB_USER" \
-    -d "$DB_NAME" \
-    --no-password \
-    | gzip > "$BACKUP_PATH"; then
-    log_error "Database backup failed"
-    exit 1
-fi
-
-log_info "Database backup completed successfully"
-log_info "Backup file size: $(du -h "$BACKUP_PATH" | cut -f1)"
-
-# Upload to cloud storage
-case "$STORAGE_TYPE" in
-    s3)
-        upload_to_s3
-        ;;
-    gcs)
-        upload_to_gcs
-        ;;
-    *)
-        log_error "Unknown storage type: $STORAGE_TYPE"
-        exit 1
-        ;;
-esac
-
-# Cleanup old backups locally
-log_info "Cleaning up local backups older than $RETENTION_DAYS days..."
-find "${BACKUP_DIR}" -name "greenpay_backup_*.sql.gz" -mtime "+${RETENTION_DAYS}" -delete
-log_info "Local backup cleanup completed"
-
-log_info "Database backup and upload completed successfully"
-
 upload_to_s3() {
     if [ -z "$S3_BUCKET" ]; then
         log_error "S3_BUCKET environment variable is not set"
@@ -89,7 +42,7 @@ upload_to_s3() {
     fi
 
     log_info "Uploading backup to S3..."
-    
+
     # Validate AWS CLI is installed
     if ! command -v aws &> /dev/null; then
         log_error "AWS CLI is not installed"
@@ -131,7 +84,7 @@ upload_to_gcs() {
         -h "x-goog-meta-database:${DB_NAME}" \
         cp "$BACKUP_PATH" "$REMOTE_PATH"; then
         log_info "Successfully uploaded to $REMOTE_PATH"
-        
+
         # Set lifecycle policy to delete old backups after RETENTION_DAYS
         # This is handled at the bucket level, not per object
         return 0
@@ -140,3 +93,62 @@ upload_to_gcs() {
         return 1
     fi
 }
+
+upload_to_local() {
+    # No-op: the dump is already at BACKUP_PATH on local disk. Used by
+    # restore drills (scripts/db-restore-drill.sh) and CI so the exact
+    # production backup path can be exercised without cloud credentials.
+    log_info "STORAGE_TYPE=local: keeping backup on local disk only ($BACKUP_PATH)"
+    return 0
+}
+
+# Create backup directory
+mkdir -p "${BACKUP_DIR}"
+
+log_info "Starting database backup..."
+log_info "Database: $DB_NAME on $DB_HOST:$DB_PORT"
+log_info "Backup file: $BACKUP_FILE"
+
+# Export password if provided
+if [ -n "$DB_PASSWORD" ]; then
+    export PGPASSWORD="$DB_PASSWORD"
+fi
+
+# Create the backup
+if ! pg_dump \
+    -h "$DB_HOST" \
+    -p "$DB_PORT" \
+    -U "$DB_USER" \
+    -d "$DB_NAME" \
+    --no-password \
+    | gzip > "$BACKUP_PATH"; then
+    log_error "Database backup failed"
+    exit 1
+fi
+
+log_info "Database backup completed successfully"
+log_info "Backup file size: $(du -h "$BACKUP_PATH" | cut -f1)"
+
+# Upload to cloud storage
+case "$STORAGE_TYPE" in
+    s3)
+        upload_to_s3
+        ;;
+    gcs)
+        upload_to_gcs
+        ;;
+    local)
+        upload_to_local
+        ;;
+    *)
+        log_error "Unknown storage type: $STORAGE_TYPE"
+        exit 1
+        ;;
+esac
+
+# Cleanup old backups locally
+log_info "Cleaning up local backups older than $RETENTION_DAYS days..."
+find "${BACKUP_DIR}" -name "greenpay_backup_*.sql.gz" -mtime "+${RETENTION_DAYS}" -delete
+log_info "Local backup cleanup completed"
+
+log_info "Database backup and upload completed successfully"

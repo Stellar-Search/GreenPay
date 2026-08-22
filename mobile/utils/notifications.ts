@@ -2,8 +2,17 @@
  * utils/notifications.ts
  * Push notification setup and helpers
  */
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
+import { API_URL, parseApiFetchResponse } from './api';
+
+const PENDING_REGISTRATION_KEY = 'greenpay:pendingPushRegistration';
+
+type PendingRegistration = {
+  token: string;
+  walletAddress?: string;
+};
 
 // Configure notification behavior
 Notifications.setNotificationHandler({
@@ -13,6 +22,50 @@ Notifications.setNotificationHandler({
     shouldSetBadge: true,
   }),
 });
+
+async function savePendingRegistration(token: string, walletAddress?: string) {
+  await AsyncStorage.setItem(
+    PENDING_REGISTRATION_KEY,
+    JSON.stringify({ token, walletAddress })
+  );
+}
+
+async function clearPendingRegistration() {
+  await AsyncStorage.removeItem(PENDING_REGISTRATION_KEY);
+}
+
+async function retryPendingRegistration() {
+  const pendingRegistration = await AsyncStorage.getItem(PENDING_REGISTRATION_KEY);
+  if (!pendingRegistration) return;
+
+  try {
+    const { token, walletAddress } = JSON.parse(pendingRegistration) as PendingRegistration;
+    if (token) {
+      await registerDeviceToken(token, walletAddress);
+    }
+  } catch (error) {
+    console.error('Error retrying pending push registration:', error);
+  }
+}
+
+async function postJson(url: string, body: Record<string, unknown>): Promise<boolean> {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+
+  try {
+    await parseApiFetchResponse<unknown>(response);
+  } catch (error) {
+    console.error('Push notification request failed:', error);
+    return false;
+  }
+
+  return true;
+}
 
 /**
  * Request notification permissions
@@ -27,7 +80,7 @@ export async function requestNotificationPermissions(): Promise<string | null> {
   }
   
   if (finalStatus !== 'granted') {
-    console.log('Failed to get push token for push notification!');
+    console.log('Push notification permission denied by user');
     return null;
   }
   
@@ -61,25 +114,25 @@ export async function registerDeviceToken(
   walletAddress?: string
 ): Promise<boolean> {
   try {
-    const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
     const platform = Platform.OS;
     
-    await fetch(`${API_URL}/api/notifications/register`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        token,
-        platform,
-        walletAddress,
-      }),
+    const registered = await postJson(`${API_URL}/api/notifications/register`, {
+      token,
+      platform,
+      walletAddress,
     });
-    
+
+    if (!registered) {
+      await savePendingRegistration(token, walletAddress);
+      return false;
+    }
+
+    await clearPendingRegistration();
     console.log('Device token registered successfully');
     return true;
   } catch (error) {
-    console.error('Error registering device token:', error);
+    console.error('Network error registering device token:', error);
+    await savePendingRegistration(token, walletAddress);
     return false;
   }
 }
@@ -93,24 +146,18 @@ export async function followProject(
   walletAddress?: string
 ): Promise<boolean> {
   try {
-    const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
-    
-    await fetch(`${API_URL}/api/notifications/follow`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        projectId,
-        token,
-        walletAddress,
-      }),
+    const followed = await postJson(`${API_URL}/api/notifications/follow`, {
+      projectId,
+      token,
+      walletAddress,
     });
+
+    if (!followed) return false;
     
     console.log(`Followed project ${projectId}`);
     return true;
   } catch (error) {
-    console.error('Error following project:', error);
+    console.error('Network error following project:', error);
     return false;
   }
 }
@@ -123,23 +170,17 @@ export async function unfollowProject(
   token: string
 ): Promise<boolean> {
   try {
-    const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
-    
-    await fetch(`${API_URL}/api/notifications/unfollow`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        projectId,
-        token,
-      }),
+    const unfollowed = await postJson(`${API_URL}/api/notifications/unfollow`, {
+      projectId,
+      token,
     });
+
+    if (!unfollowed) return false;
     
     console.log(`Unfollowed project ${projectId}`);
     return true;
   } catch (error) {
-    console.error('Error unfollowing project:', error);
+    console.error('Network error unfollowing project:', error);
     return false;
   }
 }
@@ -149,16 +190,8 @@ export async function unfollowProject(
  */
 export async function getFollowedProjects(token: string): Promise<any[]> {
   try {
-    const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
-    
     const response = await fetch(`${API_URL}/api/notifications/follows?token=${token}`);
-    const data = await response.json();
-    
-    if (data.success) {
-      return data.data;
-    }
-    
-    return [];
+    return await parseApiFetchResponse<any[]>(response);
   } catch (error) {
     console.error('Error getting followed projects:', error);
     return [];
@@ -169,9 +202,20 @@ export async function getFollowedProjects(token: string): Promise<any[]> {
  * Set up notification listener
  */
 export function setupNotificationListener() {
-  const subscription = Notifications.addNotificationReceivedListener(notification => {
+  const notificationSubscription = Notifications.addNotificationReceivedListener(notification => {
     console.log('Notification received:', notification);
   });
+
+  const appStateSubscription = AppState.addEventListener('change', state => {
+    if (state === 'active') {
+      retryPendingRegistration();
+    }
+  });
   
-  return subscription;
+  return {
+    remove: () => {
+      notificationSubscription.remove();
+      appStateSubscription.remove();
+    },
+  };
 }

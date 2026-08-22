@@ -1,7 +1,21 @@
 import { isValidStellarAddress } from './stellar-address';
 
 const STELLAR_ADDRESS_REGEX = /\bG[A-Z2-7]{55}\b/g;
-const GENERATED_NODES = new WeakSet<Node>();
+const EXACT_STELLAR_ADDRESS_REGEX = /^G[A-Z2-7]{55}$/;
+export const GENERATED_NODES = new WeakSet<Node>();
+export const ACTIVE_TOOLTIPS = new Map<HTMLSpanElement, HTMLDivElement>();
+
+export function cleanupOrphanedTooltips(): void {
+  for (const [span, tooltip] of ACTIVE_TOOLTIPS.entries()) {
+    const isConnected = span.isConnected ?? (document.body ? document.body.contains(span) : false);
+    if (!isConnected) {
+      if (tooltip.parentNode) {
+        tooltip.parentNode.removeChild(tooltip);
+      }
+      ACTIVE_TOOLTIPS.delete(span);
+    }
+  }
+}
 
 /**
  * Host-page values are untrusted. The scanning regex above is only a cheap
@@ -19,6 +33,7 @@ export function sanitizeStellarAddress(value: unknown): string | null {
 
 function createTooltip(): HTMLDivElement {
   const tooltip = document.createElement('div');
+  GENERATED_NODES.add(tooltip);
   tooltip.className = 'greenpay-tooltip';
   tooltip.textContent = 'Donate to this address via GreenPay';
   tooltip.style.cssText = `
@@ -87,21 +102,26 @@ export function highlightAddresses(node: Node): void {
         transition: all 0.2s ease;
       `;
 
-      let tooltip: HTMLDivElement | null = null;
-
       span.addEventListener('mouseenter', () => {
-        tooltip = createTooltip();
+        const existingTooltip = ACTIVE_TOOLTIPS.get(span);
+        if (existingTooltip && existingTooltip.parentNode) {
+          existingTooltip.parentNode.removeChild(existingTooltip);
+        }
+
+        const tooltip = createTooltip();
         const rect = span.getBoundingClientRect();
         tooltip.style.left = rect.left + rect.width / 2 + 'px';
         tooltip.style.top = rect.top + window.scrollY + 'px';
         document.body.appendChild(tooltip);
+        ACTIVE_TOOLTIPS.set(span, tooltip);
       });
 
       span.addEventListener('mouseleave', () => {
+        const tooltip = ACTIVE_TOOLTIPS.get(span);
         if (tooltip && tooltip.parentNode) {
           tooltip.parentNode.removeChild(tooltip);
         }
-        tooltip = null;
+        ACTIVE_TOOLTIPS.delete(span);
       });
 
       span.addEventListener('click', () => {
@@ -132,7 +152,7 @@ export function highlightAddresses(node: Node): void {
       (node as HTMLElement).tagName
     )
   ) {
-    node.childNodes.forEach(child => highlightAddresses(child));
+    Array.from(node.childNodes).forEach(child => highlightAddresses(child));
   }
 }
 
@@ -146,6 +166,7 @@ export function initContentScript(): void {
   highlightAddresses(document.body);
 
   observer = new MutationObserver((mutations) => {
+    cleanupOrphanedTooltips();
     mutations.forEach((mutation) => {
       mutation.addedNodes.forEach((node) => {
         if (node.nodeType === Node.ELEMENT_NODE || node.nodeType === Node.TEXT_NODE) {
@@ -168,6 +189,13 @@ export function resetContentScriptForTest(): void {
   observer?.disconnect();
   observer = null;
   initialized = false;
+  
+  for (const tooltip of ACTIVE_TOOLTIPS.values()) {
+    if (tooltip.parentNode) {
+      tooltip.parentNode.removeChild(tooltip);
+    }
+  }
+  ACTIVE_TOOLTIPS.clear();
 }
 
 if (document.readyState === 'loading') {

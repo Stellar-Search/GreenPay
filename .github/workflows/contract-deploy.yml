@@ -110,26 +110,32 @@ jobs:
             "git_branch": "${{ github.ref_name }}",
             "contracts": [
               {
-                "name": "greenpay-contract",
-                "wasm_path": "target/wasm32-unknown-unknown/release/greenpay_contract.wasm",
-                "upgradeable": true,
-                "network": "testnet",
-                "requires_migration": false
-              },
-              {
-                "name": "dao-governance-contract",
-                "wasm_path": "target/wasm32-unknown-unknown/release/dao_governance_contract.wasm",
-                "upgradeable": true,
-                "network": "testnet",
-                "requires_migration": false
-              },
-              {
-                "name": "escrow-contract",
-                "wasm_path": "target/wasm32-unknown-unknown/release/escrow_contract.wasm",
-                "upgradeable": true,
-                "network": "testnet",
-                "requires_migration": false
-              }
+              "name": "greenpay-contract",
+              "wasm_path": "target/wasm32-unknown-unknown/release/greenpay_contract.wasm",
+              "upgradeable": true,
+              "upgrade_mechanism": "admin-gated upgrade(new_wasm_hash) entrypoint via env.deployer().update_current_contract_wasm",
+              "upgrade_auth": "admin address set at initialize()",
+              "network": "testnet",
+              "requires_migration": false
+            },
+            {
+              "name": "dao-governance-contract",
+              "wasm_path": "target/wasm32-unknown-unknown/release/dao_governance_contract.wasm",
+              "upgradeable": true,
+              "upgrade_mechanism": "dao_admin-gated upgrade(new_wasm_hash) entrypoint via env.deployer().update_current_contract_wasm",
+              "upgrade_auth": "dao_admin address set at initialize(); route through execute_proposal for on-chain governance",
+              "network": "testnet",
+              "requires_migration": false
+            },
+            {
+              "name": "escrow-contract",
+              "wasm_path": "target/wasm32-unknown-unknown/release/escrow_contract.wasm",
+              "upgradeable": true,
+              "upgrade_mechanism": "admin-gated upgrade(new_wasm_hash) entrypoint via env.deployer().update_current_contract_wasm",
+              "upgrade_auth": "admin address set at initialize()",
+              "network": "testnet",
+              "requires_migration": false
+            }
             ]
           }
           EOF

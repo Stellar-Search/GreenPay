@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 
 export function useAutocomplete<T>(
   fetcher: (query: string) => Promise<T[]>,
@@ -9,8 +9,11 @@ export function useAutocomplete<T>(
   const [loading, setLoading] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
+  const latestQueryRef = useRef(query);
 
   useEffect(() => {
+    latestQueryRef.current = query;
+
     if (query.length < 2) {
       setResults([]);
       setIsOpen(false);
@@ -21,12 +24,19 @@ export function useAutocomplete<T>(
       setLoading(true);
       try {
         const data = await fetcher(query);
+        // Discard responses for a query the user has since moved past —
+        // network jitter can resolve an earlier query after a later one.
+        if (latestQueryRef.current !== query) {
+          return;
+        }
         setResults(data);
         setIsOpen(data.length > 0);
       } catch (error) {
         console.error('Autocomplete fetch error:', error);
       } finally {
-        setLoading(false);
+        if (latestQueryRef.current === query) {
+          setLoading(false);
+        }
       }
     }, delay);
 

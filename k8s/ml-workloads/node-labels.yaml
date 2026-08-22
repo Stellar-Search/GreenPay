@@ -22,6 +22,9 @@
 #     greenpay.io/gpu-vram-mib=81920 \
 #     greenpay.io/gpu-interconnect=nvlink \
 #     greenpay.io/numa-nodes=2 \
+#     greenpay.io/gpu-numa-distribution=4.4 \
+#     greenpay.io/topology-manager-policy=restricted \
+#     greenpay.io/topology-manager-scope=pod \
 #     greenpay.io/network-zone=zone-a \
 #     greenpay.io/network-bandwidth=100 \
 #     greenpay.io/node-tier=gpu-high
@@ -35,6 +38,9 @@
 #     greenpay.io/gpu-vram-mib=16384 \
 #     greenpay.io/gpu-interconnect=pcie \
 #     greenpay.io/numa-nodes=1 \
+#     greenpay.io/gpu-numa-distribution=4 \
+#     greenpay.io/topology-manager-policy=single-numa-node \
+#     greenpay.io/topology-manager-scope=pod \
 #     greenpay.io/network-zone=zone-b \
 #     greenpay.io/network-bandwidth=25 \
 #     greenpay.io/node-tier=gpu-low
@@ -51,7 +57,24 @@
 #
 # ── Verify labels ─────────────────────────────────────────────────────────────
 #
-#   kubectl get nodes -L greenpay.io/gpu-vendor,greenpay.io/gpu-model,greenpay.io/node-tier
+#   kubectl get nodes \
+#     -L greenpay.io/gpu-vendor,greenpay.io/gpu-numa-distribution,greenpay.io/topology-manager-policy
+#
+# The GPU distribution uses dot-separated counts in ascending NUMA domain-ID
+# order. Its entry count must match greenpay.io/numa-nodes and its sum must
+# match greenpay.io/gpu-count.
+#
+# Verify the kubelet policy and scope before applying the matching labels:
+#
+#   NODE=gpu-node-01
+#   kubectl get --raw "/api/v1/nodes/${NODE}/proxy/configz" \
+#     | jq -r '.kubeletconfig
+#       | [.topologyManagerPolicy, .topologyManagerScope]
+#       | @tsv'
+#
+# The scheduler cannot read these kubelet settings from the Node object. The
+# topology-manager labels are operator attestations and must be updated after
+# kubelet configuration changes.
 #
 # ── Note on GPU extended resources ────────────────────────────────────────────
 # If you use the NVIDIA device plugin, nodes automatically advertise
@@ -75,9 +98,12 @@ metadata:
     app.kubernetes.io/part-of: greenpay
     app.kubernetes.io/component: scheduler
 data:
-  schema-version: "v1"
+  schema-version: "v2"
   gpu-vendor-values: "nvidia,amd,google,none"
   gpu-model-values: "a100,h100,v100,t4,l4,tpu-v4"
   interconnect-values: "nvlink,pcie,none"
+  gpu-numa-distribution-format: "dot-separated GPU counts by ascending NUMA ID"
+  topology-manager-policy-values: "none,best-effort,restricted,single-numa-node"
+  topology-manager-scope-values: "container,pod"
   node-tier-values: "gpu-high,gpu-low,cpu-high,cpu-standard"
   workload-type-values: "ml-training,ml-inference,ml-batch,api,db"

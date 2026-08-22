@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -6,12 +6,18 @@ import {
   initContentScript,
   resetContentScriptForTest,
   sanitizeStellarAddress,
+  GENERATED_NODES,
+  ACTIVE_TOOLTIPS,
 } from './content-script';
 
-// A real, checksum-valid Stellar public key (from Stellar's docs). The old
-// fixture used `G${'A'.repeat(55)}`, which only matched the shape regex and is
+// Real, checksum-valid Stellar public keys. The old fixtures used
+// `G${'A'.repeat(55)}` etc., which only matched the shape regex and are
 // rejected by the StrKey-backed sanitizer.
 const ADDRESS = 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H';
+const SECOND_ADDRESS = 'GDQCDHD4ZRSKWEEX2KDATJRVD5WUJEAYWWKEW5COFQKUHRYR2D3VH5VE';
+const THIRD_ADDRESS = 'GDCK7PXQBWBSPBKZTSCTO6RE67CHS6M3LLEPETS3VHTYVNZRMRF3RRBA';
+const FOURTH_ADDRESS = 'GDE7DDKCF7XGTD4K3TI2GVKIZ7DMA3YJBQKNE6JTXCSJDMC532KXAJ54';
+const FIFTH_ADDRESS = 'GCADBC2WG33DDAN3EJ4SPXLK6T4UBLBAJCO2QBK2BQ4WUAZSNSV65MTG';
 
 // Shape-valid but checksum-invalid — the class of value the sanitizer must
 // reject even though it matches the scanning regex.
@@ -58,6 +64,37 @@ describe('content script hostile-page hardening', () => {
     expect(hook.textContent).toContain('<img src=x onerror=');
   });
 
+  it('highlights every original mixed sibling exactly once', () => {
+    const hook = document.createElement('div');
+    const emphasized = document.createElement('em');
+    emphasized.textContent = SECOND_ADDRESS;
+    const strong = document.createElement('strong');
+    strong.textContent = FOURTH_ADDRESS;
+
+    hook.append(
+      document.createTextNode(`lead ${ADDRESS} tail`),
+      emphasized,
+      document.createTextNode(`middle ${THIRD_ADDRESS} gap`),
+      strong,
+      document.createTextNode(`end ${FIFTH_ADDRESS}`)
+    );
+    document.body.appendChild(hook);
+
+    highlightAddresses(hook);
+
+    const highlightedAddresses = Array.from(
+      hook.querySelectorAll<HTMLSpanElement>('.greenpay-address'),
+      span => span.textContent
+    );
+    expect(highlightedAddresses).toEqual([
+      ADDRESS,
+      SECOND_ADDRESS,
+      THIRD_ADDRESS,
+      FOURTH_ADDRESS,
+      FIFTH_ADDRESS,
+    ]);
+  });
+
   it('sends the validated capture even if the hostile page rewrites injected DOM', () => {
     const hook = document.createElement('div');
     hook.textContent = ADDRESS;
@@ -93,5 +130,81 @@ describe('content script hostile-page hardening', () => {
       action: 'openDonatePopup',
       address: ADDRESS,
     });
+  });
+
+  it('excludes tooltip nodes from re-scanning and performs no additional regex scanning when tooltip mounts/unmounts', async () => {
+    initContentScript();
+    const hook = document.createElement('div');
+    hook.textContent = ADDRESS;
+    document.body.appendChild(hook);
+
+    // Wait for observer
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    const span = hook.querySelector<HTMLSpanElement>('.greenpay-address');
+    expect(span).not.toBeNull();
+
+    // Spy on RegExp.prototype.exec, filtering for the Stellar address regex specifically
+    const originalExec = RegExp.prototype.exec;
+    let stellarRegexCallCount = 0;
+    const execSpy = vi.spyOn(RegExp.prototype, 'exec').mockImplementation(function (this: RegExp, string: string) {
+      if (this.source === '\\bG[A-Z2-7]{55}\\b') {
+        stellarRegexCallCount++;
+      }
+      return originalExec.call(this, string);
+    });
+
+    // Hover over the span to trigger tooltip creation and mounting
+    span!.dispatchEvent(new MouseEvent('mouseenter'));
+
+    const tooltip = document.body.querySelector('.greenpay-tooltip');
+    expect(tooltip).not.toBeNull();
+
+    // Verify the tooltip itself is registered in GENERATED_NODES
+    expect(GENERATED_NODES.has(tooltip!)).toBe(true);
+
+    // Wait for the MutationObserver microtask to flush (which runs on tooltip addition)
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    // Verify no additional address regex scanning was performed due to the tooltip mounting
+    expect(stellarRegexCallCount).toBe(0);
+
+    // Move mouse out to unmount
+    span!.dispatchEvent(new MouseEvent('mouseleave'));
+    expect(document.body.querySelector('.greenpay-tooltip')).toBeNull();
+
+    // Wait for observer flush
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(stellarRegexCallCount).toBe(0);
+
+    execSpy.mockRestore();
+  });
+
+  it('cleans up tooltip when the originating span is detached from the DOM', async () => {
+    initContentScript();
+    const hook = document.createElement('div');
+    hook.textContent = ADDRESS;
+    document.body.appendChild(hook);
+
+    // Wait for observer
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    const span = hook.querySelector<HTMLSpanElement>('.greenpay-address');
+    expect(span).not.toBeNull();
+
+    // Trigger hover to mount tooltip
+    span!.dispatchEvent(new MouseEvent('mouseenter'));
+    expect(document.body.querySelector('.greenpay-tooltip')).not.toBeNull();
+    expect(ACTIVE_TOOLTIPS.has(span!)).toBe(true);
+
+    // Now remove the parent container/span from the document
+    hook.remove();
+
+    // Wait for the MutationObserver to notice the removal and trigger cleanup
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    // The tooltip should be cleaned up from the body and removed from active tooltips
+    expect(document.body.querySelector('.greenpay-tooltip')).toBeNull();
+    expect(ACTIVE_TOOLTIPS.has(span!)).toBe(false);
   });
 });

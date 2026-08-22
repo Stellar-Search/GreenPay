@@ -22,6 +22,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { useDonationSync } from '../hooks/useDonationSync';
 import type { QueuedDonation } from '../utils/donationQueue';
+import { parseAmountToStroops, formatStroopsToXLM, STROOPS_PER_XLM } from '../utils/amount';
 
 function formatDate(ts: number): string {
   return new Date(ts).toLocaleString();
@@ -97,6 +98,22 @@ function QueueCard({
         </>
       )}
 
+      {entry.status === 'conflict' && entry.conflictReason === 'duplicate' && (
+        <>
+          <Text style={styles.conflictText}>
+            {entry.conflictDetail || 'A similar donation already exists in the queue.'}
+          </Text>
+          <View style={styles.actionRow}>
+            <TouchableOpacity style={styles.secondaryBtn} onPress={() => onEditAmount(entry)}>
+              <Text style={styles.secondaryBtnText}>Edit amount</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.dangerBtn} onPress={() => onRemove(entry)}>
+              <Text style={styles.dangerBtnText}>Remove</Text>
+            </TouchableOpacity>
+          </View>
+        </>
+      )}
+
       {entry.status === 'completed' && (
         <Text style={styles.readyText}>
           This donation already went through — it will be removed from the queue.
@@ -114,13 +131,19 @@ export default function SyncConflictsScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      let cancelled = false;
-      (async () => {
+      let isActive = true;
+
+      const runRefresh = async () => {
         await refresh();
-        if (!cancelled) setLoading(false);
-      })();
+        if (isActive) {
+          setLoading(false);
+        }
+      };
+
+      runRefresh();
+
       return () => {
-        cancelled = true;
+        isActive = false;
       };
     }, [refresh])
   );
@@ -132,7 +155,7 @@ export default function SyncConflictsScreen() {
   };
 
   const handleCompleteNow = (entry: QueuedDonation) => {
-    router.push(`/donate/${entry.projectId}`);
+    router.push(`/donate/${entry.projectId}?queueId=${entry.id}`);
   };
 
   const handleEditAmount = (entry: QueuedDonation) => {
@@ -149,12 +172,13 @@ export default function SyncConflictsScreen() {
           text: 'Save',
           onPress: async (value?: string) => {
             const trimmed = (value || '').trim();
-            const parsed = parseFloat(trimmed);
-            if (!trimmed || Number.isNaN(parsed) || parsed < 1) {
+            const parsedStroops = parseAmountToStroops(trimmed);
+            const minStroops = STROOPS_PER_XLM;
+            if (!trimmed || parsedStroops === null || parsedStroops < minStroops) {
               Alert.alert('Invalid amount', 'Please enter a valid amount (minimum 1 XLM).');
               return;
             }
-            await resolve(entry.id, 'edit-amount', { amountXLM: parsed.toFixed(7) });
+            await resolve(entry.id, 'edit-amount', { amountXLM: formatStroopsToXLM(parsedStroops) });
           },
         },
       ],

@@ -9,6 +9,7 @@ const pool = require("../db/pool");
 router.get("/", async (req, res, next) => {
   try {
     const limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
+    const offset = parseInt(req.query.offset, 10) || 0;
     const period = req.query.period || "all";
 
     const periodFilter =
@@ -27,10 +28,10 @@ router.get("/", async (req, res, next) => {
       ${periodFilter}
       GROUP BY p.public_key, p.display_name, p.badges
       ORDER BY total_donated_xlm DESC
-      LIMIT $1
+      LIMIT $1 OFFSET $2
     `;
 
-    const result = await pool.query(query, [limit]);
+    const result = await pool.query(query, [limit, offset]);
     const entries = result.rows.map((p, i) => ({
       rank: i + 1,
       publicKey: p.public_key,
@@ -39,7 +40,7 @@ router.get("/", async (req, res, next) => {
       projectsSupported: p.projects_supported,
       topBadge: p.badges?.[0]?.tier || null,
     }));
-    res.json({ success: true, data: entries });
+    res.json(entries);
   } catch (e) {
     next(e);
   }

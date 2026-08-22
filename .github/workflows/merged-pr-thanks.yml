@@ -1,0 +1,103 @@
+name: Merged PR Thanks
+
+# Posts a short thank-you on a pull request the moment it is merged.
+#
+# Uses pull_request_target rather than pull_request because most contributions
+# arrive from forks, where the pull_request token is read-only and could not
+# post a comment. That trigger runs in the base repository's context with a
+# writable token, which is only safe because this workflow never checks out or
+# executes any code from the pull request — it just reads the event payload and
+# posts a comment.
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  thanks:
+    name: Say thanks
+    runs-on: ubuntu-latest
+    # Closing a pull request without merging it should stay silent.
+    if: github.event.pull_request.merged == true
+    steps:
+      - name: Comment on the merged pull request
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const author = pr.user.login;
+
+            // Only greet people. Automated dependency updates open pull
+            // requests too, and thanking them is noise.
+            if (pr.user.type !== "User") {
+              core.info(`Skipping ${author}: not a person.`);
+              return;
+            }
+
+            // ── Message pool ────────────────────────────────────────────────
+            // Picked at random so the thanks does not read identically every
+            // time. Add or reword freely — nothing else depends on this list.
+            const messages = [
+              "Nice work on this one — thanks for the contribution, keep it up!",
+              "Merged! Really appreciate you taking the time on this.",
+              "Great contribution — thanks for helping move GreenPay forward!",
+              "This is now on `main`. Thanks for the solid work!",
+              "Lovely stuff — thanks for contributing, and keep them coming!",
+              "Shipped! Thanks for putting the effort in on this one.",
+              "Thanks for this contribution — the project is better for it.",
+              "Merged and much appreciated. Keep up the great work!",
+              "Another one in the bag — thank you for contributing!",
+              "Really nice contribution. Thanks for seeing it through!",
+              "Thanks for this! Clean work, and a pleasure to review.",
+              "Merged — thanks for helping make climate giving more transparent.",
+              "Appreciate the contribution. Looking forward to the next one!",
+              "This is in. Thank you for the time and care you put into it!",
+              "Great job on this — thanks for contributing to GreenPay!",
+              "Merged! Contributions like this keep the project healthy.",
+              "Thanks for the fix — and for the clear write-up along with it.",
+              "Landed on `main`. Thanks for the quality work here!",
+              "Nice one! Thanks for contributing, and keep it up.",
+              "Thank you for this contribution — genuinely useful work.",
+              "Merged with thanks. Hope to see more from you soon!",
+              "Good work, and thanks for the contribution to the project!",
+              "This one's in — thanks for helping push GreenPay along.",
+              "Thanks for taking this on. Great to have you contributing!",
+            ];
+
+            const message = messages[Math.floor(Math.random() * messages.length)];
+
+            // author_association reflects the contributor's standing at the
+            // time of the event, so a first pull request still reads as a
+            // first-timer here even though it has just been merged.
+            const firstTime = ["FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER"]
+              .includes(pr.author_association);
+
+            const lines = [`🎉 **Merged — thank you, @${author}!**`, "", message];
+
+            if (firstTime) {
+              lines.push(
+                "",
+                "And congratulations on your **first contribution** to GreenPay 🌱 — " +
+                  "welcome aboard, we're glad to have you.",
+              );
+            }
+
+            lines.push(
+              "",
+              "If you're looking for something to pick up next, the " +
+                `[open issues](https://github.com/${context.repo.owner}/${context.repo.repo}/issues) ` +
+                "are labelled by area and complexity.",
+            );
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body: lines.join("\n"),
+            });
+
+            core.info(`Thanked ${author} on #${pr.number}.`);

@@ -5,8 +5,27 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      dast_target:
+        description: 'Deployed environment URL to DAST-scan (e.g. https://staging.example.com). The scan runs only when this is provided.'
+        required: false
+        default: ''
 
 jobs:
+  docs:
+    name: Contributor Docs (command drift)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      # Asserts every lint/test/build entry point documented in
+      # docs/getting-started.md §7 still exists. No toolchains needed — this only
+      # checks that the commands the doc names are still declared.
+      - run: node scripts/check-documented-commands.js
+
   frontend:
     name: Frontend (Next.js)
     runs-on: ubuntu-latest
@@ -15,12 +34,11 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-node-install
         with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: frontend/package-lock.json
-      - run: npm ci
+          working-directory: frontend
+      - name: npm audit (fail on high/critical)
+        run: npx --yes audit-ci@7.1.0 --high --package-manager npm --config .audit-ci.json
       - run: npm run type-check
       - run: npm run lint
       - run: npm run build
@@ -37,13 +55,10 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-node-install
         with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: frontend/package-lock.json
-      - run: npm ci
-      - run: npx playwright install --with-deps chromium
+          working-directory: frontend
+      - run: npx playwright install chromium
       - run: npm run build
         env:
           NEXT_PUBLIC_STELLAR_NETWORK: testnet
@@ -69,12 +84,11 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-node-install
         with:
-          node-version: "20"
-          cache: "npm"
-          cache-dependency-path: backend/package-lock.json
-      - run: npm ci
+          working-directory: backend
+      - name: npm audit (fail on high/critical)
+        run: npx --yes audit-ci@7.1.0 --high --package-manager npm
       - run: npm run lint
       - run: npm test -- --coverage
       - uses: actions/upload-artifact@v4
@@ -105,6 +119,85 @@ jobs:
       - run: cargo check --workspace
       - run: cargo test --workspace
       - run: cargo build --workspace --target wasm32-unknown-unknown --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: greenpay-contract-wasm
+          path: contracts/target/wasm32-unknown-unknown/release/greenpay_contract.wasm
+          retention-days: 1
+
+  scheduler:
+    name: Go Scheduler
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: scheduler
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: scheduler/go.sum
+      - name: Verify gofmt
+        run: |
+          if [ -n "$(gofmt -l .)" ]; then
+            echo "gofmt formatting violations found:"
+            gofmt -d .
+            exit 1
+          fi
+      - run: go vet ./...
+      - run: go test -v ./...
+      - run: go build -v ./...
+
+  helm:
+    name: Helm Release Guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Lint testnet defaults
+        run: helm lint helm/greenpay --values helm/greenpay/values.yaml
+
+      - name: Lint mainnet overlay
+        run: |
+          helm lint helm/greenpay \
+            --values helm/greenpay/values.yaml \
+            --values helm/greenpay/values-mainnet.yaml \
+            --values helm/greenpay/ci/mainnet-render-check.yaml
+
+      # The guard's own regression suite: every way a mainnet release has been
+      # got wrong (stale testnet URL, default password, placeholder host, wrong
+      # environment) must still be rejected.
+      - name: Guard regression tests
+        run: node --test scripts/validate-helm-release.test.js
+
+      - name: Committed testnet defaults must render as testnet
+        run: node scripts/validate-helm-release.js --expect-network testnet
+
+      - name: Committed mainnet overlay must render clean as mainnet
+        run: |
+          node scripts/validate-helm-release.js \
+            -f helm/greenpay/values.yaml \
+            -f helm/greenpay/values-mainnet.yaml \
+            -f helm/greenpay/ci/mainnet-render-check.yaml \
+            --expect-network mainnet
+
+      # Proves the gate actually blocks rather than merely running: the mainnet
+      # overlay without its deploy-time values must be refused.
+      - name: Guard must refuse an under-specified mainnet release
+        run: |
+          if node scripts/validate-helm-release.js \
+               -f helm/greenpay/values.yaml \
+               -f helm/greenpay/values-mainnet.yaml \
+               --expect-network mainnet; then
+            echo "::error::the pre-deploy guard accepted a mainnet release with no contract id or ingress host"
+            exit 1
+          fi
 
   zap_scan:
     name: DAST Security Scan (OWASP ZAP)
@@ -113,23 +206,39 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Resolve DAST scan target
+        id: resolve_target
+        run: |
+          if [ -n "$DAST_TARGET" ]; then
+            echo "target=$DAST_TARGET" >> "$GITHUB_OUTPUT"
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No DAST target provided. Pass dast_target via workflow_dispatch (or wire up a real environment URL) to run the ZAP baseline scan."
+          fi
+        env:
+          DAST_TARGET: ${{ inputs.dast_target }}
+
       - name: Run ZAP Baseline Scan
         id: zap_scan
-        # The staging target isn't always deployed/reachable at the time this
-        # CI job runs (e.g. between deploys, or on branches without their own
-        # staging env) — a DNS/connection failure here is an environment
-        # precondition, not a code defect, so it must not fail the whole build.
+        if: steps.resolve_target.outputs.enabled == 'true'
+        # Scan failures against the live target are a precondition/tooling
+        # outcome, not a code defect, so they must not fail the whole build.
         continue-on-error: true
         uses: zaproxy/action-baseline@v0.14.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          target: 'https://staging.greenpay.app'
+          target: ${{ steps.resolve_target.outputs.target }}
           cmd_options: '-J report.json'
           fail_action: false
 
       - name: Run Security Triage Script
-        if: steps.zap_scan.outcome == 'success'
+        if: steps.resolve_target.outputs.enabled == 'true' && steps.zap_scan.outcome == 'success'
         run: node scripts/triage-zap.js
+
+      - name: Teardown Ephemeral Staging Stack
+        if: always()
+        run: docker compose down -v
 
       - name: Upload ZAP Reports
         uses: actions/upload-artifact@v4
@@ -141,3 +250,186 @@ jobs:
             report.json
           retention-days: 14
           if-no-files-found: warn
+
+  integration:
+    name: Integration (Local Chain + Backend + Postgres)
+    runs-on: ubuntu-latest
+    needs: [frontend, backend, contracts]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: greenpay
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: greenpay-contract-wasm
+          path: contracts/target/wasm32-unknown-unknown/release
+      - uses: ./.github/actions/setup-node-install
+        with:
+          working-directory: backend
+      - uses: ./.github/actions/setup-node-install
+        with:
+          working-directory: frontend
+      - name: Backend real-transaction integration test
+        working-directory: backend
+        run: npx jest src/services/indexerService.integration.test.js --runInBand
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/greenpay
+      - name: Start local Stellar protocol 21 network
+        run: |
+          # Source revision ae7fdb0: protocol 21 matches soroban-sdk 21 used by the contracts.
+          docker run -d --name greenpay-stellar-local -p 8000:8000 \
+            stellar/quickstart@sha256:d65f52ac01b3b8ebe4cd4952878433958cea6eb2ee602cb7687127e1df537ddf \
+            --local --enable-soroban-rpc
+          for attempt in $(seq 1 90); do
+            if curl --fail --silent http://127.0.0.1:8000/ >/dev/null; then
+              friendbot_status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+                'http://127.0.0.1:8000/friendbot?addr=not-a-stellar-address')
+              if [ "$friendbot_status" = "400" ]; then
+                exit 0
+              fi
+            fi
+            sleep 1
+          done
+          docker logs greenpay-stellar-local
+          exit 1
+      - name: Local-chain donation convergence test
+        working-directory: backend
+        run: npm run test:local-chain
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/greenpay
+          GREENPAY_WASM_PATH: ../contracts/target/wasm32-unknown-unknown/release/greenpay_contract.wasm
+          LOCAL_STELLAR_HORIZON_URL: http://127.0.0.1:8000
+          LOCAL_STELLAR_RPC_URL: http://127.0.0.1:8000/soroban/rpc
+      - run: npx playwright install chromium
+      - run: npm run build
+        env:
+          NEXT_PUBLIC_STELLAR_NETWORK: testnet
+          NEXT_PUBLIC_HORIZON_URL: https://horizon-testnet.stellar.org
+          NEXT_PUBLIC_API_URL: http://localhost:4000
+      - name: Capture local Stellar logs
+        if: always()
+        run: docker logs greenpay-stellar-local > /tmp/greenpay-stellar-local.log 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: local-stellar-logs
+          path: /tmp/greenpay-stellar-local.log
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Stop local Stellar network
+        if: always()
+        run: docker rm -f greenpay-stellar-local || true
+      - name: Run E2E Integration Tests
+        run: npx playwright test --config=playwright.integration.config.ts
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/greenpay
+          NEXT_PUBLIC_STELLAR_NETWORK: testnet
+          NEXT_PUBLIC_HORIZON_URL: https://horizon-testnet.stellar.org
+          NEXT_PUBLIC_API_URL: http://localhost:4000
+
+  container_build_scan:
+    name: Container Build, Scan & Push (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: greenpay-backend
+            context: ./backend
+            dockerfile: ./backend/Dockerfile
+          - image: greenpay-frontend
+            context: ./frontend
+            dockerfile: ./frontend/Dockerfile
+          - image: greenpay-scheduler
+            context: ./scheduler
+            dockerfile: ./scheduler/Dockerfile
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+          tags: |
+            type=sha,format=long,prefix=sha-
+            type=sha,format=short,prefix=
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build and load image for scanning
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          load: true
+          tags: ${{ matrix.image }}:local-scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy Vulnerability Scanner
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "${{ github.workspace }}/.trivyignore:/.trivyignore" \
+            aquasec/trivy:latest image \
+            --exit-code 0 \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            --pkg-types os,library \
+            --ignorefile /.trivyignore \
+            --format json \
+            ${{ matrix.image }}:local-scan | tee /tmp/trivy-${{ matrix.image }}.json
+
+      - name: Check for unignored vulnerabilities
+        run: |
+          # Parse the JSON output to find unignored HIGH/CRITICAL vulnerabilities
+          VULN_COUNT=$(jq '[.Results[]?.Misconfigurations[]? + .Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")] | length' /tmp/trivy-${{ matrix.image }}.json || echo 0)
+          if [ "$VULN_COUNT" -gt 0 ]; then
+            echo "Found $VULN_COUNT unignored HIGH/CRITICAL vulnerabilities in ${{ matrix.image }}:"
+            jq '.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH") | {VulnerabilityID, Severity, Title}' /tmp/trivy-${{ matrix.image }}.json
+            exit 1
+          fi
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        if: github.event_name != 'pull_request'
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

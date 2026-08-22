@@ -11,8 +11,10 @@ import {
   Operation,
   TransactionBuilder,
 } from '@stellar/stellar-sdk';
+import { isBadSequenceError } from './horizon-errors';
 import type { BackgroundRequest, BackgroundResponse } from './messages';
 import { recoverPopupSession, type PopupRecoveryClient } from './popup-session';
+import { SearchCoordinator } from './popup-search';
 import {
   STORAGE_KEYS,
   type ProjectSummary,
@@ -40,7 +42,6 @@ let currentWallet: WalletSession | null = null;
 let currentProjects: ProjectSummary[] = [];
 let activeProject: ProjectSummary | null = null;
 let currentDonationAmount = 0;
-let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
 function setInteractive(enabled: boolean) {
   connectBtn.disabled = !enabled;
@@ -187,7 +188,20 @@ function renderProjects(projects: ProjectSummary[]) {
   updateDonateButton();
 }
 
-function renderSearchResults(projects: ProjectSummary[]) {
+function renderSearchResults(
+  projects: ProjectSummary[],
+  sequence?: number,
+  query?: string
+) {
+  if (sequence !== undefined && sequence !== searchCoordinator.getLatestSequence()) {
+    return;
+  }
+  if (
+    query !== undefined &&
+    (query !== searchCoordinator.getLatestQuery() || query !== searchInput.value.trim())
+  ) {
+    return;
+  }
   searchDropdown.innerHTML = '';
   if (projects.length === 0) {
     const empty = document.createElement('li');
@@ -220,6 +234,13 @@ function renderSearchResults(projects: ProjectSummary[]) {
   }
   searchDropdown.classList.remove('hidden');
 }
+
+const searchCoordinator = new SearchCoordinator({
+  send,
+  renderSearchResults,
+  hideDropdown: () => searchDropdown.classList.add('hidden'),
+  getCurrentQuery: () => searchInput.value,
+});
 
 async function connectWallet() {
   setInteractive(false);
@@ -260,6 +281,28 @@ async function buildDonationTransaction(project: ProjectSummary, amount: number)
   return transaction.toXDR();
 }
 
+async function submitDonation(
+  project: ProjectSummary,
+  amount: number,
+  retryCount = 0
+): Promise<{ hash: string }> {
+  const xdr = await buildDonationTransaction(project, amount);
+  const signedXdr = await signTransaction(xdr, {
+    networkPassphrase: Networks.TESTNET,
+  });
+  const transaction = TransactionBuilder.fromXDR(signedXdr, Networks.TESTNET);
+
+  try {
+    return await server.submitTransaction(transaction);
+  } catch (error) {
+    if (isBadSequenceError(error) && retryCount === 0) {
+      showStatus('Sequence number changed — rebuilding transaction…');
+      return submitDonation(project, amount, retryCount + 1);
+    }
+    throw error;
+  }
+}
+
 async function donate() {
   if (!currentWallet || !activeProject || currentDonationAmount <= 0) return;
   setInteractive(false);
@@ -272,12 +315,7 @@ async function donate() {
       throw new Error('Wallet account changed or was locked. Reconnect to continue.');
     }
 
-    const xdr = await buildDonationTransaction(activeProject, currentDonationAmount);
-    const signedXdr = await signTransaction(xdr, {
-      networkPassphrase: Networks.TESTNET,
-    });
-    const transaction = TransactionBuilder.fromXDR(signedXdr, Networks.TESTNET);
-    const result = await server.submitTransaction(transaction);
+    const result = await submitDonation(activeProject, currentDonationAmount);
     showStatus(`Donation sent! ${result.hash.slice(0, 12)}…`, 'success');
   } catch (error) {
     showStatus(error instanceof Error ? error.message : 'Donation failed.', 'error');
@@ -323,20 +361,7 @@ for (const button of presetBtns) {
   });
 }
 searchInput.addEventListener('input', () => {
-  if (searchTimer) clearTimeout(searchTimer);
-  const query = searchInput.value.trim();
-  if (query.length < 2) {
-    searchDropdown.classList.add('hidden');
-    return;
-  }
-  searchTimer = setTimeout(async () => {
-    try {
-      const response = await send({ type: 'REFRESH_PROJECTS', query });
-      if ('projects' in response) renderSearchResults(response.projects);
-    } catch {
-      searchDropdown.classList.add('hidden');
-    }
-  }, 300);
+  searchCoordinator.handleInput(searchInput.value);
 });
 searchInput.addEventListener('blur', () => {
   setTimeout(() => searchDropdown.classList.add('hidden'), 150);

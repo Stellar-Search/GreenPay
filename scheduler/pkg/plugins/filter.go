@@ -42,7 +42,7 @@ var _ framework.FilterPlugin = &GPUHardwareFilter{}
 func (f *GPUHardwareFilter) Name() string { return GPUHardwareFilterName }
 
 // NewGPUHardwareFilter is the plugin factory registered with the scheduler.
-func NewGPUHardwareFilter(_ runtime.Object, _ framework.Handle) (framework.Plugin, error) {
+func NewGPUHardwareFilter(_ context.Context, _ runtime.Object, _ framework.Handle) (framework.Plugin, error) {
 	return &GPUHardwareFilter{}, nil
 }
 
@@ -133,6 +133,92 @@ func (f *GPUHardwareFilter) Filter(
 		}
 	}
 
+	// ── 6. GPU capacity check ────────────────────────────────────────────────
+	if podRequiresGPU(pod, reqs) {
+		totalGPUs, _, freeGPUs := computeGPUCapacity(nodeInfo, hw)
+		if totalGPUs > 0 && freeGPUs <= 0 {
+			reason := fmt.Sprintf("node %s has 0 of %d GPUs free", node.Name, totalGPUs)
+			logger.V(4).Info("FilterPlugin: no free GPUs", "pod", klog.KObj(pod), "node", node.Name, "reason", reason)
+			return framework.NewStatus(framework.Unschedulable, reason)
+		}
+	}
+
 	logger.V(5).Info("FilterPlugin: node passes all hardware checks", "pod", klog.KObj(pod), "node", node.Name)
 	return framework.NewStatus(framework.Success)
+}
+
+func isGPUResource(name string) bool {
+	switch corev1.ResourceName(name) {
+	case "nvidia.com/gpu", "amd.com/gpu", "google.com/tpu", "intel.com/gpu", "gpu":
+		return true
+	}
+	return false
+}
+
+func computeGPUCapacity(nodeInfo *framework.NodeInfo, hw hardware.NodeHardware) (totalGPUs int64, allocatedGPUs int64, freeGPUs int64) {
+	totalGPUs = hw.GPUCount
+
+	if node := nodeInfo.Node(); node != nil && totalGPUs == 0 {
+		for resName, quant := range node.Status.Allocatable {
+			if isGPUResource(string(resName)) {
+				totalGPUs += quant.Value()
+			}
+		}
+	}
+
+	if nodeInfo.Allocatable != nil {
+		var scalarTotal int64
+		for resName, val := range nodeInfo.Allocatable.ScalarResources {
+			if isGPUResource(string(resName)) {
+				scalarTotal += val
+			}
+		}
+		if scalarTotal > 0 && (totalGPUs == 0 || scalarTotal > totalGPUs) {
+			totalGPUs = scalarTotal
+		}
+	}
+
+	if nodeInfo.Requested != nil {
+		for resName, val := range nodeInfo.Requested.ScalarResources {
+			if isGPUResource(string(resName)) {
+				allocatedGPUs += val
+			}
+		}
+	}
+
+	freeGPUs = totalGPUs - allocatedGPUs
+	if freeGPUs < 0 {
+		freeGPUs = 0
+	}
+	return totalGPUs, allocatedGPUs, freeGPUs
+}
+
+func podRequiresGPU(pod *corev1.Pod, reqs hardware.PodHardwareReqs) bool {
+	annots := pod.Annotations
+	if annots != nil {
+		if vendor, ok := annots[hardware.AnnotGPUVendorReq]; ok && vendor != "" && vendor != hardware.GPUVendorNone {
+			return true
+		}
+		if model, ok := annots[hardware.AnnotGPUModelReq]; ok && model != "" {
+			return true
+		}
+		if vram, ok := annots[hardware.AnnotGPUVRAMMinMiB]; ok && vram != "" && reqs.GPUVRAMMinMiB > 0 {
+			return true
+		}
+	}
+	for _, c := range pod.Spec.Containers {
+		for resName, quant := range c.Resources.Requests {
+			if isGPUResource(string(resName)) && quant.Value() > 0 {
+				return true
+			}
+		}
+	}
+	for _, c := range pod.Spec.InitContainers {
+		for resName, quant := range c.Resources.Requests {
+			if isGPUResource(string(resName)) && quant.Value() > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }

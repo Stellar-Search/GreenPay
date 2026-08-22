@@ -9,12 +9,24 @@ import * as LocalAuthentication from 'expo-local-authentication';
 import axios from 'axios';
 import NetInfo from '@react-native-community/netinfo';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Account, Keypair, Horizon } from '@stellar/stellar-sdk';
+const Server = (require('@stellar/stellar-sdk') as any).Server;
 import { ThemeProvider } from '../app/theme';
-import { DONATION_QUEUE_KEY } from '../utils/donationQueue';
+import { DONATION_QUEUE_KEY, enqueueDonation, listQueuedDonations } from '../utils/donationQueue';
+
+jest.mock('@stellar/stellar-sdk', () => {
+  const actual = jest.requireActual('@stellar/stellar-sdk');
+  return {
+    ...actual,
+    Server: jest.fn(),
+  };
+});
+
+let mockSearchParams: { id?: string; queueId?: string } = { id: 'proj-1' };
 
 jest.mock('expo-router', () => ({
   useRouter: () => ({ push: jest.fn(), back: jest.fn() }),
-  useLocalSearchParams: () => ({ id: 'proj-1' }),
+  useLocalSearchParams: () => mockSearchParams,
 }));
 
 jest.mock('expo-linking', () => ({
@@ -27,7 +39,9 @@ jest.mock('expo-status-bar', () => ({ StatusBar: () => null }));
 const MOCK_PROJECT = {
   id: 'proj-1',
   name: 'Amazon Reforestation',
-  walletAddress: 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H',
+  // Must be a checksum-valid Stellar address: the queue-reconciliation tests
+  // below build a real Operation.payment (only Server is mocked there).
+  walletAddress: 'GB3SNSNLN74VSNSEL3C7NDHNZLPK7DO5JROSZ5DDS4OWVAJNAKAWWS2S',
 };
 
 import DonateScreen from '../app/donate/[id]';
@@ -45,7 +59,9 @@ function renderDonateScreen() {
 describe('DonateScreen – biometric auth gate', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    (axios.get as jest.Mock).mockResolvedValue({ data: { data: [MOCK_PROJECT] } });
+    mockSearchParams = { id: 'proj-1' };
+    (axios.get as jest.Mock).mockResolvedValue({ data: { success: true, data: [MOCK_PROJECT] } });
+    (axios.post as jest.Mock).mockResolvedValue({ data: { success: true, data: null } });
     (LocalAuthentication.hasHardwareAsync as jest.Mock).mockResolvedValue(true);
     (LocalAuthentication.isEnrolledAsync as jest.Mock).mockResolvedValue(true);
     (NetInfo.fetch as jest.Mock).mockResolvedValue({ isConnected: true, isInternetReachable: true });
@@ -97,10 +113,10 @@ describe('DonateScreen – biometric auth gate', () => {
   });
 });
 
-// A real, checksum-valid Stellar public key (from Stellar's docs). The old
-// constant was only shape-valid (`/^G[A-Z0-9]{55}$/`) and is rejected by the
-// StrKey-backed check now used in connectWallet().
-const DONOR_PUBLIC_KEY = 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H';
+// A real, checksum-valid Stellar public key (validated via useWallet()'s
+// StrKey check, not a shape-only regex), independent of the real
+// MOCK_PROJECT.walletAddress above.
+const DONOR_PUBLIC_KEY = 'GA4JHZX455IELW533547WFB5LV57LLSUJURFFIIYG7AV4HTQNW4W4FUD';
 
 /** Drives the "Connect Wallet" Alert.alert prompt exactly like a user would. */
 async function connectWallet(getByText: any, alertSpy: jest.SpyInstance, publicKey: string) {
@@ -109,15 +125,17 @@ async function connectWallet(getByText: any, alertSpy: jest.SpyInstance, publicK
   const buttons = call?.[2] as Array<{ text: string; onPress?: (input: any) => void }>;
   const okButton = buttons.find((b) => b.text === 'OK');
   await act(async () => {
-    okButton?.onPress?.(publicKey);
+    await okButton?.onPress?.(publicKey);
   });
 }
 
 describe('DonateScreen – offline queueing', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
+    mockSearchParams = { id: 'proj-1' };
     await AsyncStorage.clear();
-    (axios.get as jest.Mock).mockResolvedValue({ data: { data: [MOCK_PROJECT] } });
+    (axios.get as jest.Mock).mockResolvedValue({ data: { success: true, data: [MOCK_PROJECT] } });
+    (axios.post as jest.Mock).mockResolvedValue({ data: { success: true, data: null } });
     (LocalAuthentication.hasHardwareAsync as jest.Mock).mockResolvedValue(true);
     (LocalAuthentication.isEnrolledAsync as jest.Mock).mockResolvedValue(true);
   });
@@ -182,5 +200,280 @@ describe('DonateScreen – offline queueing', () => {
     // Form is reset after queueing.
     expect(getByPlaceholderText('1.00').props.value).toBe('1');
     expect(getByPlaceholderText('S...').props.value).toBe('');
+  });
+});
+
+// A real, checksum-valid Stellar keypair — needed because these tests exercise
+// the real signing path (only `Server` is mocked, per @stellar/stellar-sdk
+// jest.mock above), unlike the offline-queueing tests which never reach
+// Keypair.fromSecret().
+const REAL_KEYPAIR = Keypair.fromSecret('SBI47VVMEHV2IC6NKD6RYGOURFGZK5CN7ARSODC4VDKGJZM7DYAQLJIB');
+const REAL_PUBLIC_KEY = REAL_KEYPAIR.publicKey();
+
+describe('DonateScreen – completing a queued donation ("Complete now")', () => {
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    await AsyncStorage.clear();
+    mockSearchParams = { id: 'proj-1' };
+    (axios.get as jest.Mock).mockResolvedValue({ data: { success: true, data: [MOCK_PROJECT] } });
+    (LocalAuthentication.hasHardwareAsync as jest.Mock).mockResolvedValue(true);
+    (LocalAuthentication.isEnrolledAsync as jest.Mock).mockResolvedValue(true);
+    (LocalAuthentication.authenticateAsync as jest.Mock).mockResolvedValue({ success: true });
+    (NetInfo.fetch as jest.Mock).mockResolvedValue({ isConnected: true, isInternetReachable: true });
+    (Server as jest.Mock).mockImplementation(() => ({
+      loadAccount: jest.fn().mockResolvedValue(new Account(REAL_PUBLIC_KEY, '1')),
+      submitTransaction: jest.fn().mockResolvedValue({ hash: 'HORIZON_TX_HASH_1' }),
+    }));
+  });
+
+  it('prefills amount and message from the matched queue entry when queueId is present', async () => {
+    const entry = await enqueueDonation({
+      projectId: 'proj-1',
+      projectName: 'Amazon Reforestation',
+      donorAddress: REAL_PUBLIC_KEY,
+      amountXLM: '12.5000000',
+      message: 'For the trees',
+    });
+    mockSearchParams = { id: 'proj-1', queueId: entry.id };
+
+    const { getByPlaceholderText } = renderDonateScreen();
+
+    await waitFor(() => expect(getByPlaceholderText('1.00').props.value).toBe('12.5000000'));
+    expect(getByPlaceholderText('Leave a message of support...').props.value).toBe('For the trees');
+  });
+
+  it('removes the originating queue entry atomically once the donation fully succeeds', async () => {
+    const entry = await enqueueDonation({
+      projectId: 'proj-1',
+      projectName: 'Amazon Reforestation',
+      donorAddress: REAL_PUBLIC_KEY,
+      amountXLM: '5.0000000',
+    });
+    mockSearchParams = { id: 'proj-1', queueId: entry.id };
+    const alertSpy = jest.spyOn(Alert, 'alert');
+
+    const { getByText, getByPlaceholderText } = renderDonateScreen();
+    await waitFor(() => expect(getByPlaceholderText('1.00').props.value).toBe('5.0000000'));
+
+    await connectWallet(getByText, alertSpy, REAL_PUBLIC_KEY);
+    fireEvent.changeText(getByPlaceholderText('S...'), REAL_KEYPAIR.secret());
+    fireEvent.press(getByText(/🌱 Donate/));
+
+    await waitFor(() =>
+      expect(getByText(/Donation successful! Transaction hash: HORIZON_TX_HASH_1/)).toBeTruthy()
+    );
+
+    expect(axios.post).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ transactionHash: 'HORIZON_TX_HASH_1' })
+    );
+
+    const remaining = await listQueuedDonations();
+    expect(remaining.find((e) => e.id === entry.id)).toBeUndefined();
+  });
+
+  it('reconciles instead of resubmitting when Horizon succeeds but the backend POST fails, then completes on retry without a second Horizon submission', async () => {
+    const entry = await enqueueDonation({
+      projectId: 'proj-1',
+      projectName: 'Amazon Reforestation',
+      donorAddress: REAL_PUBLIC_KEY,
+      amountXLM: '5.0000000',
+    });
+    mockSearchParams = { id: 'proj-1', queueId: entry.id };
+    const alertSpy = jest.spyOn(Alert, 'alert');
+    (axios.post as jest.Mock).mockRejectedValueOnce(new Error('backend unreachable'));
+
+    const { getByText, getByPlaceholderText } = renderDonateScreen();
+    await waitFor(() => expect(getByPlaceholderText('1.00').props.value).toBe('5.0000000'));
+
+    await connectWallet(getByText, alertSpy, REAL_PUBLIC_KEY);
+    fireEvent.changeText(getByPlaceholderText('S...'), REAL_KEYPAIR.secret());
+    fireEvent.press(getByText(/🌱 Donate/));
+
+    // Horizon succeeded and the backend POST failed — the queue entry keeps
+    // the tx hash, is never dropped, and the donation is not resubmitted.
+    await waitFor(() =>
+      expect(
+        getByText(/reached the blockchain \(tx HORIZON_TX_HASH_1\).*couldn't confirm it with our server/)
+      ).toBeTruthy()
+    );
+    const server = (Server as jest.Mock).mock.results[0].value;
+    expect(server.submitTransaction).toHaveBeenCalledTimes(1);
+
+    const afterFailure = await listQueuedDonations();
+    expect(afterFailure.find((e) => e.id === entry.id)?.horizonTransactionHash).toBe('HORIZON_TX_HASH_1');
+
+    // Button now offers to retry confirmation rather than re-donate.
+    await waitFor(() => expect(getByText('🌱 Confirm with server')).toBeTruthy());
+
+    fireEvent.press(getByText('🌱 Confirm with server'));
+
+    await waitFor(() =>
+      expect(getByText(/Donation successful! Transaction hash: HORIZON_TX_HASH_1/)).toBeTruthy()
+    );
+
+    // Still only ever submitted to Horizon once — the retry only re-hit the backend.
+    expect(server.submitTransaction).toHaveBeenCalledTimes(1);
+    expect(axios.post).toHaveBeenCalledTimes(2);
+
+    const finalQueue = await listQueuedDonations();
+    expect(finalQueue.find((e) => e.id === entry.id)).toBeUndefined();
+  });
+});
+
+/**
+ * Issue #359 — Online donation: Horizon-accepted / backend-failed recovery.
+ *
+ * Acceptance criteria:
+ *  1. Any donation reaching the network but failing backend confirmation is
+ *     persisted with its hash, queue-originated or not.
+ *  2. The sync hook retries backend confirmation — never resubmission — for
+ *     such entries on reconnect.
+ *  3. The donate screen's retry path works for entries that did not originate
+ *     in the queue.
+ *  4. No path can resubmit a payment that already carries a transaction hash.
+ *  5. The donation is recorded exactly once.
+ */
+describe('DonateScreen – issue #359: online donation Horizon-success / backend-fail recovery', () => {
+  let submitTransactionMock: jest.Mock;
+  let serverInstance: { loadAccount: jest.Mock; submitTransaction: jest.Mock };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    mockSearchParams = { id: 'proj-1' }; // no queueId — plain online donation
+    await AsyncStorage.clear();
+    (axios.get as jest.Mock).mockResolvedValue({ data: { success: true, data: [MOCK_PROJECT] } });
+    (axios.post as jest.Mock).mockResolvedValue({ data: { success: true, data: null } });
+    (LocalAuthentication.hasHardwareAsync as jest.Mock).mockResolvedValue(true);
+    (LocalAuthentication.isEnrolledAsync as jest.Mock).mockResolvedValue(true);
+    (LocalAuthentication.authenticateAsync as jest.Mock).mockResolvedValue({ success: true });
+    (NetInfo.fetch as jest.Mock).mockResolvedValue({ isConnected: true, isInternetReachable: true });
+
+    submitTransactionMock = jest.fn().mockResolvedValue({ hash: 'ONLINE_TX_HASH_1' });
+    serverInstance = {
+      loadAccount: jest.fn().mockResolvedValue(new Account(REAL_PUBLIC_KEY, '1')),
+      submitTransaction: submitTransactionMock,
+    };
+    (Server as jest.Mock).mockImplementation(() => serverInstance);
+  });
+
+  it(
+    'persists rescue queue entry with tx hash when Horizon succeeds but backend fails, ' +
+      'makes retry button reachable, and records the donation exactly once without a second Horizon submission',
+    async () => {
+      // --- Phase 1: initial attempt — Horizon OK, backend fails ---
+      (axios.post as jest.Mock).mockRejectedValueOnce(new Error('backend unreachable'));
+      const alertSpy = jest.spyOn(Alert, 'alert');
+
+      const { getByText, getByPlaceholderText, unmount } = renderDonateScreen();
+      await waitFor(() => expect(getByText('Donate to Amazon Reforestation')).toBeTruthy());
+
+      // Connect wallet and submit without a prior queueId param.
+      await connectWallet(getByText, alertSpy, REAL_PUBLIC_KEY);
+      fireEvent.changeText(getByPlaceholderText('1.00'), '3');
+      fireEvent.changeText(getByPlaceholderText('S...'), REAL_KEYPAIR.secret());
+      fireEvent.press(getByText(/🌱 Donate/));
+
+      // Horizon accepted; backend failed — rescue info banner is shown.
+      await waitFor(() =>
+        expect(
+          getByText(/reached the blockchain \(tx ONLINE_TX_HASH_1\).*couldn't confirm it with our server/)
+        ).toBeTruthy()
+      );
+
+      // AC-4: Horizon was called exactly once.
+      expect(submitTransactionMock).toHaveBeenCalledTimes(1);
+
+      // AC-1: A rescue queue entry now exists in storage with the tx hash.
+      const queueAfterFailure = await listQueuedDonations();
+      expect(queueAfterFailure).toHaveLength(1);
+      expect(queueAfterFailure[0].horizonTransactionHash).toBe('ONLINE_TX_HASH_1');
+      expect(queueAfterFailure[0].projectId).toBe('proj-1');
+
+      // AC-3: The retry button is now visible (queueEntry state was set).
+      await waitFor(() => expect(getByText('🌱 Confirm with server')).toBeTruthy());
+
+      // --- Phase 2: simulate app restart by remounting the screen ---
+      // The rescue entry's ID is embedded in async storage; the screen is
+      // navigated to WITHOUT a queueId (plain online path), so queueEntry
+      // starts null — the rescue is owned by the sync hook, not the screen.
+      unmount();
+
+      // --- Phase 3: reconnect — useDonationSync retries backend confirmation ---
+      // Import and render the sync hook to simulate reconnect behaviour.
+      const { useDonationSync } = require('../hooks/useDonationSync');
+      const NetInfoMod = require('@react-native-community/netinfo');
+      let syncReconnectListener: ((state: any) => void) | undefined;
+      (NetInfoMod.default.addEventListener as jest.Mock).mockImplementation(
+        (cb: (state: any) => void) => {
+          syncReconnectListener = cb;
+          return jest.fn();
+        }
+      );
+
+      // Backend is now reachable.
+      (axios.post as jest.Mock).mockResolvedValue({ data: { success: true, data: null } });
+
+      const { renderHook, waitFor: waitForHook, act: actHook } = require('@testing-library/react-native');
+      const { result } = renderHook(() => useDonationSync());
+      await waitForHook(() => expect(result.current.queue).toHaveLength(1));
+
+      // Simulate reconnect.
+      await actHook(async () => {
+        syncReconnectListener?.({ isConnected: false, isInternetReachable: false });
+      });
+      await actHook(async () => {
+        syncReconnectListener?.({ isConnected: true, isInternetReachable: true });
+      });
+
+      // AC-2: sync hook retried backend confirmation and the entry is removed.
+      await waitForHook(() => expect(result.current.queue).toHaveLength(0));
+
+      // AC-4 / AC-5: Horizon was never called again; backend was POSTed exactly
+      // once by the retry (the initial failing call was the first mock).
+      expect(submitTransactionMock).toHaveBeenCalledTimes(1);
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ transactionHash: 'ONLINE_TX_HASH_1' })
+      );
+    }
+  );
+
+  it('screen-level retry (Confirm with server button) works for a rescue entry without a second Horizon submission', async () => {
+    // Horizon OK on first attempt, backend fails initially.
+    (axios.post as jest.Mock).mockRejectedValueOnce(new Error('backend unreachable'));
+    const alertSpy = jest.spyOn(Alert, 'alert');
+
+    const { getByText, getByPlaceholderText } = renderDonateScreen();
+    await waitFor(() => expect(getByText('Donate to Amazon Reforestation')).toBeTruthy());
+
+    await connectWallet(getByText, alertSpy, REAL_PUBLIC_KEY);
+    fireEvent.changeText(getByPlaceholderText('1.00'), '2');
+    fireEvent.changeText(getByPlaceholderText('S...'), REAL_KEYPAIR.secret());
+    fireEvent.press(getByText(/🌱 Donate/));
+
+    // Wait for the rescue state to settle.
+    await waitFor(() => expect(getByText('🌱 Confirm with server')).toBeTruthy());
+    expect(submitTransactionMock).toHaveBeenCalledTimes(1);
+
+    // Backend is now reachable — retry via the on-screen button.
+    fireEvent.press(getByText('🌱 Confirm with server'));
+
+    await waitFor(() =>
+      expect(getByText(/Donation successful! Transaction hash: ONLINE_TX_HASH_1/)).toBeTruthy()
+    );
+
+    // Still only one Horizon submission across both attempts.
+    expect(submitTransactionMock).toHaveBeenCalledTimes(1);
+    // Two backend POSTs: one failed, one succeeded.
+    expect(axios.post).toHaveBeenCalledTimes(2);
+    expect(axios.post).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ transactionHash: 'ONLINE_TX_HASH_1' })
+    );
+
+    // AC-1 / AC-5: rescue entry is cleaned up after successful confirmation.
+    const finalQueue = await listQueuedDonations();
+    expect(finalQueue).toHaveLength(0);
   });
 });

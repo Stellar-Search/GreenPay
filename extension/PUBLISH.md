@@ -62,8 +62,12 @@ Built on Stellar for transparent, fast, and low-cost donations."
    - Complete store listing text
 
 4. **Set Permissions**
+   - Justify `storage` permission:
+     "The extension uses chrome.storage.session and chrome.storage.local to persist user wallet session state and cache curated project data across service worker lifecycles."
    - Justify `<all_urls>` host permission:
      "The extension injects a content script to detect Stellar addresses (format: GXXXXXXX) on any webpage and offer users the ability to donate to those addresses via our platform."
+   - Note on minimal review surface:
+     "The extension adheres to least-privilege principles: no dynamic execution (`scripting`) or transient tab grants (`activeTab`) are requested."
 
 5. **Submit for Review**
    - Review all policy requirements

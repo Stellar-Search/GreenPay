@@ -51,7 +51,7 @@ async function getEventStoreStatus() {
     legacyMigrated: !!migrationResult.rows[0],
     legacyEventCount: migrationResult.rows[0]?.event_count || 0,
     migratedAt: migrationResult.rows[0]?.migrated_at || null,
-    schedulerRunning: eventStore.isProcessing !== undefined,
+    scheduler: eventStore.getSchedulerStats(),
   };
 }
 

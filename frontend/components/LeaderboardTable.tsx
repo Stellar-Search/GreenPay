@@ -1,11 +1,20 @@
 /**
  * components/LeaderboardTable.tsx
+ *
+ * Renders paginated leaderboard entries. The initial page size is controlled
+ * by the `limit` prop (default 20; the leaderboard page passes 50). Users can
+ * load additional pages via the "Load More" button until the backend cap (100)
+ * is reached.
+ *
+ * Render strategy: the flat .map() is safe up to ~100 rows (the current backend
+ * cap). Before raising the cap beyond 100, wrap the row list in a virtualized
+ * window (e.g. react-window FixedSizeList) to keep DOM node count bounded.
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { fetchLeaderboard } from "@/lib/api";
-import { formatXLM, formatUSDEquivalent, shortenAddress, badgeEmoji } from "@/utils/format";
+import { formatXLM, formatUSDEquivalent, shortenAddress, badgeEmoji, timeAgo } from "@/utils/format";
 import { accountUrl } from "@/lib/stellar";
-import { useXlmPrice } from "@/lib/priceContext";
+import { useXlmPriceInfo } from "@/lib/priceContext";
 import { useI18n } from "@/lib/i18n";
 import type { LeaderboardEntry } from "@/utils/types";
 
@@ -52,18 +61,37 @@ function Avatar({ publicKey, displayName }: { publicKey: string; displayName?: s
 export default function LeaderboardTable({ limit = 20, period = "all" }: { limit?: number; period?: "all" | "month" | "year" }) {
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error,   setError]   = useState<string | null>(null);
-  const xlmUsd = useXlmPrice();
+  const [hasMore, setHasMore] = useState(false);
+  const { xlmUsd, lastFetchedAt } = useXlmPriceInfo();
   const { t, localeTag } = useI18n();
+
+  const loadPage = useCallback(async (offset: number, append: boolean) => {
+    try {
+      const newEntries = await fetchLeaderboard(limit, period, offset);
+      setEntries(prev => append ? [...prev, ...newEntries] : newEntries);
+      setHasMore(newEntries.length === limit);
+    } catch {
+      if (!append) setError("Could not load leaderboard.");
+    } finally {
+      setLoading(false);
+      setLoadingMore(false);
+    }
+  }, [limit, period]);
 
   useEffect(() => {
     setLoading(true);
     setError(null);
-    fetchLeaderboard(limit, period)
-      .then(setEntries)
-      .catch(() => setError("Could not load leaderboard."))
-      .finally(() => setLoading(false));
-  }, [limit, period]);
+    setEntries([]);
+    setHasMore(false);
+    loadPage(0, false);
+  }, [limit, period, loadPage]);
+
+  const loadMore = async () => {
+    setLoadingMore(true);
+    await loadPage(entries.length, true);
+  };
 
   if (loading) return (
     <div className="space-y-2">
@@ -136,14 +164,30 @@ export default function LeaderboardTable({ limit = 20, period = "all" }: { limit
               {formatXLM(entry.totalDonatedXLM, 2, localeTag)}
             </p>
             {formatUSDEquivalent(entry.totalDonatedXLM, xlmUsd, localeTag) && (
-              <p className="text-[11px] text-[#547454] font-body">
+              <p 
+                className="text-[11px] text-[#547454] font-body"
+                title={lastFetchedAt ? `Rate updated ${timeAgo(lastFetchedAt.toISOString())}` : undefined}
+              >
                 {formatUSDEquivalent(entry.totalDonatedXLM, xlmUsd, localeTag)}
+                {lastFetchedAt && " ⓘ"}
               </p>
             )}
             <p className="text-xs text-[#547454] font-body">donated</p>
           </div>
         </div>
       ))}
+
+      {hasMore && !loading && (
+        <div className="text-center mt-6">
+          {loadingMore ? (
+            <div className="animate-pulse h-10 bg-forest-100 rounded-lg" />
+          ) : (
+            <button onClick={loadMore} className="btn-secondary">
+              Load More
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

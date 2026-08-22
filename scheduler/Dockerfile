@@ -14,12 +14,11 @@ WORKDIR /build
 # Install build dependencies.
 RUN apk add --no-cache git ca-certificates
 
-# Download modules first (better layer caching).
-COPY go.mod go.sum ./
-RUN go mod download
-
-# Copy the rest of the source and build.
+# Copy source and build.
 COPY . .
+
+# Generate go.sum and resolve dependencies for imported packages
+RUN go mod tidy
 
 # Build a fully static binary (no libc, no CGO).
 # -trimpath removes local file paths from the binary for reproducibility.

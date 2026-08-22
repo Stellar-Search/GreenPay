@@ -1,5 +1,5 @@
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
 metadata:
   name: backend
   namespace: greenpay
@@ -7,6 +7,7 @@ metadata:
     app: backend
 spec:
   replicas: 2
+  revisionHistoryLimit: 5
   selector:
     matchLabels:
       app: backend
@@ -15,10 +16,10 @@ spec:
       labels:
         app: backend
     spec:
-      # The API backend is a standard workload — use the default scheduler.
-      # Only ML pods (summary-worker, ml-inference, ml-training) opt into
-      # the greenpay-scheduler via schedulerName.
       schedulerName: default-scheduler
+      # Give the app's SHUTDOWN_TIMEOUT_MS (25s, see backend/src/server.js)
+      # room to finish draining before the kubelet sends SIGKILL.
+      terminationGracePeriodSeconds: 30
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -26,10 +27,20 @@ spec:
           labelSelector:
             matchLabels:
               app: backend
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: backend
-          image: greenpay/backend:latest
-          imagePullPolicy: IfNotPresent
+          image: greenpay/backend:1.0.0
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 4000
           envFrom:
@@ -43,6 +54,13 @@ spec:
               port: 4000
             initialDelaySeconds: 10
             periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 4000
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
           resources:
             requests:
               cpu: "250m"
@@ -50,15 +68,150 @@ spec:
             limits:
               cpu: "1000m"
               memory: "1Gi"
+  strategy:
+    canary:
+      canaryService: backend-canary
+      stableService: backend-stable
+      trafficRouting:
+        nginx:
+          stableIngress: backend-ingress
+          additionalIngressAnnotations:
+            canary-by-header: X-Canary
+      analysis:
+        templates:
+          - templateName: backend-error-rate
+          - templateName: backend-latency
+        startingStep: 2
+        args:
+          - name: service
+            value: backend-canary.greenpay.svc.cluster.local
+      steps:
+        - setWeight: 10
+        - pause: { duration: 2m }
+        - setWeight: 30
+        - pause: { duration: 2m }
+        - setWeight: 60
+        - pause: { duration: 2m }
+        - setWeight: 100
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: backend-svc
+  name: backend-stable
   namespace: greenpay
+  labels:
+    app: backend
 spec:
   selector:
     app: backend
   ports:
     - port: 4000
       targetPort: 4000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-canary
+  namespace: greenpay
+  labels:
+    app: backend
+spec:
+  selector:
+    app: backend
+  ports:
+    - port: 4000
+      targetPort: 4000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: backend-ingress
+  namespace: greenpay
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: greenpay.local
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: backend-stable
+                port:
+                  number: 4000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: backend-canary-ingress
+  namespace: greenpay
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/canary: "true"
+    nginx.ingress.kubernetes.io/canary-weight: "100"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: greenpay.local
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: backend-canary
+                port:
+                  number: 4000
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: backend-error-rate
+  namespace: greenpay
+spec:
+  args:
+    - name: service
+  metrics:
+    - name: error-rate
+      interval: 1m
+      count: 5
+      successCondition: result[0] < 0.05
+      failureLimit: 3
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring.svc.cluster.local:9090
+          query: |
+            sum(rate(http_requests_total{
+              service="{{args.service}}",
+              code=~"5.*"
+            }[2m])) /
+            sum(rate(http_requests_total{
+              service="{{args.service}}"
+            }[2m]))
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: backend-latency
+  namespace: greenpay
+spec:
+  args:
+    - name: service
+  metrics:
+    - name: latency-p99
+      interval: 1m
+      count: 5
+      successCondition: result[0] < 500
+      failureLimit: 3
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring.svc.cluster.local:9090
+          query: |
+            histogram_quantile(0.99,
+              sum(rate(http_request_duration_seconds_bucket{
+                service="{{args.service}}"
+              }[2m])) by (le)
+            ) * 1000

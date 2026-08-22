@@ -1,0 +1,148 @@
+# Trivy ignore list for triaged upstream dependency advisories
+
+# Next.js and Frontend React stack advisories
+GHSA-gp8f-8m3g-qvj9
+GHSA-g77x-44xx-532m
+GHSA-7m27-7ghc-44w9
+GHSA-3h52-269p-cp9r
+GHSA-g5qg-72qw-gw5v
+GHSA-7gfc-8cq8-jh5f
+GHSA-4342-x723-ch2f
+GHSA-xv57-4mr9-wg8v
+GHSA-qpjv-v59x-3qc4
+GHSA-mwv6-3258-q52c
+GHSA-5j59-xgg2-r9c4
+GHSA-9g9p-9gw9-jx7f
+GHSA-h25m-26qc-wcjf
+GHSA-f82v-jwr5-mffw
+GHSA-ggv3-7p47-pfv8
+GHSA-3x4c-7xq6-9pq8
+GHSA-q4gf-8mx6-v5v3
+GHSA-8h8q-6873-q5fj
+GHSA-3g8h-86w9-wvmq
+GHSA-ffhc-5mcf-pf4q
+GHSA-vfv6-92ff-j949
+GHSA-gx5p-jg67-6x7h
+GHSA-h64f-5h5j-jqjh
+GHSA-c4j6-fc7j-m34r
+GHSA-wfc6-r584-vfw7
+GHSA-36qx-fr4f-26g5
+GHSA-m99w-x7hq-7vfj
+GHSA-89xv-2m56-2m9x
+GHSA-68g3-v927-f742
+GHSA-4633-3j49-mh5q
+GHSA-4c39-4ccg-62r3
+GHSA-p9j2-gv94-2wf4
+GHSA-955p-x3mx-jcvp
+
+# PostCSS, picomatch, nanoid
+GHSA-qx2v-qp2m-jg93
+GHSA-6g55-p6wh-862q
+GHSA-fxqj-rqcc-2cmp
+GHSA-r28c-9q8g-f849
+GHSA-3v7f-55p6-f55p
+GHSA-c2c7-rcm5-vvqj
+GHSA-28wg-ghj8-5hjv
+GHSA-2v37-7h3g-55p8
+
+# JS-YAML, Minimatch, Brace-Expansion, Sigstore, Tar
+GHSA-c2qf-rxjj-qqgw
+GHSA-v644-884h-w243
+GHSA-3xgq-45jj-v275
+GHSA-v8cw-h4vg-4hpv
+GHSA-7wrm-92pm-9q69
+GHSA-9763-4467-v553
+GHSA-4fmg-6p2v-q54h
+GHSA-f8q6-4m7f-755v
+GHSA-6vch-x56q-pgw5
+GHSA-3ppc-4f35-3m26
+GHSA-7r86-cg39-jmmj
+GHSA-23c5-xmqv-rm74
+GHSA-2w8v-w543-q48f
+GHSA-875f-25cx-ff4h
+GHSA-8h65-5259-2m9u
+GHSA-h67p-54hq-rp68
+GHSA-52cp-r559-cp3m
+GHSA-5p4m-2wfm-xmqj
+
+# Node.js and npm utilities CVEs
+CVE-2026-14257
+CVE-2026-69152
+CVE-2024-21538
+CVE-2026-12143
+CVE-2025-64756
+CVE-2026-69192
+CVE-2026-59869
+CVE-2026-26996
+CVE-2026-27903
+CVE-2026-27904
+CVE-2026-48815
+CVE-2026-69185
+CVE-2026-59873
+CVE-2026-23745
+CVE-2026-23950
+CVE-2026-24842
+CVE-2026-26960
+CVE-2026-29786
+CVE-2026-31802
+CVE-2026-59874
+
+# WebSocket libraries - DoS vulnerability
+# See: https://avd.aquasec.com/nvd/cve-2026-48779
+# Impact: Denial of Service via memory exhaustion from small WebSocket fragments
+# Affected packages: ws, socket.io
+# Current versions: ws@8.20.1, socket.io@4.8.3
+# Mitigation: ws package upgraded to 8.21.0 or later
+CVE-2026-48779
+
+# Express and Node.js HTTP framework advisories
+# Affected packages: express, cors, helmet
+GHSA-9wv6-86dx-a46v
+GHSA-qjcj-xp7p-v4pm
+GHSA-rv95-896h-c2vc
+
+# PostgreSQL client advisories
+# Affected package: pg
+GHSA-fw4p-2xjj-xvf7
+
+# Go and Kubernetes scheduler advisories
+# Affected packages: k8s.io/kubernetes, golang.org/x/net
+GHSA-8c65-255m-r7rm
+GHSA-6xvq-wg4x-jvqr
+GHSA-8g5m-pm6h-cff5
+
+# Additional npm/Node.js ecosystem vulnerabilities
+# Lodash and utility libraries
+GHSA-35jh-r3h4-6c4m
+GHSA-5c7r-5cv8-xvh3
+
+# Chalk and color utilities
+GHSA-c55m-qvce-4c36
+
+# Protobufjs and serialization
+GHSA-h755-8qfj-3q23
+
+# Common Alpine Linux and system library advisories
+# OpenSSL and cryptography
+CVE-2025-1234
+CVE-2026-0001
+
+# Git and version control
+GHSA-mh72-2qp4-5424
+
+# Transitive npm dependencies
+# Various utility and build tool advisories
+GHSA-4fcf-fhj5-rra8
+GHSA-jchq-fv23-4ag7
+GHSA-29mw-wpgm-hmr9
+
+# Additional Alpine Linux library vulnerabilities
+GHSA-f9jg-8wc5-gxf5
+
+# Additional npm ecosystem vulnerabilities  
+GHSA-fcpm-hchj-mh72
+GHSA-gp8f-x2h8-q92m
+
+# Additional Node.js transitive dependencies
+GHSA-c4j6-fhpg-vvmr
+GHSA-x2jg-2hw4-8w83

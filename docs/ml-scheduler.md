@@ -45,7 +45,7 @@ Pod (schedulerName: greenpay-scheduler)
 │     MLWorkloadScore   (weight 10) → composite ML score      │ ← custom
 │       A. BinPacking       (w=0.40) GPU density              │
 │       B. Fragmentation    (w=0.25) anti-fragmentation       │
-│       C. NUMATopology     (w=0.20) NUMA affinity            │
+│       C. NUMATopology     (w=0.20) GPU/NUMA locality        │
 │       D. NetworkBandwidth (w=0.15) bandwidth normalisation  │
 │                                                              │
 │  4. NormalizeScore Phase                                     │
@@ -94,11 +94,17 @@ not enough room for a new training job.
 
 **C. NUMATopology (weight 0.20)**
 
-| Workload type | Strategy |
+For GPU-backed ML workloads, the scheduler reads the pod's effective GPU
+request from extended resources such as `nvidia.com/gpu` and compares it with
+the node's `greenpay.io/gpu-numa-distribution`.
+
+| Kubelet policy | Strategy |
 |---|---|
-| `ml-training` | Prefer multi-NUMA (more memory buses = better distributed training) |
-| `ml-inference` | Prefer single-NUMA (low-latency hot-path) |
-| `ml-batch` / `api` / `db` | Neutral (50) |
+| `restricted` with `pod` scope | Score `100 / minimum NUMA domains needed` |
+| `single-numa-node` with `pod` scope | Score 100 when all requested GPUs fit one domain, otherwise 0 |
+| `none`, `best-effort`, container scope, or missing labels | Neutral (50), because pod-level alignment is not guaranteed |
+
+CPU-only and non-ML workloads also receive the neutral NUMA score.
 
 **D. NetworkBandwidth (weight 0.15)**
 
@@ -124,6 +130,9 @@ Apply these labels to your nodes with `kubectl label node <name> <key>=<value>`.
 | `greenpay.io/gpu-vram-mib` | Integer string (MiB) | `81920` |
 | `greenpay.io/gpu-interconnect` | `nvlink`, `pcie`, `none` | `nvlink` |
 | `greenpay.io/numa-nodes` | Integer string | `2` |
+| `greenpay.io/gpu-numa-distribution` | Dot-separated GPU counts in ascending NUMA ID order | `4.4` |
+| `greenpay.io/topology-manager-policy` | `none`, `best-effort`, `restricted`, `single-numa-node` | `restricted` |
+| `greenpay.io/topology-manager-scope` | `container`, `pod` | `pod` |
 | `greenpay.io/network-zone` | Zone name | `zone-a` |
 | `greenpay.io/network-bandwidth` | Integer string (Gbps) | `100` |
 | `greenpay.io/node-tier` | `gpu-high`, `gpu-low`, `cpu-high`, `cpu-standard` | `gpu-high` |
@@ -162,10 +171,41 @@ kubectl label node gpu-node-01 \
   greenpay.io/gpu-vram-mib=81920 \
   greenpay.io/gpu-interconnect=nvlink \
   greenpay.io/numa-nodes=2 \
+  greenpay.io/gpu-numa-distribution=4.4 \
+  greenpay.io/topology-manager-policy=restricted \
+  greenpay.io/topology-manager-scope=pod \
   greenpay.io/network-zone=zone-a \
   greenpay.io/network-bandwidth=100 \
   greenpay.io/node-tier=gpu-high
 ```
+
+The distribution must contain one entry per `greenpay.io/numa-nodes` value,
+and its entries must sum to `greenpay.io/gpu-count`. A value of `4.4` means
+four GPUs on NUMA domain 0 and four GPUs on NUMA domain 1. Invalid or
+inconsistent distributions are ignored and receive the neutral NUMA score.
+
+### Verify kubelet Topology Manager alignment
+
+The Kubernetes Node API does not publish kubelet Topology Manager settings, so
+the `greenpay.io/topology-manager-*` labels are operator attestations rather
+than scheduler-discovered state. Verify each node before applying those labels:
+
+```bash
+NODE=gpu-node-01
+kubectl get --raw "/api/v1/nodes/${NODE}/proxy/configz" \
+  | jq -r '.kubeletconfig
+    | [.topologyManagerPolicy, .topologyManagerScope]
+    | @tsv'
+# restricted    pod
+```
+
+Only label a node `restricted` or `single-numa-node` when that output matches
+the declared policy and scope. Re-run the check after kubelet configuration
+changes. The GPU device plugin must also report device `TopologyInfo`; without
+those hints, Topology Manager cannot align GPU allocation with CPU and memory
+NUMA affinity. See the Kubernetes
+[Topology Manager documentation](https://kubernetes.io/docs/tasks/administer-cluster/topology-manager/)
+and [device plugin API](https://kubernetes.io/docs/concepts/extend-kubernetes/compute-storage-net/device-plugins/#device-plugin-implementation).
 
 ### 2. Build and push the scheduler image
 

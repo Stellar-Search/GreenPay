@@ -91,6 +91,49 @@ test('does not navigate when url has no param', async () => {
   unmount();
 });
 
+// ── Deep-link validation (shared rules with the QR parser) ───────────────────
+
+test('does not navigate for a deep link with a traversal project id', async () => {
+  mockGetInitialURL.mockResolvedValueOnce('greenpay://donate/../../etc/passwd');
+  const { unmount } = renderHook(() => useDeepLink(), { wrapper });
+  await act(async () => {});
+  expect(mockPush).not.toHaveBeenCalled();
+  unmount();
+});
+
+test('does not navigate for a deep link with an oversized project id', async () => {
+  mockGetInitialURL.mockResolvedValueOnce(`greenpay://donate/${'a'.repeat(65)}`);
+  const { unmount } = renderHook(() => useDeepLink(), { wrapper });
+  await act(async () => {});
+  expect(mockPush).not.toHaveBeenCalled();
+  unmount();
+});
+
+test('does not navigate for a deep link with a control character in the id', async () => {
+  const ctrl = String.fromCharCode(2);
+  mockGetInitialURL.mockResolvedValueOnce(`greenpay://donate/abc${ctrl}`);
+  const { unmount } = renderHook(() => useDeepLink(), { wrapper });
+  await act(async () => {});
+  expect(mockPush).not.toHaveBeenCalled();
+  unmount();
+});
+
+test('does not navigate for a deep link with a query string or extra segment', async () => {
+  mockGetInitialURL.mockResolvedValueOnce('greenpay://donate/abc?evil=1');
+  const { unmount } = renderHook(() => useDeepLink(), { wrapper });
+  await act(async () => {});
+  expect(mockPush).not.toHaveBeenCalled();
+  unmount();
+});
+
+test('does not navigate for a deep link with a foreign host segment', async () => {
+  mockGetInitialURL.mockResolvedValueOnce('greenpay://evil.com/donate/abc');
+  const { unmount } = renderHook(() => useDeepLink(), { wrapper });
+  await act(async () => {});
+  expect(mockPush).not.toHaveBeenCalled();
+  unmount();
+});
+
 // ── Race condition fix (#32) ─────────────────────────────────────────────────
 
 test('queues cold-start link and processes it only once after hydration', async () => {

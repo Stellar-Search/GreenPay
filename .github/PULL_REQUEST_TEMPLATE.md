@@ -16,4 +16,7 @@ Closes #
 - [ ] No TypeScript / Rust errors
 - [ ] Docs updated if needed
 
+## Infra / Docs Sync
+- [ ] If this PR changes infrastructure (k8s/ manifests, workflows, scripts), `docs/*` claims were verified against the manifests (deployment, database, indexer, runbooks)
+
 ## Screenshots (if UI change)

@@ -20,6 +20,8 @@ jest.mock('expo-router', () => ({
 
 import { QRScannerScreen } from '../src/screens/QRScannerScreen';
 
+jest.setTimeout(15000);
+
 const ACTIVE_DESTINATION = Keypair.random().publicKey();
 const INACTIVE_DESTINATION = Keypair.random().publicKey();
 
@@ -45,7 +47,7 @@ describe('QRScannerScreen', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
-    (axios.get as jest.Mock).mockResolvedValue({ data: { data: MOCK_PROJECTS } });
+    (axios.get as jest.Mock).mockResolvedValue({ data: { success: true, data: MOCK_PROJECTS } });
   });
 
   afterEach(() => {

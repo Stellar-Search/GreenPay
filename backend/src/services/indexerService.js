@@ -3,16 +3,25 @@
  */
 "use strict";
 
-const { server: stellarServer } = require("./stellar");
+const { server: stellarServer, rpcServer, CONTRACT_ID } = require("./stellar");
 const pool = require("../db/pool");
 const { v4: uuid } = require("uuid");
 const { execute } = require("../eventSourcing/commandBus");
 const { DonationRecordedEvent, MatchAppliedEvent } = require("../eventSourcing/events");
+const { stroopsToXlm, xlmToStroops } = require("../utils/xlm");
+const { SorobanEventIndexer } = require("./sorobanEventIndexer");
 
 let lastProcessedLedger = 0;
 let isRunning = false;
 let io = null;
 let projectWallets = new Map(); // wallet_address -> project_id
+let refreshIntervalId = null;
+let closeStream = null;
+let cursorFlushIntervalId = null;
+let sorobanEventIndexer = null;
+
+const CURSOR_KEY = "horizon_operations_cursor";
+const CURSOR_FLUSH_INTERVAL_MS = 30_000;
 
 /**
  * Fetch all active project wallets and cache them.
@@ -38,6 +47,43 @@ async function updateProjectWallets() {
 // internal helper
 
 /**
+ * Load the last successfully processed ledger cursor from the database.
+ * Returns null on the very first start (no row yet).
+ */
+async function loadCursor() {
+  try {
+    const result = await pool.query(
+      "SELECT value FROM indexer_state WHERE key = $1",
+      [CURSOR_KEY]
+    );
+    if (result.rows.length > 0) {
+      return result.rows[0].value;
+    }
+  } catch (err) {
+    console.error("[Indexer] Failed to load cursor:", err.message);
+  }
+  return null;
+}
+
+/**
+ * Persist the current processing cursor so the stream can resume after
+ * a restart. Uses UPSERT so concurrent calls are safe.
+ */
+async function persistCursor(cursor) {
+  if (!cursor) return;
+  try {
+    await pool.query(
+      `INSERT INTO indexer_state (key, value, updated_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
+      [CURSOR_KEY, String(cursor)]
+    );
+  } catch (err) {
+    console.error("[Indexer] Failed to persist cursor:", err.message);
+  }
+}
+
+/**
  * Start the Stellar indexer service.
  * @param {Object} socketIo - The Socket.io server instance.
  */
@@ -48,13 +94,23 @@ async function startIndexer(socketIo) {
 
   await updateProjectWallets();
   // Refresh cache every 10 minutes
-  setInterval(updateProjectWallets, 10 * 60 * 1000);
+  refreshIntervalId = setInterval(updateProjectWallets, 10 * 60 * 1000);
+
+  const persistedCursor = await loadCursor();
+
+  if (persistedCursor) {
+    console.log(`[Indexer] Resuming from persisted cursor: ${persistedCursor}`);
+    lastProcessedLedger = Number(persistedCursor);
+  } else {
+    lastProcessedLedger = 0;
+    console.log("[Indexer] No persisted cursor found, starting from now");
+  }
 
   console.log("[Indexer] Starting Horizon operations stream...");
 
-  // Start streaming operations from 'now'
-  stellarServer.operations()
-    .cursor("now")
+  // Start streaming operations from the persisted cursor (or "now" on first start)
+  closeStream = stellarServer.operations()
+    .cursor(persistedCursor || "now")
     .stream({
       onmessage: async (op) => {
         try {
@@ -75,6 +131,23 @@ async function startIndexer(socketIo) {
         console.error("[Indexer] Stream error:", err);
       }
     });
+
+  cursorFlushIntervalId = setInterval(() => {
+    if (lastProcessedLedger) {
+      persistCursor(lastProcessedLedger);
+    }
+  }, CURSOR_FLUSH_INTERVAL_MS);
+
+  if (CONTRACT_ID) {
+    sorobanEventIndexer = new SorobanEventIndexer({
+      rpcServer,
+      contractId: CONTRACT_ID,
+      db: pool,
+      handleDonation,
+      pollIntervalMs: Number(process.env.SOROBAN_EVENT_POLL_INTERVAL_MS) || undefined,
+    });
+    await sorobanEventIndexer.start();
+  }
 }
 
 /**
@@ -92,7 +165,11 @@ async function startIndexer(socketIo) {
 async function handleDonation(projectId, op) {
   const txHash = op.transaction_hash;
   const donorAddress = op.from;
-  const amountXLM = parseFloat(op.amount);
+  const amountStroops = op.amount_stroops !== undefined
+    ? BigInt(op.amount_stroops)
+    : xlmToStroops(op.amount);
+  const amountXLM = stroopsToXlm(amountStroops);
+  const amountXLMNumber = Number.parseFloat(amountXLM);
 
   const client = await pool.connect();
   let inTransaction = false;
@@ -105,7 +182,7 @@ async function handleDonation(projectId, op) {
       [txHash]
     );
     if (existingResult.rows.length > 0) {
-      return;
+      return true;
     }
 
     await client.query("BEGIN");
@@ -124,11 +201,13 @@ async function handleDonation(projectId, op) {
         projectId,
         donorAddress,
         amountXLM,
+        amountStroops: amountStroops.toString(),
         amount: amountXLM,
         currency: "XLM",
         message: null,
         transactionHash: txHash,
-      })
+      }),
+      client
     );
 
     if (matchesResult.rows.length > 0 && !donationResult.deduplicated) {
@@ -138,7 +217,7 @@ async function handleDonation(projectId, op) {
         const remaining = capXlm - matchedXlm;
 
         if (remaining > 0) {
-          const matchAmount = Math.min(amountXLM * match.multiplier, remaining);
+          const matchAmount = Math.min(amountXLMNumber * match.multiplier, remaining);
 
           await execute(
             new (require("../eventSourcing/commands").ApplyMatchCommand)({
@@ -149,7 +228,8 @@ async function handleDonation(projectId, op) {
               matchAmount,
               originalTxHash: txHash,
               multiplier: match.multiplier,
-            })
+            }),
+            client
           );
         }
       }
@@ -164,17 +244,52 @@ async function handleDonation(projectId, op) {
       io.emit("donation_event", {
         projectId,
         donorAddress,
-        amountXLM,
+        amountXLM: amountXLMNumber,
         transactionHash: txHash,
         timestamp: new Date().toISOString()
       });
     }
+    return true;
   } catch (err) {
     if (inTransaction) await client.query("ROLLBACK");
     console.error("[Indexer] Failed to process donation:", err.message);
+    return false;
   } finally {
     client.release();
   }
+}
+
+/**
+ * Stop the Horizon stream and the wallet-cache refresh interval, so the
+ * indexer performs no further work — and no further database queries —
+ * once shutdown has begun.
+ */
+async function stopIndexer() {
+  if (!isRunning) return;
+
+  if (refreshIntervalId) {
+    clearInterval(refreshIntervalId);
+    refreshIntervalId = null;
+  }
+  if (cursorFlushIntervalId) {
+    clearInterval(cursorFlushIntervalId);
+    cursorFlushIntervalId = null;
+  }
+  if (typeof closeStream === "function") {
+    closeStream();
+    closeStream = null;
+  }
+
+  if (lastProcessedLedger) {
+    persistCursor(lastProcessedLedger);
+  }
+  if (sorobanEventIndexer) {
+    await sorobanEventIndexer.stop();
+    sorobanEventIndexer = null;
+  }
+
+  isRunning = false;
+  console.log("[Indexer] Stopped");
 }
 
 /**
@@ -185,6 +300,7 @@ function getStatus() {
     isRunning,
     lastProcessedLedger,
     projectWalletsCount: projectWallets.size,
+    soroban: sorobanEventIndexer?.getStatus() || null,
     timestamp: new Date().toISOString()
   };
 }
@@ -198,5 +314,7 @@ function getStatus() {
 
 module.exports = {
   startIndexer,
-  getStatus
+  stopIndexer,
+  getStatus,
+  handleDonation
 };

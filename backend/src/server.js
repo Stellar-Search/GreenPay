@@ -7,47 +7,82 @@ const express   = require("express");
 const cookieParser = require("cookie-parser");
 const csurf     = require("csurf");
 const helmet    = require("helmet");
-const morgan    = require("morgan");
-const rateLimit = require("express-rate-limit");
 require("dotenv").config();
 const { runMigrations } = require("./db/migrate");
 const { startTurretsServer } = require("./services/turrets");
 const http = require("http");
 const { Server } = require("socket.io");
-const { startIndexer } = require("./services/indexerService");
+const { startIndexer, stopIndexer } = require("./services/indexerService");
 const { createCorsMiddleware, getAllowedOrigins } = require("./middleware/corsPolicy");
+const { correlationIdMiddleware } = require("./middleware/correlationId");
+const { apiEnvelope, errorHandler, notFoundHandler } = require("./middleware/apiEnvelope");
 const { initializeEventSourcing, shutdownEventSourcing } = require("./eventSourcing");
+const pool = require("./db/pool");
+const { createShutdownHandler } = require("./shutdown");
+const { logger } = require("./utils/logger");
 
 const app  = express();
 const PORT = process.env.PORT || 4000;
 const server = http.createServer(app);
+// Kubernetes sends SIGTERM (not SIGINT) to terminate pods during rolling
+// deploys, HPA scale-down, or node drains — keep this below the pod's
+// terminationGracePeriodSeconds (see k8s/backend.yaml) so the process has
+// time to exit on its own before the kubelet sends SIGKILL.
+const SHUTDOWN_TIMEOUT_MS = Number(process.env.SHUTDOWN_TIMEOUT_MS) || 25000;
 
 // ── Swagger UI (development) ─────────────────────────────────────────────────
 if (process.env.NODE_ENV !== "production") {
-  const swaggerUi = require("swagger-ui-express");
-  const yaml = require("js-yaml");
-  const fs = require("fs");
-  const path = require("path");
-  const swaggerDoc = yaml.load(fs.readFileSync(path.join(__dirname, "../../docs/openapi.yml"), "utf8"));
-  app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(swaggerDoc));
+  try {
+    const swaggerUi = require("swagger-ui-express");
+    const yaml = require("js-yaml");
+    const fs = require("fs");
+    const path = require("path");
+    const openApiPath = path.join(__dirname, "../../docs/openapi.yml");
+    if (fs.existsSync(openApiPath)) {
+      const swaggerDoc = yaml.load(fs.readFileSync(openApiPath, "utf8"));
+      app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(swaggerDoc));
+    }
+  } catch (err) {
+    console.warn("[Swagger UI] Skipping Swagger UI initialization:", err.message);
+  }
 }
 
 app.use(helmet());
-app.use(morgan("dev"));
+
+// Correlation-ID must be the first custom middleware so that the
+// AsyncLocalStorage context is established before any route handler,
+// including the structured access log below, executes.
+app.use(correlationIdMiddleware);
+
+// Structured access log — replaces morgan("dev") so every request
+// record carries the same JSON shape as all other log output.
+app.use((req, _res, next) => {
+  logger.info({ msg: "request", method: req.method, path: req.path });
+  next();
+});
+
 app.use(express.json({ limit: "20kb" }));
 app.use(cookieParser());
+
+// CORS must run before CSRF validation so that a CSRF rejection still carries
+// Access-Control-Allow-Origin — otherwise browsers report a same-origin-looking
+// 403 as an opaque "blocked by CORS policy" failure instead of the real error.
+const origins = getAllowedOrigins();
+app.use(apiEnvelope);
+app.use(...createCorsMiddleware(origins));
+
 app.use(csurf({
   cookie: {
     httpOnly: true,
+    // SameSite=None requires Secure, or browsers drop the cookie outright.
+    // Only production serves over HTTPS, so keep them tied together —
+    // otherwise every CSRF-protected request silently fails everywhere else.
     secure: process.env.NODE_ENV === "production",
-    sameSite: "none",
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
     path: "/",
   },
   ignoreMethods: ["GET", "HEAD", "OPTIONS"],
 }));
-
-const origins = getAllowedOrigins();
-app.use(...createCorsMiddleware(origins));
 
 const io = new Server(server, {
   cors: {
@@ -57,7 +92,8 @@ const io = new Server(server, {
   }
 });
 app.set("io", io);
-app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 150, standardHeaders: true, legacyHeaders: false }));
+// Removed generic app-wide rate limiter — each mutating endpoint now has
+// a dedicated limiter appropriate to its abuse profile (see individual route files).
 
 // ── API versioning ───────────────────────────────────────────────────────────
 // All routes are served under the `/api/v1` prefix. Legacy unversioned `/api/*`
@@ -66,9 +102,10 @@ app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 150, standardHeaders: true, l
 const API_V1 = "/api/v1";
 
 app.get(`${API_V1}/csrf-token`, (req, res) => {
-  res.json({ success: true, csrfToken: req.csrfToken() });
+  res.json({ csrfToken: req.csrfToken() });
 });
 
+app.get("/livez", (req, res) => res.json({ status: "ok" }));
 app.use("/health",                  require("./routes/health"));
 app.use(`${API_V1}/projects`,       require("./routes/projects"));
 app.use(`${API_V1}/donations`,      require("./routes/donations"));
@@ -83,6 +120,7 @@ app.use(`${API_V1}/ratings`,        require("./routes/ratings"));
 app.use(`${API_V1}/notifications`,  require("./routes/notifications"));
 app.use(`${API_V1}/admin`,          require("./routes/admin"));
 app.use(`${API_V1}/network`,        require("./routes/network"));
+app.use(`${API_V1}/meta`,           require("./routes/meta"));
 
 // Legacy unversioned routes → redirect to /api/v1 with a deprecation notice.
 app.use("/api", (req, res, next) => {
@@ -98,12 +136,8 @@ app.use("/api", (req, res, next) => {
   return res.redirect(308, `${API_V1}${req.url}`);
 });
 
-app.use((req, res) => res.status(404).json({ error: `${req.method} ${req.path} not found` }));
-app.use((err, req, res, next) => {
-  void next;
-  console.error("[Error]", err.message);
-  res.status(err.status || 500).json({ error: err.message || "Internal server error" });
-});
+app.use(notFoundHandler);
+app.use(errorHandler);
 
 async function startServer() {
   await runMigrations();
@@ -113,10 +147,19 @@ async function startServer() {
   const { start: startSummaryQueue } = require("./services/summaryQueue");
   await startSummaryQueue(io);
 
-  startIndexer(io).catch(err => console.error("[Indexer Error]", err.message));
+  const { start: startPushReceiptQueue } = require("./services/push");
+  await startPushReceiptQueue();
+
+  startIndexer(io).catch(err =>
+    logger.error({ msg: "indexer startup error", error: err.message })
+  );
 
   server.listen(PORT, () => {
-    console.log(`\n  🌱 Stellar GreenPay API\n  🚀 Running at http://localhost:${PORT}\n  🌐 Network: ${process.env.STELLAR_NETWORK || "testnet"}\n`);
+    logger.info({
+      msg: "server started",
+      port: PORT,
+      network: process.env.STELLAR_NETWORK || "testnet",
+    });
   });
 
   if (process.env.ENABLE_TURRETS === "true") {
@@ -125,16 +168,23 @@ async function startServer() {
   }
 }
 
+const gracefulShutdown = createShutdownHandler({
+  server,
+  pool,
+  shutdownEventSourcing,
+  stopIndexer,
+  timeoutMs: SHUTDOWN_TIMEOUT_MS,
+});
+
 if (require.main === module) {
   startServer().catch((err) => {
-    console.error("[Startup Error]", err.message);
+    logger.error({ msg: "startup error", error: err.message });
     process.exit(1);
   });
 
-  process.on("SIGINT", async () => {
-    await shutdownEventSourcing();
-    process.exit(0);
-  });
+  process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+  process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 }
 
 module.exports = app;
+module.exports.gracefulShutdown = gracefulShutdown;

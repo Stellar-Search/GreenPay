@@ -2,6 +2,10 @@
 
 The indexer is a background service that listens for native XLM payments on the Stellar network and records them as donations in the database. It is the bridge between on-chain activity and the application's leaderboard, profile badges, and donation feed.
 
+> **On-call:** if the indexer has fallen behind Horizon's latest ledger or missed
+> a downtime window, follow the
+> [indexer lag / missed donations runbook](./runbooks/indexer-lag.md).
+
 ---
 
 ## How It Works

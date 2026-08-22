@@ -1,5 +1,5 @@
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
 metadata:
   name: frontend
   namespace: greenpay
@@ -7,6 +7,7 @@ metadata:
     app: frontend
 spec:
   replicas: 2
+  revisionHistoryLimit: 5
   selector:
     matchLabels:
       app: frontend
@@ -15,10 +16,20 @@ spec:
       labels:
         app: frontend
     spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: frontend
-          image: greenpay/frontend:latest
-          imagePullPolicy: IfNotPresent
+          image: greenpay/frontend:1.0.0
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 3000
           envFrom:
@@ -30,6 +41,13 @@ spec:
               port: 3000
             initialDelaySeconds: 15
             periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
           resources:
             requests:
               cpu: "100m"
@@ -37,15 +55,125 @@ spec:
             limits:
               cpu: "500m"
               memory: "512Mi"
+  strategy:
+    canary:
+      canaryService: frontend-canary
+      stableService: frontend-stable
+      trafficRouting:
+        nginx:
+          stableIngress: frontend-ingress
+          additionalIngressAnnotations:
+            canary-by-header: X-Canary
+      analysis:
+        templates:
+          - templateName: frontend-error-rate
+        startingStep: 2
+        args:
+          - name: service
+            value: frontend-canary.greenpay.svc.cluster.local
+      steps:
+        - setWeight: 10
+        - pause: { duration: 2m }
+        - setWeight: 30
+        - pause: { duration: 2m }
+        - setWeight: 60
+        - pause: { duration: 2m }
+        - setWeight: 100
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: frontend-svc
+  name: frontend-stable
   namespace: greenpay
+  labels:
+    app: frontend
 spec:
   selector:
     app: frontend
   ports:
     - port: 3000
       targetPort: 3000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-canary
+  namespace: greenpay
+  labels:
+    app: frontend
+spec:
+  selector:
+    app: frontend
+  ports:
+    - port: 3000
+      targetPort: 3000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: frontend-ingress
+  namespace: greenpay
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: greenpay.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend-stable
+                port:
+                  number: 3000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: frontend-canary-ingress
+  namespace: greenpay
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/canary: "true"
+    nginx.ingress.kubernetes.io/canary-weight: "100"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: greenpay.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend-canary
+                port:
+                  number: 3000
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: frontend-error-rate
+  namespace: greenpay
+spec:
+  args:
+    - name: service
+  metrics:
+    - name: error-rate
+      interval: 1m
+      count: 5
+      successCondition: result[0] < 0.05
+      failureLimit: 3
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring.svc.cluster.local:9090
+          query: |
+            sum(rate(http_requests_total{
+              service="{{args.service}}",
+              code=~"5.*"
+            }[2m])) /
+            sum(rate(http_requests_total{
+              service="{{args.service}}"
+            }[2m]))

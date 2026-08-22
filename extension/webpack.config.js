@@ -1,36 +1,27 @@
-const path = require('path');
+const path = require("path");
 
-const entries = {
-  'content-script': './src/content-script.ts',
-  popup: './src/popup.ts',
+module.exports = {
+  mode: "production",
+  entry: {
+    background: "./src/background.ts",
+    "content-script": "./src/content-script.ts",
+    popup: "./src/popup.ts",
+  },
+  output: {
+    path: path.resolve(__dirname, "dist"),
+    filename: "[name].js",
+  },
+  resolve: {
+    extensions: [".ts", ".js"],
+  },
+  module: {
+    rules: [
+      {
+        test: /\.ts$/,
+        use: "ts-loader",
+        exclude: /node_modules/,
+      },
+    ],
+  },
+  devtool: "source-map",
 };
-
-function createConfig(outputDirectory) {
-  return {
-    mode: 'production',
-    devtool: false,
-    entry: entries,
-    module: {
-      rules: [
-        {
-          test: /\.tsx?$/,
-          use: 'ts-loader',
-          exclude: /node_modules/,
-        },
-      ],
-    },
-    resolve: {
-      extensions: ['.ts', '.tsx', '.js'],
-    },
-    output: {
-      filename: '[name].js',
-      path: path.resolve(__dirname, outputDirectory),
-      clean: true,
-    },
-  };
-}
-
-module.exports = [
-  createConfig('dist'),
-  createConfig('dist-firefox'),
-];

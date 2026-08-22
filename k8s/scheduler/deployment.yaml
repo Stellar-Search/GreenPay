@@ -127,7 +127,7 @@ spec:
       containers:
         - name: greenpay-scheduler
           image: greenpay/scheduler:1.0.0
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           command:
             - /greenpay-scheduler
             - --config=/etc/kubernetes/scheduler-config.yaml

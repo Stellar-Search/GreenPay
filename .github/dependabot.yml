@@ -45,6 +45,15 @@ updates:
       - "dependencies"
       - "contracts"
 
+  - package-ecosystem: "gomod"
+    directory: "/scheduler"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "scheduler"
+
   - package-ecosystem: "docker"
     directory: "/backend"
     schedule:

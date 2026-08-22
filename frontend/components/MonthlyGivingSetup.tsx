@@ -7,6 +7,7 @@ import {
   resolveBrowserTimeZone,
 } from "@/lib/monthlyGiving";
 import { formatXLM, timeAgo } from "@/utils/format";
+import { parseToStroops, stroopsToXLM, isValidAmount } from "@/utils/amount";
 import type { MonthlySubscription } from "@/utils/types";
 
 interface MonthlyGivingSetupProps {
@@ -41,8 +42,7 @@ export default function MonthlyGivingSetup({
   }, [projectId]);
 
   const canCreate = useMemo(() => {
-    const amount = Number.parseFloat(amountXLM);
-    if (!Number.isFinite(amount) || amount < 1) return false;
+    if (!isValidAmount(amountXLM) || parseToStroops(amountXLM) < parseToStroops("1")) return false;
     if (!startDate) return false;
     return true;
   }, [amountXLM, startDate]);
@@ -57,7 +57,7 @@ export default function MonthlyGivingSetup({
     const created = createMonthlySubscription({
       projectId,
       projectName,
-      amountXLM: Number.parseFloat(amountXLM).toFixed(7),
+      amountXLM: stroopsToXLM(parseToStroops(amountXLM)),
       // Pass the plain "YYYY-MM-DD" the donor picked, not a UTC-instant
       // conversion of it — createMonthlySubscription interprets this as a
       // donor-local calendar date (see monthlyGiving.ts / docs).

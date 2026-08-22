@@ -10,12 +10,15 @@ resources:
   - postgres.yaml
   - backend.yaml
   - frontend.yaml
-  - ingress.yaml
+  - hpa.yaml
+  # Ingress is now defined inside backend.yaml and frontend.yaml
+  # with canary routing support — removed standalone ingress.yaml
   # ML workload manifests (scheduler-annotated)
   - ml-workloads/node-labels.yaml
   - ml-workloads/summary-worker.yaml
   - ml-workloads/ml-inference.yaml
   - ml-workloads/ml-training.yaml
+  - network-policy.yaml
 
 components:
   # Deploy the custom scheduler infrastructure.

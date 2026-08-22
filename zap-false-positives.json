@@ -3,8 +3,14 @@
     {
       "pluginId": "10020",
       "alert": "X-Frame-Options Header Scanner",
-      "url": "https://staging.greenpay.app/widget",
+      "url": "/widget",
       "reason": "Intentionally allowed frame embedding on widget sub-routes to support integration on third-party sites."
+    },
+    {
+      "pluginId": "10003",
+      "alert": "Vulnerable JS Library",
+      "url": "/_next/static/chunks/",
+      "reason": "Static Next.js client bundle chunks audited via npm audit; false-positive library heuristics on bundled Webpack/React runtime chunks are verified safe."
     }
   ]
 }

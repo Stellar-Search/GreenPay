@@ -2,6 +2,7 @@ package plugins_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -48,7 +49,7 @@ func makeNodeInfo(node *corev1.Node) *framework.NodeInfo {
 
 func newFilter(t *testing.T) *plugins.GPUHardwareFilter {
 	t.Helper()
-	p, err := plugins.NewGPUHardwareFilter(nil, nil)
+	p, err := plugins.NewGPUHardwareFilter(context.Background(), nil, nil)
 	if err != nil {
 		t.Fatalf("NewGPUHardwareFilter: %v", err)
 	}
@@ -210,6 +211,127 @@ func TestFilter_VendorAny_SkipsVendorCheck(t *testing.T) {
 	status := f.Filter(context.Background(), &framework.CycleState{}, pod, makeNodeInfo(node))
 	if !status.IsSuccess() {
 		t.Errorf("vendor any: expected Success, got: %v", status.Message())
+	}
+}
+
+func TestFilter_FullyAllocatedGPU_Unschedulable(t *testing.T) {
+	f := newFilter(t)
+	pod := makePod(map[string]string{hardware.AnnotGPUVendorReq: "nvidia"})
+
+	node := makeNode(map[string]string{
+		hardware.LabelGPUVendor: "nvidia",
+		hardware.LabelGPUCount:  "8",
+	})
+	node.Status.Allocatable[corev1.ResourceName("nvidia.com/gpu")] = resource.MustParse("8")
+
+	ni := makeNodeInfo(node)
+
+	// Simulate existing scheduled pods consuming all 8 GPUs
+	existingPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "existing-gpu-pod",
+			Namespace: "default",
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "worker",
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceName("nvidia.com/gpu"): resource.MustParse("8"),
+						},
+					},
+				},
+			},
+		},
+	}
+	ni.AddPod(existingPod)
+
+	status := f.Filter(context.Background(), &framework.CycleState{}, pod, ni)
+	if status.Code() != framework.Unschedulable {
+		t.Fatalf("expected Unschedulable, got: %v", status.Code())
+	}
+
+	expectedReason := "0 of 8 GPUs free"
+	if !strings.Contains(status.Message(), expectedReason) {
+		t.Errorf("expected reason to contain %q, got %q", expectedReason, status.Message())
+	}
+}
+
+func TestFilter_PartiallyAllocatedGPU_Passes(t *testing.T) {
+	f := newFilter(t)
+	pod := makePod(map[string]string{hardware.AnnotGPUVendorReq: "nvidia"})
+
+	node := makeNode(map[string]string{
+		hardware.LabelGPUVendor: "nvidia",
+		hardware.LabelGPUCount:  "8",
+	})
+	node.Status.Allocatable[corev1.ResourceName("nvidia.com/gpu")] = resource.MustParse("8")
+
+	ni := makeNodeInfo(node)
+
+	// Simulate existing scheduled pod consuming 4 GPUs (4 remain free)
+	existingPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "existing-gpu-pod",
+			Namespace: "default",
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "worker",
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceName("nvidia.com/gpu"): resource.MustParse("4"),
+						},
+					},
+				},
+			},
+		},
+	}
+	ni.AddPod(existingPod)
+
+	status := f.Filter(context.Background(), &framework.CycleState{}, pod, ni)
+	if !status.IsSuccess() {
+		t.Errorf("partially allocated GPU: expected Success, got: %v", status.Message())
+	}
+}
+
+func TestFilter_FullyAllocatedGPU_NonGPUPod_Passes(t *testing.T) {
+	f := newFilter(t)
+	pod := makePod(map[string]string{hardware.AnnotGPUVendorReq: hardware.GPUVendorNone})
+
+	node := makeNode(map[string]string{
+		hardware.LabelGPUVendor: "nvidia",
+		hardware.LabelGPUCount:  "8",
+	})
+	node.Status.Allocatable[corev1.ResourceName("nvidia.com/gpu")] = resource.MustParse("8")
+
+	ni := makeNodeInfo(node)
+
+	existingPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "existing-gpu-pod",
+			Namespace: "default",
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "worker",
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceName("nvidia.com/gpu"): resource.MustParse("8"),
+						},
+					},
+				},
+			},
+		},
+	}
+	ni.AddPod(existingPod)
+
+	status := f.Filter(context.Background(), &framework.CycleState{}, pod, ni)
+	if !status.IsSuccess() {
+		t.Errorf("non-GPU pod on fully allocated GPU node: expected Success, got: %v", status.Message())
 	}
 }
 

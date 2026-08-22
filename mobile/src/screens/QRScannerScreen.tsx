@@ -1,12 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { BarCodeScanner, BarCodeScannerResult } from 'expo-barcode-scanner';
 import { useRouter } from 'expo-router';
-import axios from 'axios';
 import { parseSep7PayUri } from '../../utils/sep7';
 import { parseGreenPayDonationLink } from '../../utils/qrPayload';
-
-const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
+import { apiGet } from '../../utils/api';
 
 interface ClimateProject {
   id: string;
@@ -23,8 +21,7 @@ interface ClimateProject {
  */
 async function findActiveProjectByWalletAddress(destination: string): Promise<ClimateProject | null> {
   try {
-    const res = await axios.get(`${API_URL}/api/projects`);
-    const list: ClimateProject[] = Array.isArray(res.data?.data) ? res.data.data : [];
+    const list = await apiGet<ClimateProject[]>('/api/projects');
     const match = list.find(
       (project) => project.status === 'active' && project.walletAddress === destination
     );
@@ -56,18 +53,35 @@ export function QRScannerScreen() {
   const router = useRouter();
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [scanned, setScanned] = useState(false);
+  const scanningRef = useRef(false);
 
   useEffect(() => {
-    BarCodeScanner.requestPermissionsAsync().then(({ status }) => {
-      setHasPermission(status === 'granted');
-    });
+    let isMounted = true;
+    BarCodeScanner.requestPermissionsAsync()
+      .then(({ status }) => {
+        if (isMounted) setHasPermission(status === 'granted');
+      })
+      .catch(() => {
+        if (isMounted) setHasPermission(false);
+      });
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   const rejectScan = (message: string) => {
-    Alert.alert('Unrecognized QR code', message, [
-      { text: 'Scan again', onPress: () => setScanned(false) },
-      { text: 'Cancel', onPress: () => router.back() },
-    ]);
+    Alert.alert(
+      'Unrecognized QR code',
+      message,
+      [
+        { text: 'Scan again', onPress: () => { setScanned(false); scanningRef.current = false; } },
+        { text: 'Cancel', onPress: () => router.back() },
+      ],
+      {
+        cancelable: true,
+        onDismiss: () => { setScanned(false); scanningRef.current = false; },
+      }
+    );
   };
 
   const navigateToProject = (projectId: string) => {
@@ -75,7 +89,8 @@ export function QRScannerScreen() {
   };
 
   const handleBarCodeScanned = async ({ data }: BarCodeScannerResult) => {
-    if (scanned) return;
+    if (scanningRef.current) return;
+    scanningRef.current = true;
     setScanned(true);
 
     if (typeof data !== 'string' || data.length === 0) {
@@ -145,7 +160,7 @@ export function QRScannerScreen() {
         <Text style={styles.hint}>Point camera at a GreenPay QR code</Text>
         <View style={styles.frame} />
         {scanned && (
-          <TouchableOpacity style={styles.rescanButton} onPress={() => setScanned(false)}>
+          <TouchableOpacity style={styles.rescanButton} onPress={() => { setScanned(false); scanningRef.current = false; }}>
             <Text style={styles.rescanText}>Tap to scan again</Text>
           </TouchableOpacity>
         )}

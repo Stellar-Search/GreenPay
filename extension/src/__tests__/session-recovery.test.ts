@@ -153,4 +153,69 @@ describe('MV3 session recovery', () => {
     expect(snapshot.wallet).toBeNull();
     expect(snapshot.projects).toBeNull();
   });
+
+  it('serializes concurrent setWallet and clearWallet mutations to prevent storage desync', async () => {
+    class DelayedStorage extends MemoryStorage {
+      constructor(private readonly delayMs: number = 20) {
+        super();
+      }
+
+      override async set(items: Record<string, unknown>) {
+        await new Promise((resolve) => setTimeout(resolve, this.delayMs));
+        await super.set(items);
+      }
+
+      override async remove(keys: string | string[]) {
+        await new Promise((resolve) => setTimeout(resolve, this.delayMs));
+        await super.remove(keys);
+      }
+    }
+
+    const sessionStorage = new DelayedStorage(15);
+    const localStorage = new DelayedStorage(5);
+    const worker = new WorkerSessionState(sessionStorage, localStorage, () => 50_000, 'worker-concurrent');
+
+    const keyA = 'GDQCDHD4ZRSKWEEX2KDATJRVD5WUJEAYWWKEW5COFQKUHRYR2D3VH5VE';
+    const keyB = 'GDCK7PXQBWBSPBKZTSCTO6RE67CHS6M3LLEPETS3VHTYVNZRMRF3RRBA';
+
+    // Interleave setWallet(A) then clearWallet() concurrently
+    const [walletA] = await Promise.all([
+      worker.setWallet(keyA),
+      worker.clearWallet(),
+    ]);
+
+    expect(walletA.publicKey).toBe(keyA);
+
+    // Final state must reflect the second operation (clearWallet)
+    const snapshotAfterClear = await worker.snapshot(null);
+    expect(snapshotAfterClear.wallet).toBeNull();
+    expect(sessionStorage.values[STORAGE_KEYS.session]).toBeUndefined();
+
+    // Now interleave clearWallet() then setWallet(B) concurrently
+    await Promise.all([
+      worker.clearWallet(),
+      worker.setWallet(keyB),
+    ]);
+
+    const snapshotAfterSet = await worker.snapshot(null);
+    expect(snapshotAfterSet.wallet?.publicKey).toBe(keyB);
+    const stored = sessionStorage.values[STORAGE_KEYS.session] as Record<string, unknown>;
+    expect((stored?.wallet as { publicKey: string })?.publicKey).toBe(keyB);
+  });
+
+  it('continues processing serialized mutation queue when an operation rejects', async () => {
+    const sessionStorage = new MemoryStorage();
+    const localStorage = new MemoryStorage();
+    const worker = new WorkerSessionState(sessionStorage, localStorage, () => 60_000, 'worker-error');
+
+    const invalidCall = worker.setWallet('invalid_key');
+    const validCall = worker.setWallet(PUBLIC_KEY);
+
+    await expect(invalidCall).rejects.toThrow('Invalid Stellar public key');
+    const validWallet = await validCall;
+
+    expect(validWallet.publicKey).toBe(PUBLIC_KEY);
+    const snapshot = await worker.snapshot(null);
+    expect(snapshot.wallet?.publicKey).toBe(PUBLIC_KEY);
+  });
 });

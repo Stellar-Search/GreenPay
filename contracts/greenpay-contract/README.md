@@ -20,6 +20,9 @@ Every donation is recorded permanently on the Stellar blockchain. Anyone can que
 | `get_global_total()` | Anyone | Total XLM raised platform-wide |
 | `get_global_co2()` | Anyone | Total CO₂ offset in grams |
 | `get_donation_count()` | Anyone | Total donations recorded |
+| `set_dao_contract(admin, dao)` | Admin | Register the DAO contract for project verification (Issue #112) |
+| `get_dao_contract()` | Anyone | Get the registered DAO contract address |
+| `verify_project(caller, project_id)` | DAO contract only | Mark a project as DAO-verified; must be called via `dao-governance-contract.execute_proposal` |
 
 ## Badge Tiers
 
@@ -63,7 +66,36 @@ stellar contract invoke \
 Must be ≤ `MAX_CO2_PER_XLM` (10_000_000 g/XLM); values above that are rejected at registration.
 See [`SECURITY.md`](SECURITY.md#accumulator-bounds-at-max_co2_per_xlm) for formal overflow horizons.
 
+## Storage choice for future contributors
+
+GreenPay uses two Soroban storage types. When adding a new `DataKey` variant,
+pick the correct one:
+
+| Storage type | Use for | Examples |
+| --- | --- | --- |
+| **Instance** | Small, contract-wide configuration with a single shared TTL/footprint. Loaded on every invocation. | `Admin`, `ProjectCount`, `DonationCount`, `GlobalTotalRaised`, `GlobalCO2OffsetGrams`, `AllowedToken(Address)` |
+| **Persistent** | Per-entity records that grow unbounded (per project/donor/proposal). Each key has its own TTL. | `Project(String)`, `DonorStats(Address)`, `ImpactNFT(Address, BadgeTier)`, `HasDonated(String, Address)`, `Proposal(String)`, `HasVoted(String, Address)` |
+
+**Rule of thumb:** if the key contains a `String` project id or an `Address`
+donor/voter, it is per-entity and belongs in **persistent** storage. If it is a
+single global scalar (admin, counter, allowlist), it belongs in **instance**
+storage.
+
+Per-entity persistent entries must be accessed through the helpers in
+[`src/lib.rs`](src/lib.rs):
+
+- `read_persistent(env, key)` — reads, lazily migrates a legacy v1 instance
+  entry, and extends the key's TTL.
+- `write_persistent(env, key, val)` — writes and extends the key's TTL.
+- `has_persistent(env, key)` — checks existence (also sees legacy instance
+  entries) and extends the key's TTL.
+
+Never call `env.storage().instance()` for a per-entity key: it inflates the
+shared instance footprint on every invocation and eventually hits the hard
+ledger-entry size ceiling. TTL extension is automatic on every read/write via
+`extend_persistent_ttl` (`PERSISTENT_TTL_THRESHOLD` / `PERSISTENT_TTL_EXTEND`).
+
 ## Roadmap
 
 - **v1.3** — Impact NFT minting on badge achievement
-- **v2.1** — DAO governance voting for project verification
+- **v2.1** — DAO governance voting for project verification ✅ (implemented — see [ARCHITECTURE.md](../ARCHITECTURE.md))

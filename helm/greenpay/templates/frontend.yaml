@@ -1,10 +1,13 @@
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
 metadata:
   name: frontend
   namespace: {{ .Values.namespace }}
+  labels:
+    app: frontend
 spec:
   replicas: {{ .Values.frontend.replicas }}
+  revisionHistoryLimit: 5
   selector:
     matchLabels:
       app: frontend
@@ -28,6 +31,13 @@ spec:
               port: {{ .Values.frontend.port }}
             initialDelaySeconds: 15
             periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: {{ .Values.frontend.port }}
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
           resources:
             requests:
               cpu: "100m"
@@ -35,15 +45,129 @@ spec:
             limits:
               cpu: "500m"
               memory: "512Mi"
+  strategy:
+    canary:
+      canaryService: frontend-canary
+      stableService: frontend-stable
+      trafficRouting:
+        nginx:
+          stableIngress: frontend-ingress
+          additionalIngressAnnotations:
+            canary-by-header: X-Canary
+      analysis:
+        templates:
+          - templateName: frontend-error-rate
+        startingStep: 2
+        args:
+          - name: service
+            value: frontend-canary.{{ .Values.namespace }}.svc.cluster.local
+      steps:
+        - setWeight: {{ .Values.frontend.canary.steps.initialWeight | default 10 }}
+        - pause: { duration: {{ .Values.frontend.canary.steps.initialPause | default "2m" }} }
+        - setWeight: {{ .Values.frontend.canary.steps.midWeight | default 30 }}
+        - pause: { duration: {{ .Values.frontend.canary.steps.midPause | default "2m" }} }
+        - setWeight: {{ .Values.frontend.canary.steps.highWeight | default 60 }}
+        - pause: { duration: {{ .Values.frontend.canary.steps.highPause | default "2m" }} }
+        - setWeight: 100
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: frontend-svc
+  name: frontend-stable
   namespace: {{ .Values.namespace }}
+  labels:
+    app: frontend
 spec:
   selector:
     app: frontend
   ports:
     - port: {{ .Values.frontend.port }}
       targetPort: {{ .Values.frontend.port }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-canary
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: frontend
+spec:
+  selector:
+    app: frontend
+  ports:
+    - port: {{ .Values.frontend.port }}
+      targetPort: {{ .Values.frontend.port }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: frontend-ingress
+  namespace: {{ .Values.namespace }}
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    {{- include "greenpay.ingress.tlsAnnotations" . | nindent 4 }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- include "greenpay.ingress.tls" . | nindent 2 }}
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend-stable
+                port:
+                  number: {{ .Values.frontend.port }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: frontend-canary-ingress
+  namespace: {{ .Values.namespace }}
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/canary: "true"
+    nginx.ingress.kubernetes.io/canary-weight: "100"
+    {{- include "greenpay.ingress.tlsAnnotations" . | nindent 4 }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- include "greenpay.ingress.tls" . | nindent 2 }}
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend-canary
+                port:
+                  number: {{ .Values.frontend.port }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: frontend-error-rate
+  namespace: {{ .Values.namespace }}
+spec:
+  args:
+    - name: service
+  metrics:
+    - name: error-rate
+      interval: 1m
+      count: 5
+      successCondition: result[0] < 0.05
+      failureLimit: 3
+      provider:
+        prometheus:
+          address: http://prometheus.{{ .Values.monitoring.namespace | default "monitoring" }}.svc.cluster.local:9090
+          query: |
+            sum(rate(http_requests_total{
+              service="{{`{{args.service}}`}}",
+              code=~"5.*"
+            }[2m])) /
+            sum(rate(http_requests_total{
+              service="{{`{{args.service}}`}}"
+            }[2m]))

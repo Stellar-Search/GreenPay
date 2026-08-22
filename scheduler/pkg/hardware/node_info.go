@@ -1,9 +1,12 @@
 package hardware
 
 import (
+	"sort"
 	"strconv"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 )
 
 // NodeHardware holds the parsed hardware profile for a single Kubernetes node,
@@ -22,6 +25,12 @@ type NodeHardware struct {
 	GPUInterconnect string
 	// NUMANodes is the number of NUMA domains.
 	NUMANodes int64
+	// GPUNUMADistribution lists GPU counts by ascending NUMA domain ID.
+	GPUNUMADistribution []int64
+	// TopologyManagerPolicy is the operator-verified kubelet policy.
+	TopologyManagerPolicy string
+	// TopologyManagerScope is the operator-verified kubelet scope.
+	TopologyManagerScope string
 	// NetworkZone is the availability zone / rack label.
 	NetworkZone string
 	// NetworkBandwidthGbps is the uplink bandwidth in Gbps.
@@ -39,12 +48,23 @@ func ParseNodeHardware(node *corev1.Node) NodeHardware {
 	}
 
 	return NodeHardware{
-		GPUVendor:            labelStr(labels, LabelGPUVendor, GPUVendorNone),
-		GPUModel:             labelStr(labels, LabelGPUModel, ""),
-		GPUCount:             labelInt(labels, LabelGPUCount),
-		GPUVRAMMiB:           labelInt(labels, LabelGPUVRAMMiB),
-		GPUInterconnect:      labelStr(labels, LabelGPUInterconnect, "none"),
-		NUMANodes:            labelInt(labels, LabelNUMANodes),
+		GPUVendor:           labelStr(labels, LabelGPUVendor, GPUVendorNone),
+		GPUModel:            labelStr(labels, LabelGPUModel, ""),
+		GPUCount:            labelInt(labels, LabelGPUCount),
+		GPUVRAMMiB:          labelInt(labels, LabelGPUVRAMMiB),
+		GPUInterconnect:     labelStr(labels, LabelGPUInterconnect, "none"),
+		NUMANodes:           labelInt(labels, LabelNUMANodes),
+		GPUNUMADistribution: labelIntList(labels, LabelGPUNUMADistribution),
+		TopologyManagerPolicy: labelStr(
+			labels,
+			LabelTopologyManagerPolicy,
+			TopologyManagerPolicyNone,
+		),
+		TopologyManagerScope: labelStr(
+			labels,
+			LabelTopologyManagerScope,
+			TopologyManagerScopeContainer,
+		),
 		NetworkZone:          labelStr(labels, LabelNetworkZone, ""),
 		NetworkBandwidthGbps: labelInt(labels, LabelNetworkBandwidthGbps),
 		NodeTier:             labelStr(labels, LabelNodeTier, NodeTierCPUStandard),
@@ -66,6 +86,58 @@ func (n NodeHardware) IsHighBandwidth(thresholdGbps int64) bool {
 	return n.NetworkBandwidthGbps >= thresholdGbps
 }
 
+// HasValidGPUNUMATopology reports whether the distribution agrees with the
+// node's declared NUMA-domain and physical-GPU counts.
+func (n NodeHardware) HasValidGPUNUMATopology() bool {
+	if n.NUMANodes <= 0 ||
+		n.GPUCount <= 0 ||
+		int64(len(n.GPUNUMADistribution)) != n.NUMANodes {
+		return false
+	}
+
+	var total int64
+	for _, count := range n.GPUNUMADistribution {
+		if count < 0 || count > n.GPUCount-total {
+			return false
+		}
+		total += count
+	}
+	return total == n.GPUCount
+}
+
+// EnforcesPodNUMAAlignment reports whether the operator-declared kubelet
+// configuration guarantees pod-scope topology admission.
+func (n NodeHardware) EnforcesPodNUMAAlignment() bool {
+	if n.TopologyManagerScope != TopologyManagerScopePod {
+		return false
+	}
+
+	return n.TopologyManagerPolicy == TopologyManagerPolicyRestricted ||
+		n.TopologyManagerPolicy == TopologyManagerPolicySingleNUMANode
+}
+
+// MinimumNUMADomainsForGPUs returns the fewest NUMA domains that can supply
+// the requested physical GPU count using the declared distribution.
+func (n NodeHardware) MinimumNUMADomainsForGPUs(requested int64) (int64, bool) {
+	if requested <= 0 || !n.HasValidGPUNUMATopology() {
+		return 0, false
+	}
+
+	counts := append([]int64(nil), n.GPUNUMADistribution...)
+	sort.Slice(counts, func(i, j int) bool {
+		return counts[i] > counts[j]
+	})
+
+	var available int64
+	for i, count := range counts {
+		available += count
+		if available >= requested {
+			return int64(i + 1), true
+		}
+	}
+	return 0, false
+}
+
 // ── Pod requirement parsing ──────────────────────────────────────────────────
 
 // PodHardwareReqs holds the parsed hardware requirements extracted from a
@@ -79,6 +151,8 @@ type PodHardwareReqs struct {
 	GPUModelReq string
 	// GPUVRAMMinMiB is the minimum per-GPU VRAM required.  0 = no requirement.
 	GPUVRAMMinMiB int64
+	// GPUCountReq is the effective physical GPU request from pod resources.
+	GPUCountReq int64
 	// NetworkZoneReq pins to a specific zone ("" = no preference).
 	NetworkZoneReq string
 	// NetworkBWMinGbps is the minimum required network bandwidth.  0 = any.
@@ -96,8 +170,16 @@ func ParsePodHardwareReqs(pod *corev1.Pod) PodHardwareReqs {
 
 	weight := 1.0
 	if s, ok := annots[AnnotBinPackWeight]; ok {
-		if f, err := strconv.ParseFloat(s, 64); err == nil && f >= 0 {
-			weight = f
+		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			if f < 0 {
+				klog.Warningf("Pod %s/%s requested BinPackWeight %v, clamping to minimum 0", pod.Namespace, pod.Name, f)
+				weight = 0
+			} else if f > 2 {
+				klog.Warningf("Pod %s/%s requested BinPackWeight %v, clamping to maximum 2", pod.Namespace, pod.Name, f)
+				weight = 2.0
+			} else {
+				weight = f
+			}
 		}
 	}
 
@@ -106,6 +188,7 @@ func ParsePodHardwareReqs(pod *corev1.Pod) PodHardwareReqs {
 		GPUVendorReq:     annotStr(annots, AnnotGPUVendorReq, GPUVendorAny),
 		GPUModelReq:      annotStr(annots, AnnotGPUModelReq, GPUVendorAny),
 		GPUVRAMMinMiB:    annotInt(annots, AnnotGPUVRAMMinMiB),
+		GPUCountReq:      podGPURequest(pod),
 		NetworkZoneReq:   annotStr(annots, AnnotNetworkZoneReq, ""),
 		NetworkBWMinGbps: annotInt(annots, AnnotNetworkBWMinGbps),
 		BinPackWeight:    weight,
@@ -121,9 +204,12 @@ func (r PodHardwareReqs) IsMLWorkload() bool {
 	return false
 }
 
-// NeedsGPU returns true when the pod requires a GPU (vendor is not "none" and
-// not empty, or a minimum VRAM is set).
+// NeedsGPU returns true when the pod requires a GPU through resources,
+// annotations, or a minimum VRAM floor.
 func (r PodHardwareReqs) NeedsGPU() bool {
+	if r.GPUCountReq > 0 {
+		return true
+	}
 	if r.GPUVendorReq != "" && r.GPUVendorReq != GPUVendorNone && r.GPUVendorReq != GPUVendorAny {
 		return true
 	}
@@ -148,6 +234,24 @@ func labelInt(labels map[string]string, key string) int64 {
 	return 0
 }
 
+func labelIntList(labels map[string]string, key string) []int64 {
+	value, ok := labels[key]
+	if !ok || value == "" {
+		return nil
+	}
+
+	parts := strings.Split(value, ".")
+	counts := make([]int64, len(parts))
+	for i, part := range parts {
+		count, err := strconv.ParseInt(part, 10, 64)
+		if err != nil || count < 0 {
+			return nil
+		}
+		counts[i] = count
+	}
+	return counts
+}
+
 func annotStr(annots map[string]string, key, defaultVal string) string {
 	if v, ok := annots[key]; ok && v != "" {
 		return v
@@ -162,4 +266,51 @@ func annotInt(annots map[string]string, key string) int64 {
 		}
 	}
 	return 0
+}
+
+func podGPURequest(pod *corev1.Pod) int64 {
+	var appContainers int64
+	for _, container := range pod.Spec.Containers {
+		appContainers += containerGPURequest(container)
+	}
+
+	var largestInitContainer int64
+	for _, container := range pod.Spec.InitContainers {
+		requested := containerGPURequest(container)
+		if requested > largestInitContainer {
+			largestInitContainer = requested
+		}
+	}
+
+	if largestInitContainer > appContainers {
+		return largestInitContainer
+	}
+	return appContainers
+}
+
+func containerGPURequest(container corev1.Container) int64 {
+	counts := make(map[corev1.ResourceName]int64)
+
+	for name, quantity := range container.Resources.Requests {
+		if isGPUResourceName(name) {
+			counts[name] = quantity.Value()
+		}
+	}
+	for name, quantity := range container.Resources.Limits {
+		if isGPUResourceName(name) && quantity.Value() > counts[name] {
+			counts[name] = quantity.Value()
+		}
+	}
+
+	var total int64
+	for _, count := range counts {
+		total += count
+	}
+	return total
+}
+
+func isGPUResourceName(name corev1.ResourceName) bool {
+	resourceName := strings.ToLower(string(name))
+	return strings.HasSuffix(resourceName, "/gpu") ||
+		strings.HasPrefix(resourceName, "gpu.")
 }

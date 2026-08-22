@@ -35,11 +35,18 @@ function buildCsp(nonce: string, isWidget: boolean): string {
     ...apiOrigins,
   ].join(' ')
 
+  // Next.js dev mode's React Refresh runtime evaluates code via eval() to
+  // apply hot-reloaded modules. That's blocked by a strict script-src with
+  // no 'unsafe-eval', which is fine (even desirable) in production but
+  // breaks local dev entirely (blank page, EvalError in console). Scope the
+  // exception to non-production so prod CSP is untouched.
+  const isDev = process.env.NODE_ENV !== 'production'
+
   const directives = [
     "default-src 'self'",
     // nonce tags the Next.js script injection; strict-dynamic propagates trust to bundles
     // it loads; unsafe-inline is a no-op in CSP3 but keeps CSP2 browsers working.
-    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic' 'unsafe-inline'`,
+    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""}`,
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data: blob:",

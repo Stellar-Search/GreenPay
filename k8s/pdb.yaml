@@ -1,0 +1,102 @@
+# PodDisruptionBudgets for GreenPay workloads
+#
+# These PDBs ensure that voluntary disruptions (node drains, cluster-autoscaler
+# scale-downs, kubectl drain) never take every replica of a multi-replica
+# workload offline simultaneously.
+#
+# ── Design decisions ───────────────────────────────────────────────────────
+#
+# backend / frontend / summary-worker (2 replicas each; backend/frontend HPA
+# minReplicas: 2, see k8s/hpa.yaml)
+#   maxUnavailable: 1 — one replica may be evicted at a time; the other stays
+#   up to serve traffic. Using maxUnavailable rather than minAvailable: 1 is
+#   equivalent at replica count 2 and remains valid when the HPA scales up.
+#
+# ml-inference (2 replicas, HPA minReplicas: 1)
+#   maxUnavailable: 1 — must NOT use minAvailable: 1 here. When the HPA
+#   scales the Deployment down to its minimum of 1, a minAvailable: 1 PDB
+#   would block all voluntary eviction of that single pod (the eviction API
+#   enforces the budget). maxUnavailable: 1 allows eviction even at 1 pod,
+#   so node drains are never permanently blocked by HPA scale-down.
+#
+# postgres (StatefulSet, 1 replica)
+#   No PDB is created. A PDB with minAvailable: 1 on a single-replica
+#   StatefulSet would block all voluntary eviction — node drains would hang
+#   indefinitely. The correct availability strategy for a production database
+#   is to promote to a multi-replica setup (primary + replica) or use a
+#   managed service with its own HA guarantees. Until then, postgres must be
+#   treated as a maintenance window workload: drain the node in a scheduled
+#   maintenance window with the StatefulSet scaled down first, or use a
+#   pod-disruption annotation to opt out of drain blocking if the operator
+#   accepts the risk.
+#
+# ── References ─────────────────────────────────────────────────────────────
+#   Issue #158: https://github.com/Stellar-Search/GreenPay/issues/158
+#   k8s docs:   https://kubernetes.io/docs/tasks/run-application/configure-pdb/
+# ───────────────────────────────────────────────────────────────────────────
+---
+# backend — 2 replicas (Argo Rollout); PDB selects pods by label.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: backend-pdb
+  namespace: greenpay
+  labels:
+    app: backend
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: greenpay
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: backend
+---
+# frontend — 2 replicas (Argo Rollout)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: frontend-pdb
+  namespace: greenpay
+  labels:
+    app: frontend
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: greenpay
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: frontend
+---
+# summary-worker — 2 replicas (Deployment)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: summary-worker-pdb
+  namespace: greenpay
+  labels:
+    app: summary-worker
+    app.kubernetes.io/component: ml-worker
+    app.kubernetes.io/part-of: greenpay
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: summary-worker
+---
+# ml-inference — 2 replicas (Deployment), HPA minReplicas: 1
+# Uses maxUnavailable: 1 (NOT minAvailable: 1) so that eviction is never
+# permanently blocked when the HPA has already scaled down to 1 replica.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ml-inference-pdb
+  namespace: greenpay
+  labels:
+    app: ml-inference
+    app.kubernetes.io/component: ml-inference
+    app.kubernetes.io/part-of: greenpay
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: ml-inference

@@ -3,16 +3,16 @@
  */
 import Link from "next/link";
 import type { ClimateProject } from "@/utils/types";
-import { formatXLM, formatUSDEquivalent, formatCO2, progressPercent, statusClass, statusLabel, CATEGORY_ICONS } from "@/utils/format";
+import { formatXLM, formatUSDEquivalent, formatCO2, progressPercent, statusClass, statusLabel, CATEGORY_ICONS, timeAgo } from "@/utils/format";
 import CircularProgress from "./CircularProgress";
-import { useXlmPrice } from "@/lib/priceContext";
+import { useXlmPriceInfo } from "@/lib/priceContext";
 import { useWishlist } from "@/hooks/useWishlist";
 import { useI18n } from "@/lib/i18n";
 
 export default function ProjectCard({ project }: { project: ClimateProject }) {
   const pct = progressPercent(project.raisedXLM, project.goalXLM);
   const isComplete = pct >= 100;
-  const xlmUsd = useXlmPrice();
+  const { xlmUsd, lastFetchedAt } = useXlmPriceInfo();
   const { toggleWishlist, isInWishlist } = useWishlist();
   const { t, localeTag } = useI18n();
   const isWishlisted = isInWishlist(project.id);
@@ -81,14 +81,26 @@ export default function ProjectCard({ project }: { project: ClimateProject }) {
                 <div>
                   <span className="font-semibold text-forest-700 block mb-0.5">{formatXLM(project.raisedXLM, 2, localeTag)}</span>
                   {formatUSDEquivalent(project.raisedXLM, xlmUsd, localeTag) && (
-                    <span className="block text-[10px] text-[#aac0aa]">raised ({formatUSDEquivalent(project.raisedXLM, xlmUsd, localeTag)})</span>
+                    <span 
+                      className="block text-[10px] text-[#aac0aa]"
+                      title={lastFetchedAt ? `Rate updated ${timeAgo(lastFetchedAt.toISOString())}` : undefined}
+                    >
+                      raised ({formatUSDEquivalent(project.raisedXLM, xlmUsd, localeTag)})
+                      {lastFetchedAt && " ⓘ"}
+                    </span>
                   )}
                   {!formatUSDEquivalent(project.raisedXLM, xlmUsd, localeTag) && <span>raised</span>}
                 </div>
                 <div className="text-end">
                   <span className="block mb-0.5">Goal: {formatXLM(project.goalXLM, 2, localeTag)}</span>
                   {formatUSDEquivalent(project.goalXLM, xlmUsd, localeTag) && (
-                    <span className="block text-[10px] text-[#aac0aa]">{formatUSDEquivalent(project.goalXLM, xlmUsd, localeTag)}</span>
+                    <span 
+                      className="block text-[10px] text-[#aac0aa]"
+                      title={lastFetchedAt ? `Rate updated ${timeAgo(lastFetchedAt.toISOString())}` : undefined}
+                    >
+                      {formatUSDEquivalent(project.goalXLM, xlmUsd, localeTag)}
+                      {lastFetchedAt && " ⓘ"}
+                    </span>
                   )}
                 </div>
               </div>

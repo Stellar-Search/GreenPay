@@ -6,6 +6,7 @@ import React from 'react';
 import { render, waitFor } from '@testing-library/react-native';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { ThemeProvider } from '../app/theme';
 
 jest.mock('expo-router', () => ({
   useRouter: () => ({ push: jest.fn() }),
@@ -14,6 +15,14 @@ jest.mock('expo-router', () => ({
 jest.mock('expo-status-bar', () => ({ StatusBar: () => null }));
 
 import ProjectsScreen from '../app/projects/index';
+
+function renderProjectsScreen() {
+  return render(
+    <ThemeProvider>
+      <ProjectsScreen />
+    </ThemeProvider>
+  );
+}
 
 const MOCK_PROJECTS = [
   {
@@ -40,35 +49,52 @@ describe('ProjectsScreen — offline support', () => {
     (AsyncStorage.getItem as jest.Mock).mockResolvedValue(entry);
     (axios.get as jest.Mock).mockRejectedValue(new Error('Network Error'));
 
-    const { getByText } = render(<ProjectsScreen />);
+    const { getByText } = renderProjectsScreen();
 
     await waitFor(() => {
       expect(getByText('Amazon Reforestation')).toBeTruthy();
-      expect(getByText('Offline — showing cached data')).toBeTruthy();
+      expect(getByText(/Showing cached data from/)).toBeTruthy();
     });
   });
 
   it('does not show Offline banner when network succeeds', async () => {
-    (axios.get as jest.Mock).mockResolvedValue({ data: { data: MOCK_PROJECTS } });
+    (axios.get as jest.Mock).mockResolvedValue({ data: { success: true, data: MOCK_PROJECTS } });
 
-    const { queryByText } = render(<ProjectsScreen />);
+    const { queryByText } = renderProjectsScreen();
 
     await waitFor(() => {
-      expect(queryByText('Offline — showing cached data')).toBeNull();
+      expect(queryByText(/Showing cached data from/)).toBeNull();
       expect(queryByText('Amazon Reforestation')).toBeTruthy();
     });
   });
 
   it('writes fresh data to cache on successful load', async () => {
-    (axios.get as jest.Mock).mockResolvedValue({ data: { data: MOCK_PROJECTS } });
+    (axios.get as jest.Mock).mockResolvedValue({ data: { success: true, data: MOCK_PROJECTS } });
 
-    render(<ProjectsScreen />);
+    renderProjectsScreen();
 
     await waitFor(() => {
       expect(AsyncStorage.setItem).toHaveBeenCalledWith(
         'projects:list',
         expect.stringContaining('Amazon Reforestation')
       );
+    });
+  });
+
+  it('shows a staleness warning when cached projects are older than the TTL', async () => {
+    const entry = JSON.stringify({
+      data: MOCK_PROJECTS,
+      timestamp: Date.now() - 11 * 60 * 1000,
+    });
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValue(entry);
+    (axios.get as jest.Mock).mockRejectedValue(new Error('Network Error'));
+
+    const { getByText, getByTestId } = renderProjectsScreen();
+
+    await waitFor(() => {
+      expect(getByText('Amazon Reforestation')).toBeTruthy();
+      expect(getByTestId('stale-cache-banner')).toBeTruthy();
+      expect(getByText(/fundraising totals may be out of date/)).toBeTruthy();
     });
   });
 });

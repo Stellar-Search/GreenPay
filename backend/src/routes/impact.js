@@ -14,15 +14,14 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../db/pool");
 const cache = require("../services/cache");
+const { createApiError } = require("../middleware/apiEnvelope");
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const KG_CO2_PER_TREE = 21.77; // heuristic, used for treesEquivalent
 
 function validateKey(k) {
   if (!k || !/^G[A-Z0-9]{55}$/.test(k)) {
-    const e = new Error("Invalid Stellar public key");
-    e.status = 400;
-    throw e;
+    throw createApiError(400, "INVALID_PUBLIC_KEY", "Invalid Stellar public key");
   }
 }
 
@@ -53,7 +52,9 @@ router.get("/project/:id", async (req, res, next) => {
        WHERE id = $1`,
       [req.params.id],
     );
-    if (!projectResult.rows[0]) return res.status(404).json({ error: "Project not found" });
+    if (!projectResult.rows[0]) {
+      throw createApiError(404, "PROJECT_NOT_FOUND", "Project not found");
+    }
 
     const aggResult = await pool.query(
       `SELECT
@@ -75,14 +76,11 @@ router.get("/project/:id", async (req, res, next) => {
     const co2OffsetKg = Math.round(totalDonationsXLM * kgPerXlm);
 
     return sendCached(req, res, {
-      success: true,
-      data: {
-        totalDonationsXLM: totalDonationsXLM.toFixed(7),
-        donorCount,
-        co2OffsetKg,
-        treesEquivalent: treesEquivalentFromKg(co2OffsetKg),
-        uniqueCountries: 0,
-      },
+      totalDonationsXLM: totalDonationsXLM.toFixed(7),
+      donorCount,
+      co2OffsetKg,
+      treesEquivalent: treesEquivalentFromKg(co2OffsetKg),
+      uniqueCountries: 0,
     });
   } catch (e) {
     next(e);
@@ -147,15 +145,12 @@ router.get("/global", async (req, res, next) => {
     }));
 
     return sendCached(req, res, {
-      success: true,
-      data: {
-        totalDonationsXLM: totalDonationsXLM.toFixed(7),
-        donorCount,
-        co2OffsetKg,
-        treesEquivalent: treesEquivalentFromKg(co2OffsetKg),
-        uniqueCountries: 0,
-        breakdownByCategory,
-      },
+      totalDonationsXLM: totalDonationsXLM.toFixed(7),
+      donorCount,
+      co2OffsetKg,
+      treesEquivalent: treesEquivalentFromKg(co2OffsetKg),
+      uniqueCountries: 0,
+      breakdownByCategory,
     });
   } catch (e) {
     next(e);
@@ -211,13 +206,10 @@ router.get("/donor/:publicKey", async (req, res, next) => {
     const topCategory = topCategoryResult.rows[0]?.category || null;
 
     return sendCached(req, res, {
-      success: true,
-      data: {
-        totalDonatedXLM: totalDonatedXLM.toFixed(7),
-        co2OffsetKg,
-        projectsSupported,
-        topCategory,
-      },
+      totalDonatedXLM: totalDonatedXLM.toFixed(7),
+      co2OffsetKg,
+      projectsSupported,
+      topCategory,
     });
   } catch (e) {
     next(e);
@@ -225,4 +217,3 @@ router.get("/donor/:publicKey", async (req, res, next) => {
 });
 
 module.exports = router;
-

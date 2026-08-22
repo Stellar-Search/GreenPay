@@ -7,12 +7,16 @@
  *   isHydrated = true → AppInitContext flushes any queued deep-link URL →
  *   useDeepLink navigates.  Navigation never fires before state is ready.
  */
-import { Stack } from 'expo-router';
+import { Stack, SplashScreen } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { useEffect } from 'react';
+import { useFonts, Lora_700Bold } from '@expo-google-fonts/lora';
 import { useColorScheme } from 'react-native';
 import { ThemeProvider, themes } from './theme';
 import { useDeepLink } from '../hooks/useDeepLink';
-import { AppInitProvider } from '../src/context/AppInitContext';
+import { AppInitProvider, useAppInit } from '../src/context/AppInitContext';
+
+SplashScreen.preventAutoHideAsync();
 import { useWallet } from '../src/hooks/useWallet';
 import { useDeviceIntegrity } from '../utils/useDeviceIntegrity';
 import { SecurityWarningBanner } from '../components/SecurityWarningBanner';
@@ -28,6 +32,21 @@ function AppShell() {
   const theme = themes[themeMode];
   const { publicKey } = useWallet();
   const { isCompromised } = useDeviceIntegrity();
+
+  const { isHydrated } = useAppInit();
+  const [fontsLoaded, fontError] = useFonts({
+    Lora_700Bold,
+  });
+
+  useEffect(() => {
+    if ((fontsLoaded || fontError) && isHydrated) {
+      SplashScreen.hideAsync();
+    }
+  }, [fontsLoaded, fontError, isHydrated]);
+
+  if (!fontsLoaded && !fontError) {
+    return null;
+  }
 
   return (
     <ThemeProvider>

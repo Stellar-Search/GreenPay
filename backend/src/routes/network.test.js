@@ -8,14 +8,13 @@ const express = require("express");
 const supertest = require("supertest");
 const pool = require("../db/pool");
 const networkRouter = require("./network");
+const { apiEnvelope, errorHandler } = require("../middleware/apiEnvelope");
 
 function buildApp() {
   const app = express();
+  app.use(apiEnvelope);
   app.use("/api/network", networkRouter);
-  app.use((err, req, res, next) => {
-    void next;
-    res.status(err.status || 500).json({ error: err.message });
-  });
+  app.use(errorHandler);
   return app;
 }
 

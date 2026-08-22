@@ -35,14 +35,16 @@ For production deployments:
 - Use strong, randomly generated passwords
 - Enable SSL/TLS connections
 - Configure proper firewall rules
-- Use managed database services (RDS, Cloud SQL) when possible
-- Enable automated backups
+- Use managed database services (RDS, Cloud SQL) when possible (see [ADR-004](adr/ADR-004-managed-postgres-vs-self-hosted-ha.md))
+- Enable automated backups and continuous WAL archiving
 
 ## Database Backup Strategy
 
 ### Automated Backups
 
 GreenPay implements automated nightly database backups to cloud storage for disaster recovery.
+The restore path is verified on a recurring basis, not just assumed — see
+[Disaster Recovery Game Day](#disaster-recovery-game-day) below.
 
 #### Backup Flow
 
@@ -115,7 +117,32 @@ bash scripts/backup-db.sh
 pg_dump -h localhost -p 5432 -U postgres greenpay | gzip > greenpay_backup_$(date +%Y%m%d_%H%M%S).sql.gz
 ```
 
+## Disaster Recovery Game Day
+
+A backup existing and a backup being restorable are different claims. The
+nightly backup script (`scripts/backup-db.sh`) previously had a
+function-ordering bug that made it fail on every run from the day it was
+introduced — `bash -n` syntax checks don't catch that, because calling a
+not-yet-defined shell function is valid syntax that only fails at runtime.
+It's fixed now, and a quarterly automated game-day drill
+(`.github/workflows/db-restore-drill.yml`, running
+`scripts/db-restore-drill.sh`) actually restores a real backup to a fresh
+PostgreSQL instance and verifies data integrity end-to-end, so this doesn't
+silently regress again.
+
+**Measured RTO/RPO and the full procedure live in
+[docs/runbooks/db-restore-drill.md](runbooks/db-restore-drill.md)** — treat
+that runbook, not this page, as the source of truth for restoring in a real
+incident. Every drill run's raw numbers are recorded in
+[docs/runbooks/drills/](runbooks/drills/).
+
 ## Database Restore Procedures
+
+The sections below are general reference for the underlying `psql`/`pg_dump`
+mechanics. For an actual restore — incident or drill — use
+`scripts/restore-db.sh` (see the runbook above), which wraps this with
+integrity verification, safety guards against clobbering an existing
+database, and known client/server version-compatibility handling.
 
 ### Prerequisites
 
@@ -237,57 +264,66 @@ SELECT COUNT(*) FROM transactions;
 
 ## Point-in-Time Recovery (PITR)
 
-For point-in-time recovery:
+> **Status: not implemented.** PITR is currently a design goal, not a deployed
+> capability.
 
-1. Enable WAL (Write-Ahead Logging) archiving
-2. Archive WAL files to S3/GCS
-3. Use `pg_restore` with recovery target time
+The deployed database (`k8s/postgres.yaml`) is a stock `postgres:16-alpine`
+StatefulSet: it mounts no custom `postgresql.conf`, WAL archiving is **off**, and
+no WAL files are shipped to object storage. The only automated backup that
+exists today is the **nightly `pg_dump`** gzip snapshot produced by
+`.github/workflows/database-backup.yml` (runs at 02:00 UTC via
+`scripts/backup-db.sh`). That snapshot allows restoring to the time of the last
+backup — not to an arbitrary point in time.
 
-Example configuration in postgresql.conf:
+### What PITR would require (not yet in `k8s/postgres.yaml`)
 
-```postgresql
+1. Enable WAL (Write-Ahead Logging) archiving on the PostgreSQL instance
+2. Archive WAL files to S3/GCS continuously
+3. Restore using `pg_restore`/`recovery_target_time` when needed
+
+Example configuration that would need to be added (currently **absent** from the
+deployed manifests):
+
+```ini
+# PostgreSQL Configuration with WAL Archiving for PITR
 wal_level = replica
 archive_mode = on
-archive_command = 'aws s3 cp %p s3://my-backup-bucket/wal/%f'
+archive_command = 'aws s3 cp %p s3://greenpay-wal-backups/wal/%f'
 archive_timeout = 300
+max_wal_senders = 10
 ```
+
+To make this real, `k8s/postgres.yaml` must mount a `postgresql.conf` containing
+the above (or the image entrypoint must append it), the pod must have
+credentials/network access to the S3/GCS bucket, and a WAL lifecycle/retention
+policy must be defined. Until then, do not claim PITR in runbooks or incident
+documentation — recovery granularity is limited to the nightly snapshot.
 
 ## Backup Testing
 
 ### Automated Testing
 
 The backup workflow includes failure notifications. Failed backups will create an issue in the repository.
+`scripts/tests/test-backup-restore.sh` runs on every push and guards against
+the specific function-ordering regression that broke backups for months
+(see [Disaster Recovery Game Day](#disaster-recovery-game-day)).
 
-### Manual Restore Test
+### Restore Drill (real backup, real restore, real verification)
 
-To verify backup integrity:
+Rather than hand-run, drifting-from-reality instructions, restore testing is
+a single script that does exactly what the quarterly game day does:
 
 ```bash
-# 1. Create a temporary PostgreSQL instance
-docker run -d \
-  --name postgres-test \
-  -e POSTGRES_PASSWORD=testpass \
-  -p 5433:5432 \
-  postgres:16-alpine
-
-# 2. Download and restore backup
-aws s3 cp s3://my-backup-bucket/backups/greenpay_backup_latest.sql.gz .
-gunzip greenpay_backup_latest.sql.gz
-
-# 3. Wait for container to be ready
-sleep 10
-
-# 4. Create database and restore
-PGPASSWORD=testpass psql -h localhost -p 5433 -U postgres -c "CREATE DATABASE greenpay;"
-PGPASSWORD=testpass psql -h localhost -p 5433 -U postgres greenpay < greenpay_backup_latest.sql
-
-# 5. Verify data
-PGPASSWORD=testpass psql -h localhost -p 5433 -U postgres greenpay -c "SELECT COUNT(*) FROM information_schema.tables;"
-
-# 6. Cleanup
-docker stop postgres-test
-docker rm postgres-test
+scripts/db-restore-drill.sh
 ```
+
+This spins up a real PostgreSQL 16 container, seeds it, runs the actual
+`scripts/backup-db.sh`, provisions a second fresh instance, times a real
+restore with `scripts/restore-db.sh`, and verifies row counts and a checksum
+match exactly. See
+[docs/runbooks/db-restore-drill.md](runbooks/db-restore-drill.md) for what
+it checks and why, and [docs/runbooks/drills/](runbooks/drills/) for every
+run's report.
 
 ## Troubleshooting
 
@@ -355,13 +391,18 @@ psql -h localhost -U postgres greenpay \
 2. **Encryption at Rest:** Enable S3/GCS encryption
 3. **Access Control:** Use IAM roles and service accounts with least privilege
 4. **Audit Logging:** Enable CloudTrail (AWS) or Cloud Audit Logs (GCP)
-5. **Retention Policy:** Set appropriate backup retention based on compliance requirements
+5. **Retention Policy:** Set appropriate backup retention based on compliance requirements (see [Data Retention Policy](data-retention-policy.md))
 6. **Sensitive Data:** Consider PII redaction in backups for non-production environments
 
 ## Related Files
 
 - Backup Script: [scripts/backup-db.sh](../scripts/backup-db.sh)
-- GitHub Actions Workflow: [.github/workflows/database-backup.yml](../.github/workflows/database-backup.yml)
+- Restore Script: [scripts/restore-db.sh](../scripts/restore-db.sh)
+- Restore Drill Script: [scripts/db-restore-drill.sh](../scripts/db-restore-drill.sh)
+- Backup/Restore Tests: [scripts/tests/test-backup-restore.sh](../scripts/tests/test-backup-restore.sh)
+- Disaster Recovery Runbook: [docs/runbooks/db-restore-drill.md](runbooks/db-restore-drill.md)
+- GitHub Actions Workflow (nightly backup): [.github/workflows/database-backup.yml](../.github/workflows/database-backup.yml)
+- GitHub Actions Workflow (quarterly restore drill): [.github/workflows/db-restore-drill.yml](../.github/workflows/db-restore-drill.yml)
 - Docker Compose: [docker-compose.yml](../docker-compose.yml)
 
 ## Contact & Support

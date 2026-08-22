@@ -20,6 +20,65 @@ const api = axios.create({
   withCredentials: true,
 });
 
+interface ApiSuccessEnvelope<T> {
+  success: true;
+  data: T;
+  meta?: Record<string, unknown>;
+}
+
+interface ApiErrorEnvelope {
+  success: false;
+  error: ApiErrorPayload;
+}
+
+type ApiEnvelope<T> = ApiSuccessEnvelope<T> | ApiErrorEnvelope;
+
+export interface ApiErrorPayload {
+  code: string;
+  message: string;
+  details?: unknown;
+}
+
+export class ApiClientError extends Error {
+  code: string;
+  status: number;
+  details?: unknown;
+  response?: unknown;
+
+  constructor(error: ApiErrorPayload, status: number, response?: unknown) {
+    super(error.message);
+    this.name = "ApiClientError";
+    this.code = error.code;
+    this.status = status;
+    this.details = error.details;
+    this.response = response;
+  }
+}
+
+export function getApiErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof ApiClientError) {
+    return error.message;
+  }
+
+  return fallback;
+}
+
+function unwrapApiEnvelope<T>(payload: ApiEnvelope<T>): { data: T; meta?: Record<string, unknown> } | null {
+  if (!payload || typeof payload !== "object" || !("success" in payload)) {
+    return null;
+  }
+
+  if (payload.success) {
+    return { data: payload.data, meta: payload.meta };
+  }
+
+  return null;
+}
+
+function responseMeta(response: unknown): Record<string, unknown> | undefined {
+  return (response as { apiMeta?: Record<string, unknown> }).apiMeta;
+}
+
 // All API routes are served under the versioned `/api/v1` prefix (issue #204).
 // Rewrite `/api/*` request paths to `/api/v1/*` from a single place so every
 // helper below stays on the unversioned path string.
@@ -33,7 +92,7 @@ api.interceptors.request.use((config) => {
 let csrfToken: string | null = null;
 
 async function refreshCsrfToken() {
-  const { data } = await api.get<{ success: boolean; csrfToken: string }>(
+  const { data } = await api.get<{ csrfToken: string }>(
     "/api/csrf-token",
   );
   csrfToken = data.csrfToken;
@@ -57,8 +116,41 @@ api.interceptors.request.use(async (config) => {
   return config;
 });
 
+const ADMIN_TOKEN_STORAGE_KEY = "greenpay_admin_token";
+
+let adminToken: string | null =
+  typeof window !== "undefined" ? window.sessionStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) : null;
+
+export function setAdminToken(token: string | null) {
+  adminToken = token;
+  if (typeof window === "undefined") return;
+  if (token) {
+    window.sessionStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, token);
+  } else {
+    window.sessionStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
+  }
+}
+
+export function isAdminAuthenticated(): boolean {
+  return !!adminToken;
+}
+
+api.interceptors.request.use((config) => {
+  if (adminToken) {
+    config.headers.set("Authorization", `Bearer ${adminToken}`);
+  }
+  return config;
+});
+
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    const envelope = unwrapApiEnvelope(response.data);
+    if (envelope) {
+      (response as { apiMeta?: Record<string, unknown> }).apiMeta = envelope.meta;
+      response.data = envelope.data;
+    }
+    return response;
+  },
   async (error) => {
     if (error.response?.status === 403 && !error.config.__csrfRetry) {
       error.config.__csrfRetry = true;
@@ -71,6 +163,11 @@ api.interceptors.response.use(
         };
         return api.request(error.config);
       }
+    }
+
+    const body = error.response?.data;
+    if (body?.success === false && body.error?.code && body.error?.message) {
+      return Promise.reject(new ApiClientError(body.error, error.response.status, error.response));
     }
 
     return Promise.reject(error);
@@ -97,6 +194,16 @@ export async function csrfFetch(input: RequestInfo, init: RequestInit = {}) {
   return fetch(input, init);
 }
 
+export async function parseApiFetchResponse<T>(response: Response): Promise<T> {
+  const body = await response.json() as ApiEnvelope<T>;
+
+  if (body.success === true) {
+    return body.data;
+  }
+
+  throw new ApiClientError(body.error, response.status, response);
+}
+
 // ── Projects ──────────────────────────────────────────────────────────────────
 export async function fetchProjects(params?: {
   category?: string;
@@ -105,18 +212,18 @@ export async function fetchProjects(params?: {
   search?: string;
   limit?: number;
 }) {
-  const { data } = await api.get<{ success: boolean; data: ClimateProject[] }>(
+  const { data } = await api.get<ClimateProject[]>(
     "/api/projects",
     { params },
   );
-  return data.data;
+  return data;
 }
 
 export async function fetchProject(id: string) {
-  const { data } = await api.get<{ success: boolean; data: ClimateProject }>(
+  const { data } = await api.get<ClimateProject>(
     `/api/projects/${id}`,
   );
-  return data.data;
+  return data;
 }
 
 export interface AISummaryResponse {
@@ -136,11 +243,11 @@ export async function generateProjectSummary(
   projectId: string,
   adminAddress: string,
 ): Promise<AISummaryResponse> {
-  const { data } = await api.post<{ success: boolean; data: AISummaryResponse }>(
+  const { data } = await api.post<AISummaryResponse>(
     `/api/projects/${projectId}/generate-summary`,
     { adminAddress },
   );
-  return data.data;
+  return data;
 }
 
 export async function createProjectCampaign(
@@ -152,18 +259,16 @@ export async function createProjectCampaign(
     description?: string;
   },
 ) {
-  const { data } = await api.post<{ success: boolean; data: ProjectCampaign }>(
+  const { data } = await api.post<ProjectCampaign>(
     `/api/projects/${projectId}/campaigns`,
     payload,
   );
-  return data.data;
+  return data;
 }
 
 // ── Matching ──────────────────────────────────────────────────────────────────
 export async function fetchProjectMatches(projectId: string) {
-  const { data } = await api.get<{
-    success: boolean;
-    data: Array<{
+  const { data } = await api.get<Array<{
       id: string;
       projectId: string;
       matcherAddress: string;
@@ -173,9 +278,8 @@ export async function fetchProjectMatches(projectId: string) {
       remainingXLM: string;
       expiresAt: string;
       createdAt: string;
-    }>;
-  }>(`/api/projects/${projectId}/matching`);
-  return data.data;
+    }>>(`/api/projects/${projectId}/matching`);
+  return data;
 }
 
 // ── Donations ─────────────────────────────────────────────────────────────────
@@ -188,11 +292,11 @@ export async function recordDonation(payload: {
   message?: string;
   transactionHash: string;
 }) {
-  const { data } = await api.post<{ success: boolean; data: Donation }>(
+  const { data } = await api.post<Donation>(
     "/api/donations",
     payload,
   );
-  return data.data;
+  return data;
 }
 
 export async function fetchProjectDonations(
@@ -202,76 +306,70 @@ export async function fetchProjectDonations(
 ) {
   const params: { limit: number; cursor?: string } = { limit };
   if (cursor) params.cursor = cursor;
-  const { data } = await api.get<{
-    success: boolean;
-    data: Donation[];
-    nextCursor: string | null;
-  }>(`/api/donations/project/${projectId}`, { params });
-  return { donations: data.data, nextCursor: data.nextCursor };
+  const response = await api.get<Donation[]>(`/api/donations/project/${projectId}`, { params });
+  const { data } = response;
+  return { donations: data, nextCursor: (responseMeta(response)?.nextCursor as string | null | undefined) ?? null };
 }
 
 export async function fetchProjectDonationMessages(projectId: string, limit = 10) {
-  const { data } = await api.get<{ success: boolean; data: Donation[] }>(
+  const { data } = await api.get<Donation[]>(
     `/api/donations/project/${projectId}/messages`,
     { params: { limit } },
   );
-  return data.data;
+  return data;
 }
 
 export async function fetchDonorHistory(publicKey: string) {
-  const { data } = await api.get<{ success: boolean; data: Donation[] }>(
+  const { data } = await api.get<Donation[]>(
     `/api/donations/donor/${publicKey}`,
   );
-  return data.data;
+  return data;
 }
 
 // ── Profiles ──────────────────────────────────────────────────────────────────
 export async function fetchProfile(publicKey: string) {
-  const { data } = await api.get<{ success: boolean; data: DonorProfile }>(
+  const { data } = await api.get<DonorProfile>(
     `/api/profiles/${publicKey}`,
   );
-  return data.data;
+  return data;
 }
 
 export async function fetchFreelancerProfile(publicKey: string) {
-  const { data } = await api.get<{ success: boolean; data: FreelancerProfile }>(
+  const { data } = await api.get<FreelancerProfile>(
     `/api/profiles/${publicKey}`,
   );
-  return data.data;
+  return data;
 }
 
 export async function upsertProfile(
   payload: Partial<DonorProfile> & { publicKey: string },
 ) {
-  const { data } = await api.post<{ success: boolean; data: DonorProfile }>(
+  const { data } = await api.post<DonorProfile>(
     "/api/profiles",
     payload,
   );
-  return data.data;
+  return data;
 }
 
 // ── Leaderboard ───────────────────────────────────────────────────────────────
-export async function fetchLeaderboard(limit = 20, period = "all") {
-  const { data } = await api.get<{
-    success: boolean;
-    data: LeaderboardEntry[];
-  }>("/api/leaderboard", { params: { limit, period } });
-  return data.data;
+export async function fetchLeaderboard(limit = 20, period = "all", offset = 0) {
+  const { data } = await api.get<LeaderboardEntry[]>("/api/leaderboard", { params: { limit, period, offset } });
+  return data;
 }
 
 // ── Jobs (escrow) ───────────────────────────────────────────────────────────
 export async function fetchJobs() {
-  const { data } = await api.get<{ success: boolean; data: EscrowJob[] }>(
+  const { data } = await api.get<EscrowJob[]>(
     "/api/jobs",
   );
-  return data.data;
+  return data;
 }
 
 export async function fetchJob(id: string) {
-  const { data } = await api.get<{ success: boolean; data: EscrowJob }>(
+  const { data } = await api.get<EscrowJob>(
     `/api/jobs/${id}`,
   );
-  return data.data;
+  return data;
 }
 
 /**
@@ -281,19 +379,19 @@ export async function completeJobRelease(
   jobId: string,
   releaseTransactionHash: string,
 ) {
-  const { data } = await api.patch<{ success: boolean; data: EscrowJob }>(
+  const { data } = await api.patch<EscrowJob>(
     `/api/jobs/${jobId}/release`,
     { releaseTransactionHash },
   );
-  return data.data;
+  return data;
 }
 
 // ── Project Updates ─────────────────────────────────────────────
 export async function fetchProjectUpdates(projectId: string) {
-  const { data } = await api.get<{ success: boolean; data: ProjectUpdate[] }>(
+  const { data } = await api.get<ProjectUpdate[]>(
     `/api/updates/${projectId}`,
   );
-  return data.data;
+  return data;
 }
 
 export async function createProjectUpdate(payload: {
@@ -302,11 +400,11 @@ export async function createProjectUpdate(payload: {
   body: string;
   adminKey?: string;
 }) {
-  const { data } = await api.post<{ success: boolean; data: ProjectUpdate }>(
+  const { data } = await api.post<ProjectUpdate>(
     "/api/updates",
     payload,
   );
-  return data.data;
+  return data;
 }
 
 // ── Subscriptions ────────────────────────────────────────────────
@@ -315,7 +413,7 @@ export async function subscribeToProject(payload: {
   email: string;
   donorAddress?: string;
 }) {
-  const { data } = await api.post<{ success: boolean; message: string }>(
+  const { data } = await api.post<{ message: string }>(
     "/api/subscriptions",
     payload,
   );
@@ -323,7 +421,7 @@ export async function subscribeToProject(payload: {
 }
 
 export async function fetchSubscriberCount(projectId: string) {
-  const { data } = await api.get<{ success: boolean; count: number }>(
+  const { data } = await api.get<{ count: number }>(
     `/api/subscriptions/${projectId}/count`,
   );
   return data.count;
@@ -337,23 +435,33 @@ export interface GlobalStats {
 }
 
 export async function fetchGlobalStats(): Promise<GlobalStats> {
-  const { data } = await api.get<{ success: boolean; data: GlobalStats }>(
+  const { data } = await api.get<GlobalStats>(
     "/api/stats/global",
   );
-  return data.data;
+  return data;
 }
 
-// ── Admin: Project Approval ──────────────────────────────────────
+// ── Admin Login ──────────────────────────────────────────────────
+export async function adminLogin(username: string, password: string) {
+  const { data } = await api.post<{
+    token: string;
+    refreshToken: string;
+    expiresIn: number;
+  }>("/api/admin/login", { username, password });
+  setAdminToken(data.token);
+  return data;
+}
+
 export async function updateProjectStatus(
   projectId: string,
   status: "active" | "rejected" | "paused",
   reason?: string,
 ) {
-  const { data } = await api.patch<{ success: boolean; data: ClimateProject }>(
+  const { data } = await api.patch<ClimateProject>(
     `/api/projects/${projectId}/status`,
     { status, reason },
   );
-  return data.data;
+  return data;
 }
 
 export async function registerProjectOnChain(payload: {
@@ -363,7 +471,7 @@ export async function registerProjectOnChain(payload: {
   co2PerXLM: number;
   adminAddress: string;
 }) {
-  const { data } = await api.post<{ success: boolean; xdr: string }>(
+  const { data } = await api.post<{ xdr: string }>(
     "/api/projects/admin/register",
     payload,
   );
@@ -374,39 +482,68 @@ export async function confirmProjectRegistration(payload: {
   projectId: string;
   transactionHash: string;
 }) {
-  const { data } = await api.post<{ success: boolean; data: ClimateProject }>(
+  const { data } = await api.post<ClimateProject>(
     "/api/projects/admin/confirm",
     payload,
   );
   return data;
 }
 
+// ── Admin: AI Summary Failures ────────────────────────────────────
+export interface AISummaryJobFailure {
+  id: string;
+  projectId: string;
+  payload: Record<string, unknown>;
+  errorMessage: string | null;
+  errorStack: string | null;
+  status: string;
+  createdAt: string;
+  resolvedAt: string | null;
+}
+
+export async function fetchAISummaryFailures(token: string) {
+  const { data } = await api.get<AISummaryJobFailure[]>(
+    "/api/admin/ai-summary-failures",
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  return data;
+}
+
+export async function retryAISummaryFailure(token: string, failureId: string) {
+  const { data } = await api.post<{ status: string }>(
+    `/api/admin/ai-summary-failures/${failureId}/retry`,
+    {},
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  return data;
+}
+
 // ── Update Likes ─────────────────────────────────────────────────
 export async function toggleUpdateLike(updateId: string, donorAddress: string) {
-  const { data } = await api.post<{ success: boolean; data: { liked: boolean; likeCount: number } }>(
+  const { data } = await api.post<{ liked: boolean; likeCount: number }>(
     `/api/updates/${updateId}/like`,
     { donorAddress },
   );
-  return data.data;
+  return data;
 }
 
 export async function fetchUpdateLikes(updateId: string, donorAddress?: string) {
   const params: Record<string, string> = {};
   if (donorAddress) params.donorAddress = donorAddress;
-  const { data } = await api.get<{ success: boolean; data: { liked: boolean; likeCount: number } }>(
+  const { data } = await api.get<{ liked: boolean; likeCount: number }>(
     `/api/updates/${updateId}/likes`,
     { params },
   );
-  return data.data;
+  return data;
 }
 
 // ── Featured Project ─────────────────────────────────────────────
 export async function fetchFeaturedProject(): Promise<ClimateProject | null> {
   try {
-    const { data } = await api.get<{ success: boolean; data: ClimateProject }>(
+    const { data } = await api.get<ClimateProject>(
       "/api/projects/featured",
     );
-    return data.data;
+    return data;
   } catch {
     return null;
   }
@@ -419,10 +556,10 @@ export interface CategoryStats {
 }
 
 export async function fetchCategoryStats(): Promise<CategoryStats[]> {
-  const { data } = await api.get<{ success: boolean; data: CategoryStats[] }>(
+  const { data } = await api.get<CategoryStats[]>(
     "/api/stats/categories",
   );
-  return data.data;
+  return data;
 }
 
 // ── Impact Aggregation ───────────────────────────────────────────────────────
@@ -453,24 +590,24 @@ export interface ImpactDonorStats {
 }
 
 export async function fetchImpactProject(projectId: string): Promise<ImpactProjectStats> {
-  const { data } = await api.get<{ success: boolean; data: ImpactProjectStats }>(
+  const { data } = await api.get<ImpactProjectStats>(
     `/api/impact/project/${projectId}`,
   );
-  return data.data;
+  return data;
 }
 
 export async function fetchImpactGlobal(): Promise<ImpactGlobalStats> {
-  const { data } = await api.get<{ success: boolean; data: ImpactGlobalStats }>(
+  const { data } = await api.get<ImpactGlobalStats>(
     "/api/impact/global",
   );
-  return data.data;
+  return data;
 }
 
 export async function fetchImpactDonor(publicKey: string): Promise<ImpactDonorStats> {
-  const { data } = await api.get<{ success: boolean; data: ImpactDonorStats }>(
+  const { data } = await api.get<ImpactDonorStats>(
     `/api/impact/donor/${publicKey}`,
   );
-  return data.data;
+  return data;
 }
 
 export interface SubmitProjectPayload {
@@ -500,11 +637,11 @@ export interface SubmitProjectResponse {
 }
 
 export async function submitProject(payload: SubmitProjectPayload): Promise<SubmitProjectResponse> {
-  const { data } = await api.post<{ success: boolean; data: SubmitProjectResponse }>(
+  const { data } = await api.post<SubmitProjectResponse>(
     "/api/projects",
     payload,
   );
-  return data.data;
+  return data;
 }
 
 // ── Network Graph (on-chain transaction visualizer) ─────────────────────────
@@ -529,9 +666,9 @@ export interface TransactionGraph {
 }
 
 export async function fetchTransactionGraph(limit?: number): Promise<TransactionGraph> {
-  const { data } = await api.get<{ success: boolean; data: TransactionGraph }>(
+  const { data } = await api.get<TransactionGraph>(
     "/api/network/graph",
     { params: limit ? { limit } : undefined },
   );
-  return data.data;
+  return data;
 }

@@ -44,7 +44,7 @@ class ProjectAggregate {
     case "DonationRecorded":
     case "MigratedDonation":
       if (event.data.currency === "XLM") {
-        this.state.raisedXlm = round7(this.state.raisedXlm + event.data.amountXlm);
+        this.state.raisedXlm = round7(this.state.raisedXlm + Number.parseFloat(event.data.amountXlm));
       }
       break;
     case "ProjectStatusChanged":
@@ -162,7 +162,7 @@ class DonorAggregate {
     case "DonationRecorded":
     case "MigratedDonation":
       if (event.data.currency === "XLM") {
-        this.state.totalDonatedXlm = round7(this.state.totalDonatedXlm + event.data.amountXlm);
+        this.state.totalDonatedXlm = round7(this.state.totalDonatedXlm + Number.parseFloat(event.data.amountXlm));
       }
       this.state.projectsSupported.add(event.data.projectId);
       break;

@@ -1,7 +1,19 @@
 "use strict";
 
 jest.mock("../db/pool", () => ({ query: jest.fn() }));
-jest.mock("../eventSourcing/commandBus", () => ({ execute: jest.fn() }));
+jest.mock("../eventSourcing/commandBus", () => ({
+  execute: jest.fn(),
+  DonationReplayConflictError: class DonationReplayConflictError extends Error {
+    constructor(transactionHash, mismatches) {
+      super(`Transaction ${transactionHash} is already recorded with different details (${mismatches.join("; ")})`);
+      this.name = "DonationReplayConflictError";
+      this.code = "DONATION_TX_CONFLICT";
+      this.status = 409;
+      this.transactionHash = transactionHash;
+      this.mismatches = mismatches;
+    }
+  },
+}));
 jest.mock("../middleware/rateLimiter", () => ({
   createRateLimiter: () => (req, res, next) => next(),
 }));

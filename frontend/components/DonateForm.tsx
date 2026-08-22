@@ -3,11 +3,12 @@
  * Donation form for a climate project.
  */
 import { useState, useEffect } from "react";
-import { buildDonationTransaction, buildContractDonationTransaction, submitAndConfirmDonation, DonationSubmissionError, explorerUrl, getXLMBalance, getAssetBalance, getDonorStats, hashMessage, CONTRACT_ID } from "@/lib/stellar";
+import { buildDonationTransaction, buildContractDonationTransaction, buildChangeTrustTransaction, submitTransaction, submitAndConfirmDonation, DonationSubmissionError, explorerUrl, getXLMBalance, getAssetBalance, getDonorStats, hashMessage, CONTRACT_ID } from "@/lib/stellar";
 import { signTransactionWithWallet } from "@/lib/wallet";
 import { recordDonation } from "@/lib/api";
 import { formatXLM, formatCO2 } from "@/utils/format";
 import { useI18n } from "@/lib/i18n";
+import { parseToStroops, stroopsToXLM, isValidDonationAmount, hasSufficientBalance, multiply } from "@/utils/amount";
 import type { ClimateProject } from "@/utils/types";
 
 interface DonateFormProps {
@@ -53,6 +54,13 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
   const [trustlineMissing, setTrustlineMissing] = useState<boolean>(false);
   const [donorBadge, setDonorBadge] = useState<string | null>(null);
 
+  // Trustline-addition flow state
+  type TrustlineStep = "idle" | "building" | "signing" | "submitting" | "done" | "error";
+  const [trustlineStep, setTrustlineStep] = useState<TrustlineStep>("idle");
+  const [trustlineError, setTrustlineError] = useState<string | null>(null);
+  // Counter to force a balance re-fetch after a trustline is added
+  const [balanceRefresh, setBalanceRefresh] = useState(0);
+
   useEffect(() => {
     if (!initialAmount) return;
     setAmount(initialAmount);
@@ -93,14 +101,15 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
 
     loadBalances();
     return () => { mounted = false; };
-  }, [publicKey, currency]);
+  }, [publicKey, currency, balanceRefresh]);
 
-  const amountNum = parseFloat(amount);
-  const isValid   = !isNaN(amountNum) && amountNum >= 1;
+  const amountNum = Number.parseFloat(amount);
+  const amountStroops = parseToStroops(amount);
+  const isValid = isValidDonationAmount(amount) && parseToStroops(amount) >= parseToStroops("1");
 
   // Calculate CO₂ impact for XLM donations
-  const co2Impact = currency === "XLM" && amount && !isNaN(amountNum) && project.co2_per_xlm
-    ? (amountNum * project.co2_per_xlm) / 1000 // Convert to kg
+  const co2Impact = currency === "XLM" && amount && isValid && project.co2_per_xlm
+    ? (parseFloat(stroopsToXLM(amountStroops)) * project.co2_per_xlm) / 1000 // Convert to kg
     : 0;
 
   // Calculate tree equivalent (rough estimate: 1 tree absorbs ~22kg CO₂ per year)
@@ -113,6 +122,57 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
         if (charCount >= 80) return "text-amber-500";
         return "text-green-600";
       };
+
+  /**
+   * Builds, signs, and submits a changeTrust operation for USDC so the donor
+   * can proceed to donate without leaving the app.
+   */
+  const handleAddTrustline = async () => {
+    const issuer = process.env.NEXT_PUBLIC_USDC_ISSUER;
+    if (!issuer) {
+      setTrustlineError("USDC issuer not configured.");
+      setTrustlineStep("error");
+      return;
+    }
+
+    setTrustlineError(null);
+    try {
+      setTrustlineStep("building");
+      const tx = await buildChangeTrustTransaction({
+        publicKey,
+        assetCode: "USDC",
+        assetIssuer: issuer,
+      });
+
+      setTrustlineStep("signing");
+      const { signedXDR, error: signErr, rejected } = await signTransactionWithWallet(tx.toXDR());
+      if (rejected) {
+        // User cancelled — quiet reset, not an error.
+        setTrustlineStep("idle");
+        return;
+      }
+      if (signErr || !signedXDR) throw new Error(signErr || "Signing failed.");
+
+      setTrustlineStep("submitting");
+      await submitTransaction(signedXDR);
+
+      setTrustlineStep("done");
+      // Trigger a balance re-fetch so trustlineMissing flips to false
+      setBalanceRefresh((n) => n + 1);
+      // Reset back to idle after a brief success flash
+      setTimeout(() => setTrustlineStep("idle"), 1500);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Surface a specific hint when the real problem is insufficient XLM
+      if (/underfunded|insufficient/i.test(msg)) {
+        setTrustlineError("You need at least 0.5 XLM to add a trustline (Stellar base reserve).");
+      } else {
+        setTrustlineError(msg);
+      }
+      setTrustlineStep("error");
+      setTimeout(() => setTrustlineStep("idle"), 5000);
+    }
+  };
 
   const handleDonate = async () => {
     if (!isValid || step !== "idle") return;
@@ -140,7 +200,7 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
           tokenAddress: nativeTokenAddress,
           donor: publicKey,
           projectId: project.id,
-          amount: amountNum.toFixed(7),
+          amount: stroopsToXLM(amountStroops),
           msgHash,
         });
       } else {
@@ -158,7 +218,7 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
         tx = await buildDonationTransaction({
           fromPublicKey: publicKey,
           toPublicKey: project.walletAddress,
-          amount: currency === "XLM" ? amountNum.toFixed(7) : amountNum.toFixed(2),
+          amount: currency === "XLM" ? stroopsToXLM(amountStroops) : parseFloat(amount).toFixed(2),
           memo: `GreenPay:${project.id.slice(0, 16)}`,
           asset,
         });
@@ -205,7 +265,7 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
       await recordDonation({
         projectId: project.id,
         donorAddress: publicKey,
-        amount: amountNum.toString(),
+        amount: currency === "XLM" ? stroopsToXLM(amountStroops) : amountNum.toFixed(2),
         currency: currency,
         message: message.trim() || undefined,
         transactionHash: hash,
@@ -244,7 +304,7 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
         <div className="text-4xl mb-3">🌱</div>
         <h3 className="font-display text-xl font-semibold text-forest-900 mb-2">Thank you!</h3>
         <p className="text-[#4b654b] text-sm mb-4 font-body">
-          Your donation of <span className="font-semibold text-forest-700">{currency === "XLM" ? formatXLM(amountNum, 2, localeTag) : `${amountNum.toFixed(2)} ${currency}`}</span> has been sent to <span className="font-semibold">{project.name}</span>.
+          Your donation of <span className="font-semibold text-forest-700">{currency === "XLM" ? formatXLM(parseFloat(stroopsToXLM(amountStroops)), 2, localeTag) : `${parseFloat(amount).toFixed(2)} ${currency}`}</span> has been sent to <span className="font-semibold">{project.name}</span>.
         </p>
         {donorBadge && (
           <div className="mb-4 p-3 bg-forest-50 border border-forest-200 rounded-xl">
@@ -382,9 +442,26 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
             <p>Balances:</p>
             <p>XLM: <span className="font-medium">{xlmBalance ?? "—"}</span></p>
             <p>USDC: <span className="font-medium">{usdcBalance === null ? "No trustline" : usdcBalance}</span></p>
-            {usdcBalance === null && (
-              <div className="mt-2 text-sm text-amber-600">
-                You don&apos;t have a USDC trustline on this account. Add a trustline in your wallet or follow these instructions to accept USDC: <a href="https://developers.stellar.org/docs/learn/fundamentals/stellar-data-structures/assets/" target="_blank" rel="noopener noreferrer" className="underline">Add trustline</a>
+            {trustlineMissing && (
+              <div className="mt-3 p-3 rounded-xl bg-amber-50 border border-amber-200">
+                <p className="text-sm text-amber-700 mb-2 font-body">
+                  Your account doesn&apos;t have a USDC trustline yet. Add one to donate with USDC.
+                </p>
+                {trustlineError && (
+                  <p className="text-xs text-red-500 mb-2">{trustlineError}</p>
+                )}
+                <button
+                  onClick={handleAddTrustline}
+                  disabled={trustlineStep !== "idle" && trustlineStep !== "error"}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium border transition-all font-body bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-60"
+                >
+                  {trustlineStep === "building"   && <><Spinner />Building…</>}
+                  {trustlineStep === "signing"    && <><Spinner />Sign in Freighter…</>}
+                  {trustlineStep === "submitting" && <><Spinner />Submitting…</>}
+                  {trustlineStep === "done"       && <>✓ Trustline added!</>}
+                  {trustlineStep === "error"      && <>Retry</>}
+                  {trustlineStep === "idle"       && <>Add USDC Trustline</>}
+                </button>
               </div>
             )}
           </div>
@@ -396,7 +473,7 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
           {step === "signing"    && <><Spinner />Sign in Freighter...</>}
           {step === "submitting" && <><Spinner />Submitting &amp; confirming...</>}
           {step === "recording"  && <>Done</>}
-          {step === "idle"       && <>🌱 Donate {amount ? (currency === "XLM" ? formatXLM(amountNum, 2, localeTag) : `$${amountNum.toFixed(2)} ${currency}`) : currency}</>}
+          {step === "idle"       && <>🌱 Donate {amount ? (currency === "XLM" ? formatXLM(parseFloat(stroopsToXLM(amountStroops)), 2, localeTag) : `$${parseFloat(amount).toFixed(2)} ${currency}`) : currency}</>}
           {step === "error"      && "Retry"}
         </button>
 

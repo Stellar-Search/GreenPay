@@ -1,0 +1,15 @@
+{
+  "drill_id": "20260818_185629",
+  "status": "PASSED",
+  "backup_seconds": 1.02,
+  "rto_seconds": 12.42,
+  "backup_completed_at": "2026-08-18T18:56:54Z",
+  "simulated_disaster_at": "2026-08-18T18:56:55Z",
+  "pre_backup_projects": 10,
+  "pre_backup_donations": 50,
+  "post_restore_projects": 10,
+  "post_restore_donations": 50,
+  "post_backup_donations_simulated": 3,
+  "post_backup_donations_leaked_into_restore": 0,
+  "donations_checksum_match": true
+}

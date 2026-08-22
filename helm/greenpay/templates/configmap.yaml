@@ -8,7 +8,10 @@ data:
   PORT: {{ .Values.backend.port | quote }}
   STELLAR_NETWORK: {{ .Values.config.stellarNetwork }}
   HORIZON_URL: {{ .Values.config.horizonUrl }}
-  ALLOWED_ORIGINS: "https://{{ .Values.ingress.host }}"
+  # backend/src/services/stellar.js reads SOROBAN_RPC_URL and silently defaults
+  # to the *testnet* RPC when it is unset, so the chart must always render it.
+  SOROBAN_RPC_URL: {{ .Values.config.sorobanRpcUrl }}
+  ALLOWED_ORIGINS: "{{ include "greenpay.publicScheme" . }}://{{ .Values.ingress.host }}"
   APP_URL: "http://frontend-svc:{{ .Values.frontend.port }}"
   EMAIL_FROM: {{ .Values.config.emailFrom | quote }}
   CONTRACT_ID: {{ .Values.config.contractId | quote }}

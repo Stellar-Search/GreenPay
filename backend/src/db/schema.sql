@@ -27,6 +27,10 @@ ALTER TABLE projects ADD COLUMN IF NOT EXISTS ai_summary_generated_at TIMESTAMPT
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS ai_summary_model        TEXT;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS ai_summary_source_hash  TEXT;
 
+-- Set by PATCH /api/projects/:id/status when an admin rejects a project;
+-- read back by store.js's mapProjectRow as rejectionReason.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS rejection_reason        TEXT;
+
 CREATE TABLE IF NOT EXISTS donations (
   id UUID PRIMARY KEY,
   project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -140,9 +144,27 @@ CREATE TABLE IF NOT EXISTS device_tokens (
   token TEXT NOT NULL UNIQUE,
   platform TEXT NOT NULL,
   wallet_address TEXT,
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS admin_audit_log (
+  id UUID PRIMARY KEY,
+  actor TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target_type TEXT,
+  target_id TEXT,
+  metadata JSONB NOT NULL DEFAULT '{}'::JSONB,
+  ip_address TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_audit_log_created_at
+  ON admin_audit_log (created_at);
+
+CREATE INDEX IF NOT EXISTS idx_admin_audit_log_action
+  ON admin_audit_log (action);
 
 CREATE TABLE IF NOT EXISTS project_follows (
   id UUID PRIMARY KEY,
@@ -223,4 +245,32 @@ CREATE TABLE IF NOT EXISTS event_store_migration_state (
   id          TEXT       PRIMARY KEY DEFAULT 'legacy',
   migrated_at TIMESTAMPTZ,
   event_count BIGINT     NOT NULL DEFAULT 0
+);
+
+-- Permanently-failed AI summary generation jobs (pg-boss retries exhausted).
+-- Populated from the "ai-summary-dlq" dead-letter queue so a failure is
+-- distinctly visible from a job still retrying in pg-boss's own tables.
+CREATE TABLE IF NOT EXISTS ai_summary_job_failures (
+  id UUID PRIMARY KEY,
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  payload JSONB NOT NULL DEFAULT '{}'::JSONB,
+  error_message TEXT,
+  error_stack TEXT,
+  status TEXT NOT NULL DEFAULT 'failed',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  resolved_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_summary_job_failures_status
+  ON ai_summary_job_failures (status);
+
+CREATE INDEX IF NOT EXISTS idx_ai_summary_job_failures_created_at
+  ON ai_summary_job_failures (created_at);
+
+-- Indexer cursor: durable resume point so the Horizon operations stream
+-- can pick up where it left off after a deploy, crash, or restart.
+CREATE TABLE IF NOT EXISTS indexer_state (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

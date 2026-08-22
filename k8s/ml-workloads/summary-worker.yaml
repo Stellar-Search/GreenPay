@@ -84,10 +84,20 @@ spec:
                     app: summary-worker
                 topologyKey: kubernetes.io/hostname
 
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: summary-worker
-          image: greenpay/backend:latest
-          imagePullPolicy: IfNotPresent
+          image: greenpay/backend:1.0.0
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            capabilities:
+              drop: ["ALL"]
           # Override the default CMD to run only the summary worker entrypoint.
           command: ["node", "src/workers/summary-worker.js"]
           envFrom:

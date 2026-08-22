@@ -1,6 +1,7 @@
 "use strict";
 
 const { v4: uuid } = require("uuid");
+const { xlmToStroops, stroopsToXlm } = require("../utils/xlm");
 
 class Command {
   static COMMAND_TYPE = null;
@@ -31,8 +32,8 @@ class Command {
 class RecordDonationCommand extends Command {
   static COMMAND_TYPE = "RecordDonation";
 
-  constructor({ commandId, actor, projectId, donorAddress, amountXlm, amount, currency = "XLM", message, transactionHash }) {
-    super({ commandId, actor, payload: { projectId, donorAddress, amountXlm, amount, currency, message, transactionHash } });
+  constructor({ commandId, actor, projectId, donorAddress, amountXlm, amountStroops, amount, currency = "XLM", message, transactionHash }) {
+    super({ commandId, actor, payload: { projectId, donorAddress, amountXlm, amountStroops, amount, currency, message, transactionHash } });
   }
 
   validate() {
@@ -44,16 +45,39 @@ class RecordDonationCommand extends Command {
     if (!this.payload.transactionHash || !/^[a-fA-F0-9]{64}$/.test(this.payload.transactionHash)) {
       errors.push("transactionHash must be a 64-char hex string");
     }
-    const rawAmount = this.payload.currency === "XLM" ? (this.payload.amountXlm ?? this.payload.amount) : this.payload.amount;
-    const parsed = Number.parseFloat(rawAmount);
-    if (isNaN(parsed) || parsed <= 0) errors.push("amount must be a positive number");
-    if (parsed > 1e15) errors.push("amount exceeds allowed maximum");
+    if (this.payload.currency === "XLM") {
+      try {
+        const stroops = this.getAmountStroops();
+        if (stroops <= 0n) errors.push("amount must be a positive number");
+        if (stroops > 10_000_000_000_000_000_000_000n) errors.push("amount exceeds allowed maximum");
+      } catch {
+        errors.push("amount must be a positive XLM amount with at most 7 decimal places");
+      }
+    } else {
+      const parsed = Number.parseFloat(this.payload.amount);
+      if (isNaN(parsed) || parsed <= 0) errors.push("amount must be a positive number");
+      if (parsed > 1e15) errors.push("amount exceeds allowed maximum");
+    }
     return errors;
   }
 
   getAmount() {
-    const raw = this.payload.currency === "XLM" ? (this.payload.amountXlm ?? this.payload.amount) : this.payload.amount;
-    return Number.parseFloat(raw);
+    return Number.parseFloat(this.getAmountXlm());
+  }
+
+  getAmountXlm() {
+    if (this.payload.currency !== "XLM") return String(this.payload.amount);
+    return stroopsToXlm(this.getAmountStroops());
+  }
+
+  getAmountStroops() {
+    if (this.payload.currency !== "XLM") {
+      throw new Error("stroop conversion is only valid for XLM");
+    }
+    if (this.payload.amountStroops !== undefined && this.payload.amountStroops !== null) {
+      return BigInt(this.payload.amountStroops);
+    }
+    return xlmToStroops(this.payload.amountXlm ?? this.payload.amount);
   }
 
   getTransactionHash() {

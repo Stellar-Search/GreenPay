@@ -7,40 +7,49 @@ const router  = express.Router();
 const { v4: uuid } = require("uuid");
 const pool = require("../db/pool");
 const { createRateLimiter } = require("../middleware/rateLimiter");
+const { createApiError } = require("../middleware/apiEnvelope");
+const { z } = require("zod");
+const { validateBody, validate } = require("../middleware/validate");
+const { DonationCreateSchema } = require("../schemas/donations");
+const { stellarPublicKey } = require("../schemas/common");
+const donorKeyParamsSchema = z.object({ publicKey: stellarPublicKey });
 const { computeBadges, mapDonationRow } = require("../services/store");
-const donationLimiter = createRateLimiter(10, 1);
-const { execute } = require("../eventSourcing/commandBus");
+const donationLimiter = createRateLimiter(10, 1, "donation-post");
+const { execute, DonationReplayConflictError } = require("../eventSourcing/commandBus");
 const { DonationRecordedEvent, MatchAppliedEvent } = require("../eventSourcing/events"); // 10 requests per minute
+const { logger: rootLogger } = require("../utils/logger");
 
-function validateKey(k) {
-  if (!k || !/^G[A-Z0-9]{55}$/.test(k)) { const e = new Error("Invalid Stellar public key"); e.status = 400; throw e; }
-}
+const logger = rootLogger.child({ service: "donations-route" });
 
-function validateTxHash(h) {
-  if (!h || !/^[a-fA-F0-9]{64}$/.test(h)) { const e = new Error("Invalid transaction hash"); e.status = 400; throw e; }
+function publicDonationData(data) {
+  return { ...data, amountXlm: Number.parseFloat(data.amountXlm) };
 }
 
 // POST /api/donations — record a donation after on-chain tx via Event Sourcing CQRS
 async function recordDonation(req, res, next) {
   try {
-    const { projectId, donorAddress, amountXLM, amount, currency = "XLM", message, transactionHash } = req.body;
+    // Declarative, centrally-reviewed validation (src/schemas/donations.js).
+    const {
+      projectId,
+      donorAddress,
+      amountXLM,
+      amount,
+      // currency defaults to "XLM" inside the schema
+      currency = "XLM",
+      message,
+      transactionHash,
+    } = validateBody(DonationCreateSchema, req.body || {});
 
-    if (!donorAddress || !/^G[A-Z0-9]{55}$/.test(donorAddress)) {
-      const e = new Error("Invalid Stellar public key");
-      e.status = 400;
-      throw e;
-    }
-    if (!transactionHash || !/^[a-fA-F0-9]{64}$/.test(transactionHash)) {
-      const e = new Error("Invalid transaction hash");
-      e.status = 400;
-      throw e;
-    }
+    logger.info({
+      msg: "donation attempt",
+      projectId,
+      donorAddress,
+      transactionHash,
+    });
 
     const projectResult = await pool.query("SELECT id FROM projects WHERE id = $1", [projectId]);
     if (!projectResult.rows[0]) {
-      const e = new Error("Project not found");
-      e.status = 404;
-      throw e;
+      throw createApiError(404, "PROJECT_NOT_FOUND", "Project not found");
     }
 
     let result;
@@ -58,30 +67,32 @@ async function recordDonation(req, res, next) {
         })
       );
     } catch (err) {
-      if (err.message && (err.message.includes("Duplicate event") || err.message.includes("already exists"))) {
-        const existing = await pool.query(
-          `SELECT event_id, payload FROM event_stream
-           WHERE event_type = 'DonationRecorded'
-             AND payload->'data'->>'transactionHash' = $1`,
-          [transactionHash]
-        );
-        if (existing.rows[0]) {
-          return res.json({ success: true, data: { id: existing.rows[0].event_id, ...existing.rows[0].payload.data }, deduplicated: true });
-        }
+      if (err instanceof DonationReplayConflictError) {
+        // Same transaction hash, different payload: tampering, not a retry.
+        logger.warn({
+          msg: "suspicious donation replay rejected",
+          transactionHash,
+          donorAddress,
+          projectId,
+          mismatches: err.mismatches,
+        });
+        throw createApiError(409, "DONATION_TX_CONFLICT",
+          "Transaction hash already recorded with different details",
+          { transactionHash, mismatches: err.mismatches });
       }
       throw err;
     }
 
     if (result.deduplicated) {
-      return res.json({ success: true, data: result.data, deduplicated: true });
+      logger.info({ msg: "donation deduplicated", transactionHash });
+      res.apiMeta({ deduplicated: true });
+      return res.json(result.data);
     }
 
     const donationEvents = result.events || [];
     const mainEvent = donationEvents.find((e) => e.eventType === "DonationRecorded");
     if (!mainEvent) {
-      const e = new Error("Expected DonationRecorded event not produced");
-      e.status = 500;
-      throw e;
+      throw createApiError(500, "DONATION_EVENT_MISSING", "Expected DonationRecorded event not produced");
     }
 
     const io = req.app?.get("io");
@@ -89,14 +100,23 @@ async function recordDonation(req, res, next) {
       io.emit("donation_event", {
         projectId,
         donorAddress,
-        amountXLM: mainEvent.data.amountXlm,
+        amountXLM: Number.parseFloat(mainEvent.data.amountXlm),
         transactionHash,
         timestamp: new Date().toISOString(),
       });
     }
 
-    res.status(201).json({ success: true, data: { id: mainEvent.eventId, ...mainEvent.data } });
+    logger.info({
+      msg: "donation recorded",
+      donationId: mainEvent.eventId,
+      projectId,
+      amountXlm: mainEvent.data.amountXlm,
+      transactionHash,
+    });
+
+    res.status(201).json({ id: mainEvent.eventId, ...mainEvent.data });
   } catch (e) {
+    logger.error({ msg: "donation failed", error: e.message, status: e.status || 500 });
     next(e);
   }
 }
@@ -117,7 +137,7 @@ router.get("/project/:projectId/messages", async (req, res, next) => {
        LIMIT $2`,
       [req.params.projectId, limit],
     );
-    res.json({ success: true, data: result.rows.map(mapDonationRow) });
+    res.json(result.rows.map(mapDonationRow));
   } catch (e) {
     next(e);
   }
@@ -147,23 +167,23 @@ router.get("/project/:projectId", async (req, res, next) => {
     const result = hasMore ? donations.slice(0, limit) : donations;
     const nextCursor = hasMore ? result[result.length - 1].createdAt : null;
 
-    res.json({ success: true, data: result, nextCursor });
+    res.apiMeta({ nextCursor });
+    res.json(result);
   } catch (e) {
     next(e);
   }
 });
 
 // GET /api/donations/donor/:publicKey
-router.get("/donor/:publicKey", async (req, res, next) => {
+router.get("/donor/:publicKey", validate(donorKeyParamsSchema, { source: "params" }), async (req, res, next) => {
   try {
-    validateKey(req.params.publicKey);
     const result = await pool.query(
       `SELECT * FROM donations
        WHERE donor_address = $1
        ORDER BY created_at DESC`,
       [req.params.publicKey],
     );
-    res.json({ success: true, data: result.rows.map(mapDonationRow) });
+    res.json(result.rows.map(mapDonationRow));
   } catch (e) { next(e); }
 });
 

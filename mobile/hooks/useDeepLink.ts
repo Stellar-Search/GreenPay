@@ -6,6 +6,10 @@
  *   greenpay://project/123       → /projects/123
  *   greenpay://donate/G...ABC    → /donate/G...ABC
  *
+ * Both forms are validated by `parseGreenPayDeepLink` (utils/qrPayload.ts),
+ * the same allowlist/charset rules enforced on the QR path — malformed,
+ * oversized, or control-character params are rejected without navigating.
+ *
  * Fix for issue #32 — deep-link / hydration race condition
  * ─────────────────────────────────────────────────────────
  * Previously, Linking.getInitialURL() was awaited fire-and-forget inside a
@@ -24,25 +28,23 @@ import { useEffect, useCallback } from 'react';
 import * as Linking from 'expo-linking';
 import { useRouter } from 'expo-router';
 import { useAppInit } from '../src/context/AppInitContext';
+import { parseGreenPayDeepLink } from '../utils/qrPayload';
 
 export function useDeepLink() {
   const router = useRouter();
   const { queueDeepLink, onDeepLinkReady } = useAppInit();
 
-  /** Parse a greenpay:// URL and push to the appropriate route. */
+  /** Validate a greenpay:// URL through the shared parser, then navigate. */
   const handleUrl = useCallback(
     (url: string | null) => {
       if (!url) return;
-      const { path } = Linking.parse(url);
-      if (!path) return;
+      const parsed = parseGreenPayDeepLink(url);
+      if (!parsed.ok) return;
 
-      const [segment, param] = path.replace(/^\//, '').split('/');
-      if (!param) return;
-
-      if (segment === 'project') {
-        router.push(`/projects/${param}`);
-      } else if (segment === 'donate') {
-        router.push(`/donate/${param}`);
+      if (parsed.segment === 'project') {
+        router.push(`/projects/${parsed.projectId}`);
+      } else {
+        router.push(`/donate/${parsed.projectId}`);
       }
     },
     [router],

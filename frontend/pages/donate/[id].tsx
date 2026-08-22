@@ -95,7 +95,7 @@ const DonatePage: NextPage<DonatePageProps> = ({ project, presetAmount }) => {
   return (
     <>
       <Head>
-        <title>Donate to {project.name} — Stellar GreenPay</title>
+        <title>{`Donate to ${project.name} — Stellar GreenPay`}</title>
         <meta
           name="description"
           content={`Scan the QR code to donate XLM directly to ${project.name} on the Stellar blockchain.`}

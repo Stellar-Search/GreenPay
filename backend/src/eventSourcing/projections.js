@@ -1,7 +1,6 @@
 "use strict";
 
-const { v4: uuid } = require("uuid");
-const { round7 } = require("./aggregates");
+const { xlmToStroops, stroopsToXlm } = require("../utils/xlm");
 
 const PROJECTION_BATCH_SIZE = 500;
 
@@ -51,6 +50,13 @@ async function dispatchToProjections(client, event) {
   }
 }
 
+function exactXlmAmount(data) {
+  if (data.amountStroops !== null && data.amountStroops !== undefined) {
+    return stroopsToXlm(data.amountStroops);
+  }
+  return stroopsToXlm(xlmToStroops(data.amountXlm || 0));
+}
+
 async function applyProjectProjection(client, event) {
   const data = event.data;
 
@@ -65,24 +71,24 @@ async function applyProjectProjection(client, event) {
       [data.matchAmount.toFixed(7), event.version, data.projectId]
     );
   } else if (event.eventType === "DonationRecorded") {
-    const xlmDonation = data.currency === "XLM" ? data.amountXlm : 0;
+    const xlmDonation = data.currency === "XLM" ? exactXlmAmount(data) : "0.0000000";
     await client.query(
       `UPDATE projects
        SET raised_xlm = raised_xlm + $1::numeric,
            updated_at = NOW(),
            projection_cursor = GREATEST(projection_cursor, $2)
        WHERE id = $3`,
-      [xlmDonation.toFixed(7), event.version, data.projectId]
+      [xlmDonation, event.version, data.projectId]
     );
   } else if (event.eventType === "MigratedDonation") {
-    const amt = data.isMatch ? data.amountXlm : data.amountXlm;
+    const amt = exactXlmAmount(data);
     await client.query(
       `UPDATE projects
        SET raised_xlm = raised_xlm + $1::numeric,
            updated_at = NOW(),
            projection_cursor = GREATEST(projection_cursor, $2)
        WHERE id = $3`,
-      [amt.toFixed(7), event.version, data.projectId]
+      [amt, event.version, data.projectId]
     );
   }
 }
@@ -108,21 +114,46 @@ function computeBadges(totalXLM) {
   return earned;
 }
 
-async function getExistingDonorTotal(client, donorAddress) {
+async function getExistingDonorStats(client, donorAddress) {
   const result = await client.query(
     "SELECT total_donated_xlm FROM donor_stats WHERE public_key = $1",
     [donorAddress]
   );
   if (result.rows[0]) {
-    return parseFloat(result.rows[0].total_donated_xlm?.toString() || "0");
+    return {
+      exists: true,
+      totalStroops: xlmToStroops(result.rows[0].total_donated_xlm?.toString() || "0"),
+    };
   }
-  return 0;
+  return { exists: false, totalStroops: 0n };
+}
+
+function computeBadgesFromStroops(totalStroops) {
+  return computeBadges(Number(totalStroops / 10_000_000n));
 }
 
 async function upsertDonorStats(client, donorAddress, xlmDelta, version) {
-  const existingTotal = await getExistingDonorTotal(client, donorAddress);
-  const newTotal = round7(existingTotal + xlmDelta);
-  const badges = computeBadges(newTotal);
+  const { exists: donorStatsExists, totalStroops: existingTotalStroops } =
+    await getExistingDonorStats(client, donorAddress);
+  const newTotalStroops = existingTotalStroops + xlmToStroops(xlmDelta);
+  const newTotal = stroopsToXlm(newTotalStroops);
+  const badges = computeBadgesFromStroops(newTotalStroops);
+
+  // donor_stats.public_key references profiles(public_key), so a donor's very
+  // first donation needs a profile row before the insert below can satisfy its
+  // foreign key. Every later donation does not: the existence of a donor_stats
+  // row is itself proof the profile exists, so the guard is skipped. That keeps
+  // the steady-state projection at the four statements per event documented in
+  // docs/performance.md (this insert running unconditionally was a fifth, and
+  // capacity is set by statements per event).
+  if (!donorStatsExists) {
+    await client.query(
+      `INSERT INTO profiles (public_key, total_donated_xlm, projects_supported, badges, created_at)
+       VALUES ($1, 0, 0, '[]'::jsonb, NOW())
+       ON CONFLICT (public_key) DO NOTHING`,
+      [donorAddress]
+    );
+  }
 
   await client.query(
     `INSERT INTO donor_stats (public_key, total_donated_xlm, projects_supported, badges, projection_cursor)
@@ -131,7 +162,7 @@ async function upsertDonorStats(client, donorAddress, xlmDelta, version) {
        total_donated_xlm = EXCLUDED.total_donated_xlm,
        badges = EXCLUDED.badges,
        projection_cursor = EXCLUDED.projection_cursor`,
-    [donorAddress, newTotal.toFixed(7), JSON.stringify(badges), version]
+    [donorAddress, newTotal, JSON.stringify(badges), version]
   );
 }
 
@@ -153,12 +184,12 @@ async function syncDonorProjectCount(client, donorAddress, version) {
 
 async function applyDonorProjection(client, event) {
   const data = event.data;
-  let xlmDelta = 0;
+  let xlmDelta = "0.0000000";
 
   if (event.eventType === "MigratedDonation") {
-    xlmDelta = data.isMatch ? data.amountXlm : (data.currency === "XLM" ? data.amountXlm : 0);
+    xlmDelta = data.isMatch ? exactXlmAmount(data) : (data.currency === "XLM" ? exactXlmAmount(data) : "0.0000000");
   } else {
-    xlmDelta = data.currency === "XLM" ? data.amountXlm : 0;
+    xlmDelta = data.currency === "XLM" ? exactXlmAmount(data) : "0.0000000";
   }
 
   await upsertDonorStats(client, data.donorAddress, xlmDelta, event.version);
