@@ -11,6 +11,7 @@ const {
   storeDonorAggregate,
   loadAggregateStream,
   fromRow,
+  DonationReplayConflictError,
 } = require("./commandBus");
 const {
   RecordDonationCommand,
@@ -92,9 +93,7 @@ describe("commandBus.js - Event Sourcing Core Engine (Issue #129)", () => {
       const transactionHash = makeTxHash("a");
 
       pool.query
-        // 1. existingCheck
-        .mockResolvedValueOnce(queryResult([{ event_id: "existing-event-id" }]))
-        // 2. SELECT * FROM event_stream
+        // 1. pre-check: SELECT * ... payload->'data'->>'transactionHash'
         .mockResolvedValueOnce(
           queryResult([
             {
@@ -107,8 +106,12 @@ describe("commandBus.js - Event Sourcing Core Engine (Issue #129)", () => {
               aggregate_version: 1,
               payload: {
                 data: {
+                  projectId: "proj-1",
                   donorAddress,
-                  amountXlm: 25,
+                  amountXlm: "25.0000000",
+                  amountStroops: "250000000",
+                  currency: "XLM",
+                  message: null,
                   transactionHash,
                 },
               },
@@ -116,7 +119,7 @@ describe("commandBus.js - Event Sourcing Core Engine (Issue #129)", () => {
               occurred_at: new Date().toISOString(),
               created_at: new Date().toISOString(),
             },
-          ])
+          ]),
         );
 
       const cmd = new RecordDonationCommand({
@@ -130,6 +133,143 @@ describe("commandBus.js - Event Sourcing Core Engine (Issue #129)", () => {
       const res = await execute(cmd);
       expect(res.deduplicated).toBe(true);
       expect(res.data.eventId).toBe("existing-event-id");
+    });
+
+    test("rejects a replay whose amount disagrees with the stored donation", async () => {
+      const donorAddress = makePublicKey("A");
+      const transactionHash = makeTxHash("a");
+
+      pool.query.mockResolvedValueOnce(
+        queryResult([
+          {
+            event_id: "existing-event-id",
+            stream_id: `Donation:${transactionHash}`,
+            aggregate_type: "Donation",
+            aggregate_id: `Donation:${transactionHash}`,
+            event_type: "DonationRecorded",
+            version: 1,
+            aggregate_version: 1,
+            payload: {
+              data: {
+                projectId: "proj-1",
+                donorAddress,
+                amountXlm: "25.0000000",
+                amountStroops: "250000000",
+                currency: "XLM",
+                message: null,
+                transactionHash,
+              },
+            },
+            actor: donorAddress,
+            occurred_at: new Date().toISOString(),
+            created_at: new Date().toISOString(),
+          },
+        ]),
+      );
+
+      const cmd = new RecordDonationCommand({
+        actor: donorAddress,
+        projectId: "proj-1",
+        donorAddress,
+        amountXlm: "99",
+        transactionHash,
+      });
+
+      await expect(execute(cmd)).rejects.toBeInstanceOf(DonationReplayConflictError);
+    });
+
+    test("recovers into an idempotent success when the insert loses the uniqueness race", async () => {
+      const donorAddress = makePublicKey("H");
+      const transactionHash = makeTxHash("b");
+      const winnerRow = {
+        event_id: "winner-event-id",
+        stream_id: `Donation:${transactionHash}`,
+        aggregate_type: "Donation",
+        aggregate_id: `Donation:${transactionHash}`,
+        event_type: "DonationRecorded",
+        version: 1,
+        aggregate_version: 1,
+        payload: {
+          data: {
+            projectId: "proj-100",
+            donorAddress,
+            amountXlm: "15.5000000",
+            amountStroops: "155000000",
+            currency: "XLM",
+            message: null,
+            transactionHash,
+          },
+        },
+        actor: donorAddress,
+        occurred_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+      };
+      const uniqueViolation = new Error(
+        "duplicate key value violates unique constraint \"ux_donation_tx_hash\""
+      );
+      uniqueViolation.code = "23505";
+
+      pool.query
+        // 1. pre-check finds nothing (the race window)
+        .mockResolvedValueOnce(queryResult([]))
+        // 2. project check
+        .mockResolvedValueOnce(queryResult([{ id: "proj-100" }]))
+        // 3. getProjectState
+        .mockResolvedValueOnce(
+          queryResult([{ id: "proj-100", raised_xlm: "0", donor_count: 0, status: "active" }])
+        )
+        // 4. getDonorState
+        .mockResolvedValueOnce(queryResult([]))
+        // 5. getNextVersion
+        .mockResolvedValueOnce(queryResult([{ max_version: 0 }]))
+        // 6. storeProjectAggregate
+        .mockResolvedValueOnce(queryResult([]))
+        // 7. storeDonorAggregate
+        .mockResolvedValueOnce(queryResult([]))
+        // 8. INSERT INTO event_stream hits ux_donation_tx_hash
+        .mockRejectedValueOnce(uniqueViolation)
+        // 9. recovery SELECT returns the winner's row
+        .mockResolvedValueOnce(queryResult([winnerRow]));
+
+      const cmd = new RecordDonationCommand({
+        actor: donorAddress,
+        projectId: "proj-100",
+        donorAddress,
+        amountXlm: "15.5",
+        transactionHash,
+      });
+
+      const res = await execute(cmd);
+      expect(res.deduplicated).toBe(true);
+      expect(res.success).toBe(true);
+      expect(res.data.eventId).toBe("winner-event-id");
+    });
+
+    test("rethrows non-uniqueness insert failures untouched", async () => {
+      const donorAddress = makePublicKey("I");
+      const transactionHash = makeTxHash("c");
+
+      pool.query
+        .mockResolvedValueOnce(queryResult([])) // pre-check
+        .mockResolvedValueOnce(queryResult([{ id: "proj-100" }])) // project check
+        .mockResolvedValueOnce(
+          queryResult([{ id: "proj-100", raised_xlm: "0", donor_count: 0, status: "active" }])
+        )
+        .mockResolvedValueOnce(queryResult([])) // getDonorState
+        .mockResolvedValueOnce(queryResult([{ max_version: 0 }])) // getNextVersion
+        .mockResolvedValueOnce(queryResult([])) // storeProjectAggregate
+        .mockResolvedValueOnce(queryResult([])) // storeDonorAggregate
+        .mockRejectedValueOnce(new Error("connection refused")); // INSERT fails for another reason
+
+      const cmd = new RecordDonationCommand({
+        actor: donorAddress,
+        projectId: "proj-100",
+        donorAddress,
+        amountXlm: "5",
+        transactionHash,
+      });
+
+      await expect(execute(cmd)).rejects.toThrow("connection refused");
     });
 
     test("throws error when target project does not exist", async () => {

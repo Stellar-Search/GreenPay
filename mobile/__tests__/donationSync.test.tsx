@@ -55,6 +55,10 @@ describe('useDonationSync — reconnect conflict resolution', () => {
     (NetInfo.fetch as jest.Mock).mockResolvedValue({ isConnected: true, isInternetReachable: true });
 
     (axios.get as jest.Mock).mockResolvedValue({ data: { success: true, data: [ACTIVE_PROJECT] } });
+    // preflightCheck now POSTs to the backend when an entry carries a
+    // horizonTransactionHash, so we need a default success response here.
+    // Individual tests that want to simulate backend failure can override this.
+    (axios.post as jest.Mock).mockResolvedValue({ data: { success: true, data: null } });
 
     (Server as jest.Mock).mockImplementation(() => ({
       loadAccount: jest.fn().mockResolvedValue(mockHorizonAccount('1000')),
