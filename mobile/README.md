@@ -117,3 +117,9 @@ Key test files:
 | `__tests__/DonateScreen.test.tsx` | Biometric gate, offline queueing, queue completion, issue #359 recovery |
 | `__tests__/donationSync.test.tsx` | Reconnect preflight: conflicts, balance checks, rate-limit backoff, deduplication |
 | `__tests__/donationQueue.test.ts` | Queue CRUD and serialisation |
+
+## Versioning & Over-The-Air Updates
+
+The app uses the "appVersion" policy for the "runtimeVersion" to handle over-the-air (OTA) updates securely. This means any EAS Update will only be applied to builds matching the exact "version" string in `app.json`. 
+
+For Store builds, we bump the `version` and respectively `buildNumber` (iOS) and `versionCode` (Android) in `app.json`, so that they map to a distinct runtime version. Updates are purely for Javascript/asset changes without native code alterations.
