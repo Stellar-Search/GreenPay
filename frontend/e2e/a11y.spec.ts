@@ -69,6 +69,20 @@ async function mockApi(page: Page) {
   await page.route("**/api/v1/projects/featured",        (r) => r.fulfill(ok(MOCK_PROJECT)));
   await page.route(`**/api/v1/projects/${MOCK_PROJECT_ID}/**`, (r) => r.fulfill(ok([])));
   await page.route(`**/api/v1/projects/${MOCK_PROJECT_ID}`,    (r) => r.fulfill(ok(MOCK_PROJECT)));
+
+  // Registered after the catch-all above so this more specific route wins
+  // (Playwright resolves overlapping routes in reverse registration order).
+  await page.route("**/api/v1/network/graph**", (r) =>
+    r.fulfill(
+      ok({
+        nodes: [
+          { id: MOCK_WALLET, totalIn: 500, totalOut: 120, degree: 4 },
+          { id: MOCK_PUBLIC_KEY, totalIn: 80, totalOut: 20, degree: 2 },
+        ],
+        edges: [{ source: MOCK_WALLET, target: MOCK_PUBLIC_KEY, amount: 50, type: "donation", txHash: "tx1" }],
+      })
+    )
+  );
 }
 
 // ── Axe helper — assert zero critical/serious violations ─────────────────────
@@ -119,6 +133,13 @@ test.describe("Accessibility (axe)", () => {
   test("home page has no critical/serious violations", async ({ page }) => {
     await mockApi(page);
     await page.goto("/");
+    await assertNoCriticalViolations(page);
+  });
+
+  test("transaction network page has no critical/serious violations", async ({ page }) => {
+    await mockApi(page);
+    await page.goto("/network");
+    await expect(page.locator("canvas")).toBeVisible({ timeout: 15_000 });
     await assertNoCriticalViolations(page);
   });
 
