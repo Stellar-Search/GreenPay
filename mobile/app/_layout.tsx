@@ -15,6 +15,7 @@ import { useColorScheme } from 'react-native';
 import { ThemeProvider, themes } from './theme';
 import { useDeepLink } from '../hooks/useDeepLink';
 import { AppInitProvider, useAppInit } from '../src/context/AppInitContext';
+import { assertStellarNetworkConfigConsistency } from '../utils/stellarNetwork';
 
 SplashScreen.preventAutoHideAsync();
 import { useWallet } from '../src/hooks/useWallet';
@@ -37,6 +38,11 @@ function AppShell() {
   const [fontsLoaded, fontError] = useFonts({
     Lora_700Bold,
   });
+
+  useEffect(() => {
+    // Fail fast if Horizon URL and STELLAR_NETWORK disagree (issue #145).
+    assertStellarNetworkConfigConsistency();
+  }, []);
 
   useEffect(() => {
     if ((fontsLoaded || fontError) && isHydrated) {
