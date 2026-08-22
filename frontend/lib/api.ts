@@ -160,13 +160,12 @@ let refreshPromise: Promise<string | null> | null = null;
 async function refreshAdminSession(): Promise<string | null> {
   if (!adminRefreshToken) return null;
   try {
-    const { data } = await api.post<{
-      token: string;
-      refreshToken: string;
-      expiresIn: number;
-    }>("/api/admin/refresh", { refreshToken: adminRefreshToken });
+    const { data } = await api.post<{ token: string; expiresIn: number }>(
+      "/api/admin/refresh",
+      { refreshToken: adminRefreshToken },
+    );
 
-    setAdminToken(data.token, data.refreshToken);
+    setAdminToken(data.token, adminRefreshToken);
     return data.token;
   } catch (err) {
     logoutAdmin();
