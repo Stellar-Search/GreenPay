@@ -8,13 +8,16 @@ import {
   type StorageArea,
 } from '../session-state';
 
-const PUBLIC_KEY = `G${'A'.repeat(55)}`;
+// Real, checksum-valid Stellar public keys. The previous fixtures used
+// `G${'A'.repeat(55)}`-style strings, which only matched the shape regex and
+// are rejected by the StrKey-backed session validator.
+const PUBLIC_KEY = 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H';
 const PROJECT = {
   id: 'project-1',
   name: 'Ocean Cleanup',
   description: 'Removing ocean plastic',
   category: 'Ocean Conservation',
-  walletAddress: `G${'B'.repeat(55)}`,
+  walletAddress: 'GB2X5SMMHQ2XJPDUOPA36DLNKG4PHVJOUSTM6FJUR2LIDUBH7IQGO3P6',
 };
 
 class MemoryStorage implements StorageArea {
@@ -172,8 +175,8 @@ describe('MV3 session recovery', () => {
     const localStorage = new DelayedStorage(5);
     const worker = new WorkerSessionState(sessionStorage, localStorage, () => 50_000, 'worker-concurrent');
 
-    const keyA = `G${'A'.repeat(55)}`;
-    const keyB = `G${'B'.repeat(55)}`;
+    const keyA = 'GDQCDHD4ZRSKWEEX2KDATJRVD5WUJEAYWWKEW5COFQKUHRYR2D3VH5VE';
+    const keyB = 'GDCK7PXQBWBSPBKZTSCTO6RE67CHS6M3LLEPETS3VHTYVNZRMRF3RRBA';
 
     // Interleave setWallet(A) then clearWallet() concurrently
     const [walletA] = await Promise.all([

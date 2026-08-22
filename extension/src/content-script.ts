@@ -1,3 +1,5 @@
+import { isValidStellarAddress } from './stellar-address';
+
 const STELLAR_ADDRESS_REGEX = /\bG[A-Z2-7]{55}\b/g;
 const EXACT_STELLAR_ADDRESS_REGEX = /^G[A-Z2-7]{55}$/;
 export const GENERATED_NODES = new WeakSet<Node>();
@@ -16,11 +18,13 @@ export function cleanupOrphanedTooltips(): void {
 }
 
 /**
- * Host-page values are untrusted. Only a value matching the complete, expected
- * Stellar public-key shape may cross the extension messaging boundary.
+ * Host-page values are untrusted. The scanning regex above is only a cheap
+ * candidate pre-filter for highlighting; this is the authoritative gate: only
+ * a value with a valid StrKey checksum may cross the extension messaging
+ * boundary.
  */
 export function sanitizeStellarAddress(value: unknown): string | null {
-  if (typeof value !== 'string' || !EXACT_STELLAR_ADDRESS_REGEX.test(value)) {
+  if (typeof value !== 'string' || !isValidStellarAddress(value)) {
     return null;
   }
 

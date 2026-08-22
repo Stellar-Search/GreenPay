@@ -1,3 +1,5 @@
+import { isValidStellarAddress } from './stellar-address';
+
 export const SESSION_SCHEMA_VERSION = 1;
 export const WALLET_SESSION_TTL_MS = 15 * 60 * 1000;
 export const PROJECT_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -55,7 +57,7 @@ function isWalletSession(value: unknown): value is WalletSession {
   return (
     isRecord(value) &&
     typeof value.publicKey === 'string' &&
-    /^G[A-Z2-7]{55}$/.test(value.publicKey) &&
+    isValidStellarAddress(value.publicKey) &&
     value.network === 'TESTNET' &&
     typeof value.validatedAt === 'number'
   );
@@ -176,7 +178,7 @@ export class WorkerSessionState {
   async setWallet(publicKey: string): Promise<WalletSession> {
     return this.runExclusive(async () => {
       await this.initialize();
-      if (!/^G[A-Z2-7]{55}$/.test(publicKey)) {
+      if (!isValidStellarAddress(publicKey)) {
         throw new Error('Invalid Stellar public key');
       }
 

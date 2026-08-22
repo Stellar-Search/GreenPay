@@ -20,6 +20,7 @@ import {
   QueuedDonation,
 } from '../../utils/donationQueue';
 import { apiGet, apiPost } from '../../utils/api';
+import { isValidStellarAddress } from '../../utils/stellarValidation';
 
 const HORIZON_URL = process.env.EXPO_PUBLIC_HORIZON_URL || 'https://horizon-testnet.stellar.org';
 
@@ -305,7 +306,7 @@ export default function DonateScreen() {
           text: 'OK',
           onPress: (input: any) => {
             const trimmed = String(input || '').trim();
-            if (/^G[A-Z0-9]{55}$/.test(trimmed)) {
+            if (isValidStellarAddress(trimmed)) {
               setPublicKey(trimmed);
             } else {
               Alert.alert('Invalid Key', 'Please enter a valid Stellar public key');

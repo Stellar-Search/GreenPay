@@ -10,11 +10,18 @@ import {
   ACTIVE_TOOLTIPS,
 } from './content-script';
 
-const ADDRESS = `G${'A'.repeat(55)}`;
-const SECOND_ADDRESS = `G${'B'.repeat(55)}`;
-const THIRD_ADDRESS = `G${'C'.repeat(55)}`;
-const FOURTH_ADDRESS = `G${'D'.repeat(55)}`;
-const FIFTH_ADDRESS = `G${'E'.repeat(55)}`;
+// Real, checksum-valid Stellar public keys. The old fixtures used
+// `G${'A'.repeat(55)}` etc., which only matched the shape regex and are
+// rejected by the StrKey-backed sanitizer.
+const ADDRESS = 'GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H';
+const SECOND_ADDRESS = 'GDQCDHD4ZRSKWEEX2KDATJRVD5WUJEAYWWKEW5COFQKUHRYR2D3VH5VE';
+const THIRD_ADDRESS = 'GDCK7PXQBWBSPBKZTSCTO6RE67CHS6M3LLEPETS3VHTYVNZRMRF3RRBA';
+const FOURTH_ADDRESS = 'GDE7DDKCF7XGTD4K3TI2GVKIZ7DMA3YJBQKNE6JTXCSJDMC532KXAJ54';
+const FIFTH_ADDRESS = 'GCADBC2WG33DDAN3EJ4SPXLK6T4UBLBAJCO2QBK2BQ4WUAZSNSV65MTG';
+
+// Shape-valid but checksum-invalid — the class of value the sanitizer must
+// reject even though it matches the scanning regex.
+const SHAPE_ONLY_ADDRESS = `G${'A'.repeat(55)}`;
 
 describe('content script hostile-page hardening', () => {
   const sendMessage = vi.fn();
@@ -35,8 +42,9 @@ describe('content script hostile-page hardening', () => {
     vi.unstubAllGlobals();
   });
 
-  it('accepts only complete Stellar-shaped addresses at the message boundary', () => {
+  it('accepts only complete, checksum-valid Stellar addresses at the message boundary', () => {
     expect(sanitizeStellarAddress(ADDRESS)).toBe(ADDRESS);
+    expect(sanitizeStellarAddress(SHAPE_ONLY_ADDRESS)).toBeNull();
     expect(sanitizeStellarAddress(`${ADDRESS}<script>alert(1)</script>`)).toBeNull();
     expect(sanitizeStellarAddress(`javascript:${ADDRESS}`)).toBeNull();
     expect(sanitizeStellarAddress({ toString: () => ADDRESS })).toBeNull();

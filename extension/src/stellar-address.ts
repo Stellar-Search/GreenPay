@@ -1,19 +1,17 @@
 /**
- * utils/stellarValidation.ts
- * Stellar address validation for the mobile app.
+ * src/stellar-address.ts
+ * Stellar address validation for the browser extension.
  *
- * Validates real ed25519/muxed checksums via `@stellar/stellar-sdk`'s
- * `StrKey` (the same primitive used by `src/hooks/useWallet.ts`) instead of
- * a shape-only regex. A string that merely *looks* like a Stellar address
- * (right prefix, right length) is not guaranteed to be a real, checksum-valid
- * account id — accepting shape alone would let a single mistyped or
- * adversarially-crafted character through undetected.
+ * Canonical StrKey-backed implementation, verified via `@stellar/stellar-sdk`'s
+ * `StrKey` (checksum) rather than a shape-only regex. A string that merely
+ * *looks* like a Stellar address (right prefix, right length) is not
+ * guaranteed to be a real, checksum-valid account id.
  *
- * Canonical implementation, mirrored verbatim across:
+ * Mirrored verbatim across:
  *   - frontend/lib/stellar-address.ts
- *   - mobile/utils/stellarValidation.ts  (this file)
- *   - extension/src/stellar-address.ts
- * The cross-validation test in `extension/src/__tests__/stellar-address-cross-validation.test.ts`
+ *   - mobile/utils/stellarValidation.ts
+ *   - extension/src/stellar-address.ts        (this file)
+ * The cross-validation test in `src/__tests__/stellar-address-cross-validation.test.ts`
  * proves all three accept and reject exactly the same corpus. Keep them in sync.
  */
 import { StrKey } from '@stellar/stellar-sdk';
@@ -21,10 +19,6 @@ import { StrKey } from '@stellar/stellar-sdk';
 /**
  * Returns true when `address` is a valid Stellar Ed25519 public key (G…),
  * verified via StrKey's checksum check (not just a regex on shape).
- *
- * Kept for backward compatibility with existing callers; new code that
- * needs to accept any valid payment destination (including muxed accounts)
- * should use `isValidStellarDestination` instead.
  */
 export function isValidStellarAddress(address: unknown): address is string {
   if (typeof address !== 'string') return false;
@@ -53,8 +47,6 @@ export function isValidStellarMuxedAddress(address: unknown): address is string 
 /**
  * Returns true when `address` is a valid Stellar payment destination —
  * either a plain ed25519 account (G…) or a SEP-23 muxed account (M…).
- * This is the check new code should use when validating a scanned or
- * user-supplied payment destination.
  */
 export function isValidStellarDestination(address: unknown): address is string {
   return isValidStellarAddress(address) || isValidStellarMuxedAddress(address);
