@@ -497,7 +497,7 @@ export async function submitAndConfirmDonation(signedXDR: string): Promise<{ has
   );
 }
 
-export function isValidStellarAddress(a: string): boolean {
+export function isValidStellarAddress(address: string): boolean {
   if (!address || typeof address !== "string") {
     return false;
   }
