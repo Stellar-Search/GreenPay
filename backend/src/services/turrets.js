@@ -1,20 +1,45 @@
 /**
  * services/turrets.js
  * Stellar Turrets txFunction server for automatic donation matching
- * 
+ *
  * This service implements a Turrets-compatible txFunction that:
  * 1. Listens for payments to project wallets
  * 2. Checks for active matching offers
  * 3. Submits pre-signed matching transactions from the matcher account
+ *
+ * Idempotency guarantee
+ * ─────────────────────
+ * Turret/webhook delivery is at-least-once, so this function MUST be a
+ * provable no-op when called a second time for the same transaction_hash.
+ *
+ * Two-layer defence:
+ *   1. Application pre-check  – query matching_processed_donations at the top
+ *      of the function and skip any (original_tx_hash, match_id) pair that is
+ *      already recorded.  This avoids the Horizon round-trip on the hot path.
+ *   2. Database unique constraint – UNIQUE(original_tx_hash, match_id) on
+ *      matching_processed_donations means that even when two concurrent
+ *      retries race past the pre-check, only one INSERT can succeed; the
+ *      loser receives a 23505 unique_violation and treats it as a success
+ *      (the work was already done by the winner).
+ *
+ * All three writes for a given match (UPDATE donation_matches, INSERT INTO
+ * matching_processed_donations, INSERT INTO donations) are wrapped in a
+ * single database transaction so a partial failure cannot leave the counters
+ * incremented without a corresponding record.
  */
 
-const { Server, TransactionBuilder, Networks, Operation, Asset, Horizon } = require("@stellar/stellar-sdk");
+const { Server, TransactionBuilder, Networks, Memo, Operation, Asset } = require("@stellar/stellar-sdk");
+const { v4: uuidv4 } = require("uuid");
 const pool = require("../db/pool");
 
 // Network configuration
 const NETWORK = process.env.STELLAR_NETWORK || "testnet";
 const NETWORK_PASSPHRASE = NETWORK === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
 const HORIZON_URL = process.env.HORIZON_URL || "https://horizon-testnet.stellar.org";
+
+// Postgres unique_violation error code
+const PG_UNIQUE_VIOLATION = "23505";
+
 let server;
 function getServer() {
   if (!server) {
@@ -24,28 +49,52 @@ function getServer() {
 }
 
 /**
- * Turrets txFunction entry point for matching donations
- * This function is called by the Turret when a payment is detected
+ * Returns the set of match IDs that have already been processed for
+ * `transactionHash`.  Called once at the top of matchDonationTxFunction so
+ * that the per-match loop can skip work immediately without any Horizon calls.
+ *
+ * @param {string} transactionHash
+ * @param {object} db - pg pool or client
+ * @returns {Promise<Set<string>>}
+ */
+async function getAlreadyProcessedMatchIds(transactionHash, db) {
+  const result = await db.query(
+    `SELECT match_id FROM matching_processed_donations
+     WHERE original_tx_hash = $1`,
+    [transactionHash]
+  );
+  return new Set(result.rows.map((r) => r.match_id));
+}
+
+/**
+ * Turrets txFunction entry point for matching donations.
+ *
+ * Idempotency contract: a second call with the same `payment.transaction_hash`
+ * is a guaranteed no-op — no Horizon transaction is submitted, no DB row is
+ * written, and the return value describes only the previously-recorded work.
+ *
+ * @param {object} payment - Payment operation object from Horizon/Turret.
+ * @returns {Promise<object>} Result describing whether matching occurred and details.
  */
 async function matchDonationTxFunction(payment) {
   try {
-    const { 
-      transaction_hash, 
-      from, 
-      to, 
-      amount, 
-      asset_code, 
+    const {
+      transaction_hash,
+      from,
+      to,
+      amount,
+      asset_code,
       asset_type,
-      memo 
     } = payment;
 
-    // Only match XLM donations
+    // ── 1. Asset filter ──────────────────────────────────────────────────────
+    // Only match native XLM donations.
     if (asset_type !== "native" && asset_code !== "XLM") {
       console.log(`Skipping non-XLM donation: ${asset_code || asset_type}`);
       return { matched: false, reason: "Not an XLM donation" };
     }
 
-    // Find the project by wallet address
+    // ── 2. Project lookup ────────────────────────────────────────────────────
     const projectResult = await pool.query(
       "SELECT id, name FROM projects WHERE wallet_address = $1",
       [to]
@@ -59,7 +108,7 @@ async function matchDonationTxFunction(payment) {
     const project = projectResult.rows[0];
     const donationAmount = parseFloat(amount);
 
-    // Check for active matching offers
+    // ── 3. Active match lookup ───────────────────────────────────────────────
     const matchesResult = await pool.query(
       `SELECT id, matcher_address, cap_xlm, matched_xlm, multiplier
        FROM donation_matches
@@ -73,11 +122,37 @@ async function matchDonationTxFunction(payment) {
       return { matched: false, reason: "No active matching offers" };
     }
 
-    // Process matching offers
+    // ── 4. Idempotency pre-check ─────────────────────────────────────────────
+    // Fetch the set of match IDs whose payment has already been submitted for
+    // this transaction_hash.  Any match whose ID is in this set is skipped
+    // entirely — no Horizon call, no DB write.  The DB-level UNIQUE constraint
+    // on matching_processed_donations(original_tx_hash, match_id) closes the
+    // concurrent-retry window that this read-then-skip cannot close alone.
+    const alreadyProcessed = await getAlreadyProcessedMatchIds(transaction_hash, pool);
+
+    const allAlreadyDone = matchesResult.rows.every((m) => alreadyProcessed.has(m.id));
+    if (allAlreadyDone) {
+      console.log(`All matches already processed for tx: ${transaction_hash}`);
+      return {
+        matched: true,
+        deduplicated: true,
+        reason: "Already processed",
+        projectId: project.id,
+        projectName: project.name,
+      };
+    }
+
+    // ── 5. Process each matching offer ───────────────────────────────────────
     let totalMatched = 0;
     const matchResults = [];
 
     for (const match of matchesResult.rows) {
+      // Skip matches already processed for this transaction_hash.
+      if (alreadyProcessed.has(match.id)) {
+        console.log(`Skipping already-processed match ${match.id} for tx: ${transaction_hash}`);
+        continue;
+      }
+
       const matchedXlm = parseFloat(match.matched_xlm || "0");
       const capXlm = parseFloat(match.cap_xlm);
       const remaining = capXlm - matchedXlm;
@@ -85,54 +160,107 @@ async function matchDonationTxFunction(payment) {
       if (remaining <= 0) continue;
 
       const matchAmount = Math.min(donationAmount * match.multiplier, remaining);
-
       if (matchAmount <= 0) continue;
 
-      // Build and submit the matching payment transaction
-      const matchResult = await submitMatchingPayment({
+      // ── 5a. Submit the on-chain matching payment ─────────────────────────
+      // This happens BEFORE the DB writes so that if the Horizon call fails
+      // we never record a match that was not actually paid out.
+      // Call via module.exports so that Jest spies can intercept it in tests.
+      const matchResult = await module.exports.submitMatchingPayment({
         matcherAddress: match.matcher_address,
         projectWallet: to,
         amount: matchAmount,
         originalTxHash: transaction_hash,
         matchId: match.id,
-        projectId: project.id
+        projectId: project.id,
       });
 
-      if (matchResult.success) {
-        // Update the matched amount in the database
-        await pool.query(
-          `UPDATE donation_matches 
-           SET matched_xlm = matched_xlm + $1 
+      if (!matchResult.success) {
+        console.warn(
+          `Matching payment failed for match ${match.id}: ${matchResult.reason || matchResult.error}`
+        );
+        continue;
+      }
+
+      // ── 5b. Persist atomically inside a single DB transaction ────────────
+      // Three writes as one unit:
+      //   • UPDATE donation_matches  – increment matched_xlm counter
+      //   • INSERT matching_processed_donations  – idempotency record (the
+      //     UNIQUE constraint is the hard fence against concurrent duplicates)
+      //   • INSERT donations  – accounting row for the matching payment
+      //
+      // If the INSERT into matching_processed_donations violates the unique
+      // constraint a concurrent retry won already won the race — treat it as
+      // an idempotent success and move on rather than propagating an error.
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+
+        await client.query(
+          `UPDATE donation_matches
+           SET matched_xlm = matched_xlm + $1
            WHERE id = $2`,
           [matchAmount, match.id]
         );
 
-        // Record the matched donation
-        await pool.query(
+        await client.query(
+          `INSERT INTO matching_processed_donations
+             (id, original_tx_hash, match_id, matching_tx_hash, match_amount_xlm)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [uuidv4(), transaction_hash, match.id, matchResult.txHash, matchAmount]
+        );
+
+        const donationId = uuidv4();
+        await client.query(
           `INSERT INTO donations (
-            id, project_id, donor_address, amount_xlm, amount, currency, 
-            message, transaction_hash, created_at
-          )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
+             id, project_id, donor_address, amount_xlm, amount, currency,
+             message, transaction_hash, idempotency_key, created_at, updated_at
+           )
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())`,
           [
-            require("uuid").v4(),
+            donationId,
             project.id,
             match.matcher_address,
             matchAmount,
             matchAmount,
             "XLM",
             `Matching donation for ${from}`,
-            matchResult.txHash
+            matchResult.txHash,
+            // idempotency_key: stable, unique per matching payment
+            `match:${transaction_hash}:${match.id}`,
           ]
         );
+
+        await client.query("COMMIT");
 
         totalMatched += matchAmount;
         matchResults.push({
           matchId: match.id,
           matcherAddress: match.matcher_address,
           amount: matchAmount,
-          txHash: matchResult.txHash
+          txHash: matchResult.txHash,
         });
+      } catch (dbErr) {
+        await client.query("ROLLBACK");
+
+        // A unique_violation on matching_processed_donations means a
+        // concurrent retry already committed this match — not an error.
+        if (
+          dbErr.code === PG_UNIQUE_VIOLATION &&
+          (dbErr.constraint === "matching_processed_donations_original_tx_hash_match_id_key" ||
+            /matching_processed_donations/i.test(dbErr.message))
+        ) {
+          console.log(
+            `Concurrent duplicate for match ${match.id} / tx ${transaction_hash} — skipping (already committed by racing caller)`
+          );
+          continue;
+        }
+
+        // Any other DB error is genuinely unexpected — re-throw so the caller
+        // can surface it and the webhook system retries at the right level.
+        throw dbErr;
+      } finally {
+        client.release();
       }
     }
 
@@ -141,9 +269,8 @@ async function matchDonationTxFunction(payment) {
       totalMatched,
       matches: matchResults,
       projectId: project.id,
-      projectName: project.name
+      projectName: project.name,
     };
-
   } catch (error) {
     console.error("Error in matchDonationTxFunction:", error);
     return { matched: false, error: error.message };
@@ -168,8 +295,8 @@ async function submitMatchingPayment({
   projectWallet,
   amount,
   originalTxHash,
-  matchId,
-  projectId
+  _matchId,
+  _projectId
 }) {
   try {
     // Load the matcher account
@@ -187,12 +314,7 @@ async function submitMatchingPayment({
           amount: amount.toFixed(7)
         })
       )
-      .addMemo(
-        Operation.memo({
-          type: "text",
-          value: `Match:${originalTxHash.slice(0, 20)}`
-        })
-      )
+      .addMemo(Memo.text(`Match:${originalTxHash.slice(0, 20)}`))
       .setTimeout(60)
       .build();
 
@@ -243,7 +365,7 @@ async function generatePreSignedTransactions({
   projectWallet,
   capXlm,
   multiplier,
-  projectId
+  _projectId
 }) {
   const transactions = [];
   const matcherKeypair = require("@stellar/stellar-sdk").Keypair.fromSecret(matcherSecret);

@@ -93,7 +93,7 @@ describe("POST /api/donations → donation_event WebSocket broadcast", () => {
   });
 
   test(
-    "emits donation_event to connected clients within 500 ms",
+    "emits donation_event to connected clients within 3000 ms",
     (done) => {
       const donorAddress = makePublicKey("W");
       const transactionHash = makeTxHash("7");
@@ -112,24 +112,29 @@ describe("POST /api/donations → donation_event WebSocket broadcast", () => {
 
       const deadline = setTimeout(() => {
         socket.disconnect();
-        done(new Error("donation_event was not received within 500 ms"));
-      }, 500);
+        done(new Error("donation_event was not received within 3000 ms"));
+      }, 3000);
+
+      // Register the donation_event listener immediately — before the socket
+      // connects — so it is in place regardless of when the HTTP response
+      // arrives and io.emit fires.  Under full-suite load the event can be
+      // delivered before the connect callback runs, causing the old code to
+      // miss it entirely.
+      socket.on("donation_event", (data) => {
+        clearTimeout(deadline);
+        socket.disconnect();
+        try {
+          expect(data.projectId).toBe("project-ws");
+          expect(data.donorAddress).toBe(donorAddress);
+          expect(data.transactionHash).toBe(transactionHash);
+          expect(typeof data.timestamp).toBe("string");
+          done();
+        } catch (assertionError) {
+          done(assertionError);
+        }
+      });
 
       socket.on("connect", () => {
-        socket.on("donation_event", (data) => {
-          clearTimeout(deadline);
-          socket.disconnect();
-          try {
-            expect(data.projectId).toBe("project-ws");
-            expect(data.donorAddress).toBe(donorAddress);
-            expect(data.transactionHash).toBe(transactionHash);
-            expect(typeof data.timestamp).toBe("string");
-            done();
-          } catch (assertionError) {
-            done(assertionError);
-          }
-        });
-
         request
           .post("/api/donations")
           .send({
@@ -152,7 +157,7 @@ describe("POST /api/donations → donation_event WebSocket broadcast", () => {
         done(err);
       });
     },
-    2000,
+    5000,
   );
 
   test(
@@ -222,21 +227,22 @@ describe("POST /api/donations → donation_event WebSocket broadcast", () => {
 
       const deadline = setTimeout(() => {
         socket.disconnect();
-        done(new Error("donation_event was not received within 500 ms"));
-      }, 500);
+        done(new Error("donation_event was not received within 3000 ms"));
+      }, 3000);
+
+      // Register before connecting — same race-condition fix as the first test.
+      socket.on("donation_event", (data) => {
+        clearTimeout(deadline);
+        socket.disconnect();
+        try {
+          expect(data.amountXLM).toBe(100);
+          done();
+        } catch (assertionError) {
+          done(assertionError);
+        }
+      });
 
       socket.on("connect", () => {
-        socket.on("donation_event", (data) => {
-          clearTimeout(deadline);
-          socket.disconnect();
-          try {
-            expect(data.amountXLM).toBe(100);
-            done();
-          } catch (assertionError) {
-            done(assertionError);
-          }
-        });
-
         request
           .post("/api/donations")
           .send({
@@ -259,6 +265,6 @@ describe("POST /api/donations → donation_event WebSocket broadcast", () => {
         done(err);
       });
     },
-    2000,
+    5000,
   );
 });

@@ -279,3 +279,26 @@ CREATE TABLE IF NOT EXISTS indexer_state (
   value      TEXT NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- ============================================================
+-- Turrets matching idempotency fence
+-- Records every (original_tx_hash, match_id) pair whose
+-- matching payment has been successfully submitted.  The
+-- UNIQUE constraint is the hard guarantee: even when the
+-- application-level pre-check races with a concurrent retry,
+-- only one row can ever be inserted for a given pair, making
+-- matchDonationTxFunction a provable no-op on any subsequent
+-- call for the same transaction_hash + match_id.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS matching_processed_donations (
+  id               UUID        PRIMARY KEY,
+  original_tx_hash TEXT        NOT NULL,
+  match_id         UUID        NOT NULL REFERENCES donation_matches(id) ON DELETE CASCADE,
+  matching_tx_hash TEXT        NOT NULL,
+  match_amount_xlm NUMERIC(20, 7) NOT NULL,
+  processed_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (original_tx_hash, match_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_matching_processed_donations_tx_hash
+  ON matching_processed_donations (original_tx_hash);
