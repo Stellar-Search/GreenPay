@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getSocket } from "@/lib/socket";
 import { fetchMissedEvents, type RealtimeStatus } from "@/lib/realtime";
 
-
 export interface DonationSocketPayload {
   projectId: string;
   donorAddress: string;
@@ -66,6 +65,7 @@ export function useDonationSocket(
 
   // Store latest callbacks in refs to keep the subscription stable across renders
   const onDonationRef = useRef(onDonation);
+
   useEffect(() => {
     onDonationRef.current = onDonation;
   }, [onDonation]);
@@ -150,12 +150,6 @@ export function useDonationSocket(
     socket.on("donation_event", handleEvent);
     socket.on("realtime:status", handleStatus);
 
-    // Initial state check in case it connected before listeners attached
-    if (socket.connected) {
-      setStatus("connected");
-    }
-
-    // Cleanup listeners on unmount or projectId change
     return () => {
       cancelled = true;
       socket.off("connect", handleConnect);
