@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { DeviceEventEmitter } from 'react-native';
 import { StrKey } from '@stellar/stellar-sdk';
 import {
   getWalletPublicKey,
@@ -11,11 +12,17 @@ export function useWallet() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const fetchKey = useCallback(() => {
     getWalletPublicKey()
       .then((stored) => setPublicKey(stored))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    fetchKey();
+    const subscription = DeviceEventEmitter.addListener('WALLET_CHANGED', fetchKey);
+    return () => subscription.remove();
+  }, [fetchKey]);
 
   const connect = useCallback(async (address: string) => {
     setError(null);
@@ -28,12 +35,14 @@ export function useWallet() {
 
     await setWalletPublicKey(trimmed);
     setPublicKey(trimmed);
+    DeviceEventEmitter.emit('WALLET_CHANGED');
     return true;
   }, []);
 
   const disconnect = useCallback(async () => {
     await clearWalletPublicKey();
     setPublicKey(null);
+    DeviceEventEmitter.emit('WALLET_CHANGED');
   }, []);
 
   return { publicKey, loading, error, connect, disconnect };

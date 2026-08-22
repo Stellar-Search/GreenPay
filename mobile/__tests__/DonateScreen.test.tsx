@@ -118,14 +118,12 @@ describe('DonateScreen – biometric auth gate', () => {
 // MOCK_PROJECT.walletAddress above.
 const DONOR_PUBLIC_KEY = 'GA4JHZX455IELW533547WFB5LV57LLSUJURFFIIYG7AV4HTQNW4W4FUD';
 
-/** Drives the "Connect Wallet" Alert.alert prompt exactly like a user would. */
-async function connectWallet(getByText: any, alertSpy: jest.SpyInstance, publicKey: string) {
+/** Drives the "Connect Wallet" flow exactly like a user would. */
+async function connectWallet(getByText: any, getByPlaceholderText: any, publicKey: string) {
   fireEvent.press(getByText('Connect Wallet'));
-  const call = alertSpy.mock.calls.find((c) => c[0] === 'Connect Wallet');
-  const buttons = call?.[2] as Array<{ text: string; onPress?: (input: any) => void }>;
-  const okButton = buttons.find((b) => b.text === 'OK');
   await act(async () => {
-    await okButton?.onPress?.(publicKey);
+    fireEvent.changeText(getByPlaceholderText('GABC...XYZ'), publicKey);
+    fireEvent.press(getByText('Connect'));
   });
 }
 
@@ -164,7 +162,7 @@ describe('DonateScreen – offline queueing', () => {
     const { getByText, getByPlaceholderText } = renderDonateScreen();
     await waitFor(() => expect(getByText('Donate to Amazon Reforestation')).toBeTruthy());
 
-    await connectWallet(getByText, alertSpy, DONOR_PUBLIC_KEY);
+    await connectWallet(getByText, getByPlaceholderText, DONOR_PUBLIC_KEY);
     fireEvent.changeText(getByPlaceholderText('1.00'), '7');
     // Type a secret key too — it must never be persisted, even if present in the field.
     fireEvent.changeText(getByPlaceholderText('S...'), 'SBOGUSSECRETKEYFORTESTPURPOSESONLYXXXXXXXXXXXXXXXXXXXX');
@@ -255,7 +253,7 @@ describe('DonateScreen – completing a queued donation ("Complete now")', () =>
     const { getByText, getByPlaceholderText } = renderDonateScreen();
     await waitFor(() => expect(getByPlaceholderText('1.00').props.value).toBe('5.0000000'));
 
-    await connectWallet(getByText, alertSpy, REAL_PUBLIC_KEY);
+    await connectWallet(getByText, getByPlaceholderText, REAL_PUBLIC_KEY);
     fireEvent.changeText(getByPlaceholderText('S...'), REAL_KEYPAIR.secret());
     fireEvent.press(getByText(/🌱 Donate/));
 
@@ -286,7 +284,7 @@ describe('DonateScreen – completing a queued donation ("Complete now")', () =>
     const { getByText, getByPlaceholderText } = renderDonateScreen();
     await waitFor(() => expect(getByPlaceholderText('1.00').props.value).toBe('5.0000000'));
 
-    await connectWallet(getByText, alertSpy, REAL_PUBLIC_KEY);
+    await connectWallet(getByText, getByPlaceholderText, REAL_PUBLIC_KEY);
     fireEvent.changeText(getByPlaceholderText('S...'), REAL_KEYPAIR.secret());
     fireEvent.press(getByText(/🌱 Donate/));
 
@@ -369,7 +367,7 @@ describe('DonateScreen – issue #359: online donation Horizon-success / backend
       await waitFor(() => expect(getByText('Donate to Amazon Reforestation')).toBeTruthy());
 
       // Connect wallet and submit without a prior queueId param.
-      await connectWallet(getByText, alertSpy, REAL_PUBLIC_KEY);
+      await connectWallet(getByText, getByPlaceholderText, REAL_PUBLIC_KEY);
       fireEvent.changeText(getByPlaceholderText('1.00'), '3');
       fireEvent.changeText(getByPlaceholderText('S...'), REAL_KEYPAIR.secret());
       fireEvent.press(getByText(/🌱 Donate/));
@@ -447,7 +445,7 @@ describe('DonateScreen – issue #359: online donation Horizon-success / backend
     const { getByText, getByPlaceholderText } = renderDonateScreen();
     await waitFor(() => expect(getByText('Donate to Amazon Reforestation')).toBeTruthy());
 
-    await connectWallet(getByText, alertSpy, REAL_PUBLIC_KEY);
+    await connectWallet(getByText, getByPlaceholderText, REAL_PUBLIC_KEY);
     fireEvent.changeText(getByPlaceholderText('1.00'), '2');
     fireEvent.changeText(getByPlaceholderText('S...'), REAL_KEYPAIR.secret());
     fireEvent.press(getByText(/🌱 Donate/));
@@ -477,3 +475,17 @@ describe('DonateScreen – issue #359: online donation Horizon-success / backend
     expect(finalQueue).toHaveLength(0);
   });
 });
+
+ i m p o r t   *   a s   S e c u r e S t o r e   f r o m   ' e x p o - s e c u r e - s t o r e ' ; 
+ 
+ d e s c r i b e ( ' D o n a t e S c r e e n      r e a d s   f r o m   s h a r e d   w a l l e t   h o o k ' ,   ( )   = >   { 
+     i t ( ' a s s e r t s   t h e   d o n a t e   s c r e e n   r e a d s   i t s   a d d r e s s   f r o m   t h e   s h a r e d   w a l l e t   h o o k ' ,   a s y n c   ( )   = >   { 
+         ( S e c u r e S t o r e . g e t I t e m A s y n c   a s   j e s t . M o c k ) . m o c k R e s o l v e d V a l u e ( D O N O R _ P U B L I C _ K E Y ) ; 
+         c o n s t   {   g e t B y T e x t   }   =   r e n d e r D o n a t e S c r e e n ( ) ; 
+         c o n s t   e x p e c t e d T r u n c a t e d   =   \ \ & \ \ ; 
+         a w a i t   w a i t F o r ( ( )   = >   { 
+             e x p e c t ( g e t B y T e x t ( e x p e c t e d T r u n c a t e d ) ) . t o B e T r u t h y ( ) ; 
+         } ) ; 
+     } ) ; 
+ } ) ;  
+ 

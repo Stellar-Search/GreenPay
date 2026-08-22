@@ -25,6 +25,9 @@ import {
   getConfiguredHorizonUrl,
   getExpectedNetworkDisplayName,
 } from '../../utils/stellarNetwork';
+import { useWallet } from '../../hooks/useWallet';
+import { WalletConnect } from '../../components/WalletConnect';
+
 
 const HORIZON_URL = getConfiguredHorizonUrl();
 
@@ -45,7 +48,7 @@ export default function DonateScreen() {
   const [message, setMessage] = useState('');
   const [queueEntry, setQueueEntry] = useState<QueuedDonation | null>(null);
   const [secretKey, setSecretKey] = useState('');
-  const [publicKey, setPublicKey] = useState('');
+  const { publicKey } = useWallet();
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -292,28 +295,6 @@ export default function DonateScreen() {
     }
   };
 
-  const connectWallet = async () => {
-    Alert.alert(
-      'Connect Wallet',
-      'Enter your Stellar public key:',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'OK',
-          onPress: (input: any) => {
-            const trimmed = String(input || '').trim();
-            if (/^G[A-Z0-9]{55}$/.test(trimmed)) {
-              setPublicKey(trimmed);
-            } else {
-              Alert.alert('Invalid Key', 'Please enter a valid Stellar public key');
-            }
-          },
-        },
-      ],
-      { cancelable: true }
-    );
-  };
-
   if (loading) {
     return (
       <View style={styles.container}>
@@ -357,18 +338,9 @@ export default function DonateScreen() {
         </ScrollView>
       </View>
 
-      {!publicKey ? (
-        <TouchableOpacity style={[styles.connectButton, { backgroundColor: colors.buttonBackground }]}
-          onPress={connectWallet}
-        >
-          <Text style={[styles.connectButtonText, { color: colors.buttonText }]}>Connect Wallet</Text>
-        </TouchableOpacity>
-      ) : (
-        <View style={styles.walletCard}>
-          <Text style={styles.walletLabel}>Connected wallet</Text>
-          <Text style={styles.walletAddress}>{publicKey.slice(0, 8)}...{publicKey.slice(-4)}</Text>
-        </View>
-      )}
+      <View style={{ alignItems: 'center', marginVertical: 8, paddingHorizontal: 16 }}>
+        <WalletConnect />
+      </View>
 
       <View style={styles.card}>
         <Text style={styles.label}>Amount (XLM)</Text>
