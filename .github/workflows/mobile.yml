@@ -23,6 +23,22 @@ jobs:
       - name: npm audit (fail on high/critical)
         run: npx --yes audit-ci@7.1.0 --high --package-manager npm --config .audit-ci.json
 
+  test:
+    name: Mobile tests and type-check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node-install
+        with:
+          working-directory: mobile
+      - name: Run tests
+        run: npm test
+      - name: Type check
+        run: npm run type-check
+
   build:
     name: EAS Preview Build
     if: github.event_name == 'push'
