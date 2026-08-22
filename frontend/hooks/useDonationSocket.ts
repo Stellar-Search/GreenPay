@@ -1,37 +1,33 @@
+<<<<<<< HEAD
 import { useEffect, useRef, useState } from "react";
+=======
+import { useEffect, useState, useRef } from "react";
+>>>>>>> 5c38d31 (Implement reconnect-triggered donation backfill for issue #134)
 import { getSocket } from "@/lib/socket";
-
 
 export interface DonationSocketPayload {
   projectId: string;
   donorAddress: string;
   amountXLM: number;
   transactionHash: string;
-  timestamp: string;
+  timestamp: string; // ISO String timestamp
 }
 
-export type SocketStatus = "connecting" | "connected" | "disconnected" | "error"
-
-/**
- * Subscribes to the backend's "donation_event" Socket.io broadcast and invokes
- * `onDonation` for events matching `projectId`.
- *
- * Exposes the connection `status` so consumers can observe socket connectivity.
- */
+export type SocketStatus = "connecting" | "connected" | "disconnected" | "error";
 
 export function useDonationSocket(
     projectId: string | undefined | null,
     onDonation: (payload: DonationSocketPayload) => void
 ) {
   const socket = getSocket();
-
-  // Track status state
   const [status, setStatus] = useState<SocketStatus>(
       socket.connected ? "connected" : "connecting"
   );
 
-  // Store latest callback in a ref to keep subscription stable across re-renders
+  // Keep track of the timestamp of the last received donation
+  const lastEventTimestampRef = useRef<string | null>(null);
   const onDonationRef = useRef(onDonation);
+
   useEffect(() => {
     onDonationRef.current = onDonation;
   }, [onDonation]);
@@ -39,34 +35,52 @@ export function useDonationSocket(
   useEffect(() => {
     if (projectId === undefined) return;
 
-    // Track status events
-    const handleConnect = () => setStatus("connected");
-    const handleDisconnect = () => setStatus("disconnected");
-    const handleConnectError = () => setStatus("error");
-
-    const handleEvent = (payload: DonationSocketPayload) => {
+    // Helper to process donations and update the latest timestamp reference
+    const processDonation = (payload: DonationSocketPayload) => {
       if (projectId === null || payload.projectId === projectId) {
+        lastEventTimestampRef.current = payload.timestamp;
         onDonationRef.current(payload);
       }
     };
 
-    // Attach listeners
+    // Helper to fetch missed donations during disconnection
+    const backfillMissedDonations = async () => {
+      if (!lastEventTimestampRef.current) return;
+
+      try {
+        const queryParams = new URLSearchParams();
+        if (projectId) queryParams.append("projectId", projectId);
+        queryParams.append("since", lastEventTimestampRef.current);
+
+        const response = await fetch(`/api/donations?${queryParams.toString()}`);
+        if (!response.ok) return;
+
+        const missedDonations: DonationSocketPayload[] = await response.json();
+        missedDonations.forEach(processDonation);
+      } catch (err) {
+        console.error("Failed to backfill missed donations:", err);
+      }
+    };
+
+    const handleConnect = () => {
+      setStatus("connected");
+      // Backfill any data missed during downtime
+      backfillMissedDonations();
+    };
+
+    const handleDisconnect = () => setStatus("disconnected");
+    const handleConnectError = () => setStatus("error");
+
     socket.on("connect", handleConnect);
     socket.on("disconnect", handleDisconnect);
     socket.on("connect_error", handleConnectError);
-    socket.on("donation_event", handleEvent);
+    socket.on("donation_event", processDonation);
 
-    // Initial state check in case it connected before listeners attached
-    if (socket.connected) {
-      setStatus("connected");
-    }
-
-    // Cleanup listeners on unmount or projectId change
     return () => {
       socket.off("connect", handleConnect);
       socket.off("disconnect", handleDisconnect);
       socket.off("connect_error", handleConnectError);
-      socket.off("donation_event", handleEvent);
+      socket.off("donation_event", processDonation);
     };
   }, [projectId, socket]);
 
