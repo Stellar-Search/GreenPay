@@ -1613,19 +1613,92 @@ export default function ProjectDetail({
   );
 }
 
-/** Simple markdown-to-HTML: bold, italic, links, line breaks. */
-function renderMarkdown(text: string): string {
-  return text
+/** Helper to escape HTML text nodes. */
+function escapeHtml(str: string): string {
+  return str
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*(.+?)\*/g, "<em>$1</em>")
-    .replace(
-      /\[([^\]]+)\]\(([^)]+)\)/g,
-      '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-forest-600 hover:underline">$1</a>',
-    )
-    .replace(/\n/g, "<br />");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/** Helper to escape HTML attribute values. */
+function escapeAttr(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+/** Validates scheme for href attributes (http, https, mailto). */
+function isValidScheme(url: string): boolean {
+  const trimmed = url.trim();
+  return /^(?:https?:\/\/|mailto:)/i.test(trimmed);
+}
+
+/** Formats inline text (escape HTML + handle nested bold/italic if any). */
+function renderInlineFormatting(str: string): string {
+  if (/\x00TOK_\d+\x00/.test(str)) {
+    return str;
+  }
+  let res = escapeHtml(str);
+  res = res.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  res = res.replace(/\*(.+?)\*/g, "<em>$1</em>");
+  return res;
+}
+
+/** Simple markdown-to-HTML: bold, italic, links, line breaks. */
+export function renderMarkdown(text: string): string {
+  if (!text) return "";
+
+  const tokens: string[] = [];
+  const addToken = (htmlSnippet: string): string => {
+    const id = tokens.length;
+    tokens.push(htmlSnippet);
+    return `\x00TOK_${id}\x00`;
+  };
+
+  // 1. Process links: [text](url)
+  let processed = text.replace(
+    /\[([^\]]+)\]\(([^)]+)\)/g,
+    (match, rawLabel, rawUrl) => {
+      if (!isValidScheme(rawUrl)) {
+        return match;
+      }
+      const href = escapeAttr(rawUrl.trim());
+      const labelHtml = renderInlineFormatting(rawLabel);
+      const tag = `<a href="${href}" target="_blank" rel="noopener noreferrer" class="text-forest-600 hover:underline">${labelHtml}</a>`;
+      return addToken(tag);
+    },
+  );
+
+  // 2. Process bold: **text**
+  processed = processed.replace(/\*\*(.+?)\*\*/g, (_, content) => {
+    const formatted = renderInlineFormatting(content);
+    return addToken(`<strong>${formatted}</strong>`);
+  });
+
+  // 3. Process italic: *text*
+  processed = processed.replace(/\*(.+?)\*/g, (_, content) => {
+    const formatted = renderInlineFormatting(content);
+    return addToken(`<em>${formatted}</em>`);
+  });
+
+  // 4. Escape all remaining unformatted text
+  processed = escapeHtml(processed);
+
+  // 5. Convert line breaks
+  processed = processed.replace(/\n/g, "<br />");
+
+  // 6. Restore tokens in reverse order
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    processed = processed.replace(`\x00TOK_${i}\x00`, tokens[i]);
+  }
+
+  return processed;
 }
 
 function formatCountdown(deadline: string, nowMs: number) {
