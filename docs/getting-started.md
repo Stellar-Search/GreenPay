@@ -162,6 +162,7 @@ npm ci                    # or npm install
 npm run lint              # eslint over src/ — currently 34 warnings, 0 errors
 npm test                  # jest --runInBand — 10 suites, 78 tests
 npm test -- --coverage    # the exact form CI runs
+npm run test:local-chain  # real contract -> event indexer -> read-model convergence
 npm run dev               # nodemon; needs PostgreSQL
 ```
 
@@ -173,6 +174,35 @@ committing.
 
 Tests do not need PostgreSQL — the suites stub the database layer. Only `npm run dev` and
 `npm start` do.
+
+The local-chain test is the exception: it deploys the GreenPay WASM, submits a native
+XLM donation, ingests the emitted contract event, and waits for the PostgreSQL project
+and donor totals to converge at exact stroop precision. It uses only local services and
+does not require a public account or network. From the repository root on an amd64
+machine, run the same setup used by CI:
+
+```bash
+docker compose up -d postgres
+docker run -d --name greenpay-stellar-local -p 8000:8000 \
+  stellar/quickstart@sha256:d65f52ac01b3b8ebe4cd4952878433958cea6eb2ee602cb7687127e1df537ddf \
+  --local --enable-soroban-rpc
+
+cd contracts
+cargo build -p greenpay-contract --target wasm32-unknown-unknown --release
+
+cd ../backend
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/greenpay \
+GREENPAY_WASM_PATH=../contracts/target/wasm32-unknown-unknown/release/greenpay_contract.wasm \
+LOCAL_STELLAR_HORIZON_URL=http://127.0.0.1:8000 \
+LOCAL_STELLAR_RPC_URL=http://127.0.0.1:8000/soroban/rpc \
+npm run test:local-chain
+
+docker rm -f greenpay-stellar-local
+```
+
+The Quickstart digest is the protocol 21 build from source revision `ae7fdb0`, matching
+the repository's Soroban SDK 21 contracts. The test polls chain finality and each
+projection boundary with a deadline; it does not use fixed sleeps for convergence.
 
 ### Frontend (`frontend/`)
 

@@ -7,7 +7,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import NetInfo from '@react-native-community/netinfo';
 import { authenticate } from '../../hooks/useBiometricAuth';
-import { Keypair, Horizon, TransactionBuilder, Networks, Operation, Asset, Memo } from '@stellar/stellar-sdk';
+import { Keypair, Horizon } from '@stellar/stellar-sdk';
 
 const StellarServer = (require('@stellar/stellar-sdk') as any).Server || Horizon.Server;
 import { useTheme } from '../theme';
@@ -20,8 +20,13 @@ import {
   QueuedDonation,
 } from '../../utils/donationQueue';
 import { apiGet, apiPost } from '../../utils/api';
+import { buildDonationPaymentTransaction } from '../../utils/donationTransaction';
+import {
+  getConfiguredHorizonUrl,
+  getExpectedNetworkDisplayName,
+} from '../../utils/stellarNetwork';
 
-const HORIZON_URL = process.env.EXPO_PUBLIC_HORIZON_URL || 'https://horizon-testnet.stellar.org';
+const HORIZON_URL = getConfiguredHorizonUrl();
 
 interface ClimateProject {
   id: string;
@@ -212,20 +217,12 @@ export default function DonateScreen() {
       const server = new StellarServer(HORIZON_URL);
       const sourceAccount = await server.loadAccount(publicKey);
 
-      const transaction = new TransactionBuilder(sourceAccount, {
-        fee: '100',
-        networkPassphrase: Networks.TESTNET,
-      })
-        .addOperation(
-          Operation.payment({
-            destination: selectedProject.walletAddress,
-            asset: Asset.native(),
-            amount: formattedAmount,
-          })
-        )
-        .addMemo(Memo.text(`GreenPay:${selectedProject.id.slice(0, 16)}`))
-        .setTimeout(60)
-        .build();
+      const transaction = buildDonationPaymentTransaction({
+        sourceAccount,
+        destination: selectedProject.walletAddress,
+        amount: formattedAmount,
+        projectId: selectedProject.id,
+      });
 
       transaction.sign(keypair);
 
@@ -330,7 +327,9 @@ export default function DonateScreen() {
     <ScrollView style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>Donate to {selectedProject?.name || 'a project'}</Text>
-        <Text style={styles.subtitle}>Choose a project and donate XLM on testnet.</Text>
+        <Text style={styles.subtitle}>
+          Choose a project and donate XLM on {getExpectedNetworkDisplayName()}.
+        </Text>
       </View>
 
       <View style={styles.selectorCard}>

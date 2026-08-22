@@ -8,6 +8,7 @@ jest.mock("pg-boss", () => {
   return jest.fn().mockImplementation(() => ({
     on: jest.fn(),
     start: jest.fn().mockResolvedValue(undefined),
+    createQueue: jest.fn().mockResolvedValue(undefined),
     work: jest.fn().mockResolvedValue(undefined),
     send: jest.fn().mockResolvedValue("job-id"),
   }));
@@ -33,6 +34,15 @@ const PgBoss = require("pg-boss");
 const { Expo } = require("expo-server-sdk");
 const mockExpo = Expo.__mockInstance;
 const push = require("./push");
+
+function getBossInstance() {
+  return PgBoss.mock.results[PgBoss.mock.results.length - 1].value;
+}
+
+function getWorkHandler(boss, queueName) {
+  const call = boss.work.mock.calls.find((args) => args[0] === queueName);
+  return call[call.length - 1];
+}
 
 describe("sendUpdatePushNotifications", () => {
   beforeEach(() => {
@@ -115,6 +125,129 @@ describe("sendUpdatePushNotifications", () => {
     await push.sendUpdatePushNotifications({ project, update });
 
     expect(bossInstance.send).not.toHaveBeenCalled();
+  });
+});
+
+describe("start", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it("creates the receipt queue before registering the worker on it", async () => {
+    await push.start();
+    const boss = getBossInstance();
+
+    expect(boss.createQueue).toHaveBeenCalledWith("expo-push-receipts");
+    expect(boss.createQueue.mock.invocationCallOrder[0]).toBeLessThan(
+      boss.work.mock.invocationCallOrder[0],
+    );
+  });
+});
+
+describe("receipt-check worker (pg-boss v10 job array contract)", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockExpo.chunkPushNotificationReceiptIds.mockImplementation((ids) => [ids]);
+  });
+
+  it("processes a v10-shaped batch of one job by unwrapping job.data.receipts", async () => {
+    await push.start();
+    const boss = getBossInstance();
+    const handler = getWorkHandler(boss, "expo-push-receipts");
+
+    mockExpo.getPushNotificationReceiptsAsync.mockResolvedValueOnce({
+      "ticket-stale": {
+        status: "error",
+        message: "not a registered push notification recipient",
+        details: { error: "DeviceNotRegistered" },
+      },
+    });
+    pool.query.mockResolvedValueOnce({ rowCount: 1 });
+
+    await handler([
+      {
+        id: "job-1",
+        data: { receipts: [{ ticketId: "ticket-stale", token: "ExponentPushToken[stale-token]" }] },
+      },
+    ]);
+
+    expect(pool.query).toHaveBeenCalledWith(
+      "DELETE FROM device_tokens WHERE token = ANY($1::text[])",
+      [["ExponentPushToken[stale-token]"]],
+    );
+  });
+
+  it("processes every job in a multi-job batch", async () => {
+    await push.start();
+    const boss = getBossInstance();
+    const handler = getWorkHandler(boss, "expo-push-receipts");
+
+    mockExpo.getPushNotificationReceiptsAsync
+      .mockResolvedValueOnce({
+        "ticket-stale-1": {
+          status: "error",
+          message: "not a registered push notification recipient",
+          details: { error: "DeviceNotRegistered" },
+        },
+      })
+      .mockResolvedValueOnce({
+        "ticket-stale-2": {
+          status: "error",
+          message: "not a registered push notification recipient",
+          details: { error: "DeviceNotRegistered" },
+        },
+      });
+    pool.query.mockResolvedValue({ rowCount: 1 });
+
+    await handler([
+      {
+        id: "job-1",
+        data: { receipts: [{ ticketId: "ticket-stale-1", token: "ExponentPushToken[stale-1]" }] },
+      },
+      {
+        id: "job-2",
+        data: { receipts: [{ ticketId: "ticket-stale-2", token: "ExponentPushToken[stale-2]" }] },
+      },
+    ]);
+
+    expect(mockExpo.getPushNotificationReceiptsAsync).toHaveBeenCalledTimes(2);
+    expect(pool.query).toHaveBeenCalledWith(expect.any(String), [["ExponentPushToken[stale-1]"]]);
+    expect(pool.query).toHaveBeenCalledWith(expect.any(String), [["ExponentPushToken[stale-2]"]]);
+  });
+
+  it("logs the job's ticket ids and rethrows when checking receipts fails", async () => {
+    const consoleErrorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    await push.start();
+    const boss = getBossInstance();
+    const handler = getWorkHandler(boss, "expo-push-receipts");
+
+    const dbError = new Error("connection terminated");
+    mockExpo.getPushNotificationReceiptsAsync.mockResolvedValueOnce({
+      "ticket-stale": {
+        status: "error",
+        message: "not a registered push notification recipient",
+        details: { error: "DeviceNotRegistered" },
+      },
+    });
+    pool.query.mockRejectedValueOnce(dbError);
+
+    await expect(
+      handler([
+        {
+          id: "job-1",
+          data: {
+            receipts: [{ ticketId: "ticket-stale", token: "ExponentPushToken[stale-token]" }],
+          },
+        },
+      ]),
+    ).rejects.toThrow("connection terminated");
+
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("ticket-stale"),
+      dbError,
+    );
+
+    consoleErrorSpy.mockRestore();
   });
 });
 

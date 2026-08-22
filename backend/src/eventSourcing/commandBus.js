@@ -13,6 +13,118 @@ class CommandHandler {
   }
 }
 
+/**
+ * Thrown when a record call replays a transaction hash whose stored donation
+ * disagrees with the replayed fields (project, donor, currency or amount).
+ *
+ * A genuine retry repeats the original payload; anything else is tampering,
+ * not a retry, and callers must surface it instead of treating it as an
+ * idempotent success. `message` differences are deliberately tolerated: the
+ * message never feeds totals, donor counts or leaderboards, and rejecting on
+ * it would punish benign UI edits between retries.
+ */
+class DonationReplayConflictError extends Error {
+  constructor(transactionHash, mismatches) {
+    super(
+      `Transaction ${transactionHash} is already recorded with different details (${mismatches.join("; ")})`
+    );
+    this.name = "DonationReplayConflictError";
+    this.code = "DONATION_TX_CONFLICT";
+    this.status = 409;
+    this.transactionHash = transactionHash;
+    this.mismatches = mismatches;
+  }
+}
+
+// Postgres unique_violation — raised by both ux_donation_tx_hash (partial
+// unique index on the payload's transaction hash for DonationRecorded events)
+// and ux_event_stream_stream_version (the Donation:<tx-hash> aggregate stream).
+const PG_UNIQUE_VIOLATION = "23505";
+
+function isUniqueViolation(err) {
+  return Boolean(err) && (err.code === PG_UNIQUE_VIOLATION || /duplicate key value/i.test(String(err.message)));
+}
+
+/**
+ * Fetches the stored DonationRecorded event row for a transaction hash, or
+ * null. Used both for the replay pre-check and to recover after losing an
+ * insert race against the database uniqueness constraint.
+ */
+async function findStoredDonationByTxHash(transactionHash, db) {
+  const result = await db.query(
+    `SELECT * FROM event_stream
+     WHERE aggregate_type = 'Donation' AND event_type = 'DonationRecorded'
+       AND payload->'data'->>'transactionHash' = $1`,
+    [transactionHash]
+  );
+  return result.rows[0] || null;
+}
+
+/**
+ * Compares a replayed donation command with the stored event's data and
+ * returns human-readable mismatch descriptions (empty when they agree).
+ *
+ * Only fields actually present on the stored event are compared: legacy
+ * events recorded before a field existed must not produce false conflicts.
+ */
+function findReplayMismatches(command, storedData) {
+  const mismatches = [];
+  if (!storedData) return mismatches;
+
+  const describe = (field, incoming, stored) => `${field} (stored ${stored}, received ${incoming})`;
+
+  if (storedData.projectId != null && storedData.projectId !== command.payload.projectId) {
+    mismatches.push(describe("projectId", command.payload.projectId, storedData.projectId));
+  }
+
+  if (storedData.donorAddress != null && storedData.donorAddress !== command.payload.donorAddress) {
+    mismatches.push(describe("donorAddress", command.payload.donorAddress, storedData.donorAddress));
+  }
+
+  const incomingCurrency = String(command.payload.currency || "XLM").toUpperCase();
+  const storedCurrency = String(storedData.currency || "XLM").toUpperCase();
+  if (storedCurrency !== incomingCurrency) {
+    mismatches.push(describe("currency", incomingCurrency, storedCurrency));
+  } else if (!amountsAgree(command, storedData, incomingCurrency)) {
+    mismatches.push(describe("amount", command.getAmountXlm(), storedData.amountStroops ?? storedData.amountXlm ?? storedData.amount));
+  }
+
+  return mismatches;
+}
+
+function amountsAgree(command, storedData, currency) {
+  if (currency === "XLM") {
+    try {
+      const incomingStroops = command.getAmountStroops();
+      if (storedData.amountStroops != null) {
+        return BigInt(storedData.amountStroops) === incomingStroops;
+      }
+    } catch {
+      // fall through to numeric comparison below
+    }
+  }
+  const storedAmount = Number.parseFloat(storedData.amountXlm ?? storedData.amount);
+  const incomingAmount = Number.parseFloat(currency === "XLM" ? command.getAmountXlm() : command.payload.amount);
+  if (Number.isNaN(storedAmount) || Number.isNaN(incomingAmount)) return false;
+  // Amounts carry at most 7 decimals (stroops); a fixed tolerance well below
+  // one stroop keeps float parsing noise from producing false conflicts.
+  return Math.abs(storedAmount - incomingAmount) <= 1e-7;
+}
+
+/**
+ * Turns a stored DonationRecorded row into the handler result for a replay:
+ * either an idempotent success carrying the stored record, or a typed
+ * conflict when the replayed fields disagree with what was recorded.
+ */
+async function resolveReplay(command, storedRow) {
+  const storedData = storedRow?.payload?.data;
+  const mismatches = findReplayMismatches(command, storedData);
+  if (mismatches.length > 0) {
+    throw new DonationReplayConflictError(command.getTransactionHash(), mismatches);
+  }
+  return { success: true, data: fromRow(storedRow), deduplicated: true };
+}
+
 async function getProjectState(projectId, db = pool) {
   const result = await db.query("SELECT * FROM projects WHERE id = $1", [projectId]);
   return ProjectAggregate.fromState(result.rows[0]);
@@ -55,22 +167,16 @@ class DonationCommandHandler {
     const errors = command.validate();
     if (errors.length > 0) throw new Error(errors.join("; "));
 
-    const existingCheck = await db.query(
-      `SELECT event_id FROM event_stream
-       WHERE aggregate_type = 'Donation' AND event_type = 'DonationRecorded'
-         AND payload->'data'->>'transactionHash' = $1`,
-      [command.getTransactionHash()]
-    );
-    if (existingCheck.rows.length > 0) {
-      const existing = existingCheck.rows[0];
-      const row = await db.query("SELECT * FROM event_stream WHERE event_id = $1", [existing.event_id]);
-      return { success: true, data: fromRow(row.rows[0]), deduplicated: true };
+    const existingRow = await findStoredDonationByTxHash(command.getTransactionHash(), db);
+    if (existingRow) {
+      return resolveReplay(command, existingRow);
     }
 
     const projectResult = await db.query("SELECT id FROM projects WHERE id = $1", [command.payload.projectId]);
     if (!projectResult.rows[0]) throw new Error("Project not found");
 
-    const amount = command.getAmount();
+    const amountXlm = command.getAmountXlm();
+    const amountStroops = command.payload.currency === "XLM" ? command.getAmountStroops().toString() : null;
     const project = await getProjectState(command.payload.projectId, db);
     const donor = await getDonorState(command.payload.donorAddress, db);
 
@@ -80,7 +186,8 @@ class DonationCommandHandler {
       actor: command.actor,
       projectId: command.payload.projectId,
       donorAddress: command.payload.donorAddress,
-      amountXlm: amount,
+      amountXlm,
+      amountStroops,
       currency: command.payload.currency,
       message: command.payload.message,
       transactionHash: command.getTransactionHash(),
@@ -96,24 +203,41 @@ class DonationCommandHandler {
     await storeDonorAggregate(db, command.payload.donorAddress);
 
     const donationRow = donationEvent.toRow();
-    await db.query(
-      "INSERT INTO event_stream (event_id, stream_id, aggregate_type, aggregate_id, event_type, version, aggregate_version, payload, actor, occurred_at, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)",
-      [
-        donationRow.event_id,
-        donationRow.stream_id,
-        donationRow.aggregate_type,
-        donationRow.aggregate_id,
-        donationRow.event_type,
-        donationRow.version,
-        donationRow.aggregate_version,
-        JSON.stringify(donationRow.payload),
-        donationRow.actor,
-        donationRow.occurred_at,
-        donationRow.created_at,
-      ]
-    );
 
-    return { events: [donationEvent], data: { donationId: donationEvent.eventId, amountXlm: amount }, deduplicated: false };
+    // The pre-check above is read-then-write and cannot close the
+    // concurrent-retry window by itself; ux_donation_tx_hash and
+    // ux_event_stream_stream_version are what actually make duplicate
+    // records impossible. When this insert loses that race, the winner's
+    // row becomes authoritative — return it as an idempotent success (or a
+    // conflict when the fields disagree), never as an error.
+    try {
+      await db.query(
+        "INSERT INTO event_stream (event_id, stream_id, aggregate_type, aggregate_id, event_type, version, aggregate_version, payload, actor, occurred_at, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)",
+        [
+          donationRow.event_id,
+          donationRow.stream_id,
+          donationRow.aggregate_type,
+          donationRow.aggregate_id,
+          donationRow.event_type,
+          donationRow.version,
+          donationRow.aggregate_version,
+          JSON.stringify(donationRow.payload),
+          donationRow.actor,
+          donationRow.occurred_at,
+          donationRow.created_at,
+        ]
+      );
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        const winnerRow = await findStoredDonationByTxHash(command.getTransactionHash(), db);
+        if (winnerRow) {
+          return resolveReplay(command, winnerRow);
+        }
+      }
+      throw err;
+    }
+
+    return { events: [donationEvent], data: { donationId: donationEvent.eventId, amountXlm }, deduplicated: false };
   }
 }
 
@@ -392,6 +516,7 @@ module.exports = {
   CommandHandler,
   execute,
   COMMAND_HANDLERS,
+  DonationReplayConflictError,
   getProjectState,
   getDonorState,
   getMatchState,

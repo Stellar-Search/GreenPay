@@ -28,7 +28,7 @@ const DOC = "docs/getting-started.md";
 
 // npm scripts that docs/getting-started.md §7 tells contributors to run.
 const NPM_SCRIPTS = {
-  backend: ["dev", "start", "lint", "test", "docs"],
+  backend: ["dev", "start", "lint", "test", "test:local-chain", "docs"],
   frontend: ["dev", "build", "start", "lint", "type-check", "test", "test:e2e"],
   mobile: ["start", "test"],
   extension: ["dev", "build", "build:firefox", "test"],

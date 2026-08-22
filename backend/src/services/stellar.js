@@ -10,9 +10,10 @@ const NETWORK     = process.env.STELLAR_NETWORK || "testnet";
 const HORIZON_URL = process.env.HORIZON_URL || "https://horizon-testnet.stellar.org";
 const RPC_URL     = process.env.SOROBAN_RPC_URL || "https://soroban-testnet.stellar.org";
 
-const NETWORK_PASSPHRASE = NETWORK === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
-const server = new Horizon.Server(HORIZON_URL);
-const rpcServer = new rpc.Server(RPC_URL);
+const NETWORK_PASSPHRASE = process.env.STELLAR_NETWORK_PASSPHRASE ||
+  (NETWORK === "mainnet" ? Networks.PUBLIC : Networks.TESTNET);
+const server = new Horizon.Server(HORIZON_URL, { allowHttp: HORIZON_URL.startsWith("http://") });
+const rpcServer = new rpc.Server(RPC_URL, { allowHttp: RPC_URL.startsWith("http://") });
 const CONTRACT_ID = process.env.CONTRACT_ID || "";
 
 async function getOnChainProject(projectId) {

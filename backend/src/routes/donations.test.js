@@ -6,6 +6,16 @@ jest.mock("../db/pool", () => ({
 
 jest.mock("../eventSourcing/commandBus", () => ({
   execute: jest.fn(),
+  DonationReplayConflictError: class DonationReplayConflictError extends Error {
+    constructor(transactionHash, mismatches) {
+      super(`Transaction ${transactionHash} is already recorded with different details (${mismatches.join("; ")})`);
+      this.name = "DonationReplayConflictError";
+      this.code = "DONATION_TX_CONFLICT";
+      this.status = 409;
+      this.transactionHash = transactionHash;
+      this.mismatches = mismatches;
+    }
+  },
 }));
 
 jest.mock("../middleware/rateLimiter", () => ({
@@ -13,7 +23,7 @@ jest.mock("../middleware/rateLimiter", () => ({
 }));
 
 const pool = require("../db/pool");
-const { execute } = require("../eventSourcing/commandBus");
+const { execute, DonationReplayConflictError } = require("../eventSourcing/commandBus");
 const { computeBadges } = require("../services/store");
 const { DonationRecordedEvent } = require("../eventSourcing/events");
 const { recordDonation } = require("./donations");
@@ -166,7 +176,7 @@ describe("POST /api/donations", () => {
     });
     execute.mockResolvedValueOnce({
       events: [donationEvent],
-      data: { donationId: donationEvent.eventId, amountXlm: 10 },
+      data: { donationId: donationEvent.eventId, amountXlm: "10.0000000" },
       deduplicated: false,
     });
 
@@ -185,7 +195,7 @@ describe("POST /api/donations", () => {
         id: donationEvent.eventId,
         projectId: "project-1",
         donorAddress,
-        amountXlm: 10,
+        amountXlm: "10.0000000",
         currency: "XLM",
         transactionHash,
       }),
@@ -270,6 +280,32 @@ describe("POST /api/donations", () => {
       }),
     );
     expect(res.body.meta.deduplicated).toBe(true);
+  });
+
+  test("returns 409 and flags a suspicious replay when fields disagree with the stored donation", async () => {
+    const donorAddress = makePublicKey("D");
+    const transactionHash = makeTxHash("d");
+
+    pool.query.mockResolvedValueOnce(queryResult([{ id: "project-1" }]));
+    execute.mockRejectedValueOnce(
+      new DonationReplayConflictError(transactionHash, [
+        "amount (stored 25.0000000, received 30.0000000)",
+      ]),
+    );
+
+    const { res, next } = await invokeRecordDonation({
+      projectId: "project-1",
+      donorAddress,
+      amountXLM: "30",
+      transactionHash,
+    });
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toMatchObject({
+      code: "DONATION_TX_CONFLICT",
+      message: "Transaction hash already recorded with different details",
+    });
   });
 
   test("propagates command bus failures to the error handler", async () => {

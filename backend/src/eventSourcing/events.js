@@ -2,6 +2,7 @@
 
 const { v4: uuid } = require("uuid");
 const { getCorrelationId } = require("../utils/logger");
+const { xlmToStroops, stroopsToXlm } = require("../utils/xlm");
 
 class DomainEvent {
   static AGGREGATE_TYPE = null;
@@ -65,12 +66,16 @@ class DonationRecordedEvent extends DomainEvent {
   static AGGREGATE_TYPE = "Donation";
   static EVENT_TYPE = "DonationRecorded";
 
-  constructor({ aggregateId, version, actor, projectId, donorAddress, amountXlm, currency = "XLM", message, transactionHash }) {
+  constructor({ aggregateId, version, actor, projectId, donorAddress, amountXlm, amountStroops, currency = "XLM", message, transactionHash }) {
     super({ aggregateId, version, actor });
+    const normalizedStroops = currency === "XLM"
+      ? BigInt(amountStroops ?? xlmToStroops(amountXlm)).toString()
+      : null;
     this.data = {
       projectId,
       donorAddress,
-      amountXlm: Number.parseFloat(amountXlm),
+      amountXlm: normalizedStroops === null ? Number.parseFloat(amountXlm) : stroopsToXlm(normalizedStroops),
+      amountStroops: normalizedStroops,
       currency,
       message: message ? message.trim().slice(0, 100) : null,
       transactionHash,
@@ -288,6 +293,7 @@ function fromPayload(payload) {
       projectId: data.projectId,
       donorAddress: data.donorAddress,
       amountXlm: data.amountXlm,
+      amountStroops: data.amountStroops,
       currency: data.currency,
       message: data.message,
       transactionHash: data.transactionHash,

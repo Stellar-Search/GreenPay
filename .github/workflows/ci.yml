@@ -119,6 +119,11 @@ jobs:
       - run: cargo check --workspace
       - run: cargo test --workspace
       - run: cargo build --workspace --target wasm32-unknown-unknown --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: greenpay-contract-wasm
+          path: contracts/target/wasm32-unknown-unknown/release/greenpay_contract.wasm
+          retention-days: 1
 
   scheduler:
     name: Go Scheduler
@@ -247,9 +252,9 @@ jobs:
           if-no-files-found: warn
 
   integration:
-    name: Integration (Real Backend + Postgres)
+    name: Integration (Local Chain + Backend + Postgres)
     runs-on: ubuntu-latest
-    needs: [frontend, backend]
+    needs: [frontend, backend, contracts]
     services:
       postgres:
         image: postgres:16-alpine
@@ -269,6 +274,10 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: greenpay-contract-wasm
+          path: contracts/target/wasm32-unknown-unknown/release
       - uses: ./.github/actions/setup-node-install
         with:
           working-directory: backend
@@ -280,12 +289,51 @@ jobs:
         run: npx jest src/services/indexerService.integration.test.js --runInBand
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/greenpay
+      - name: Start local Stellar protocol 21 network
+        run: |
+          # Source revision ae7fdb0: protocol 21 matches soroban-sdk 21 used by the contracts.
+          docker run -d --name greenpay-stellar-local -p 8000:8000 \
+            stellar/quickstart@sha256:d65f52ac01b3b8ebe4cd4952878433958cea6eb2ee602cb7687127e1df537ddf \
+            --local --enable-soroban-rpc
+          for attempt in $(seq 1 90); do
+            if curl --fail --silent http://127.0.0.1:8000/ >/dev/null; then
+              friendbot_status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+                'http://127.0.0.1:8000/friendbot?addr=not-a-stellar-address')
+              if [ "$friendbot_status" = "400" ]; then
+                exit 0
+              fi
+            fi
+            sleep 1
+          done
+          docker logs greenpay-stellar-local
+          exit 1
+      - name: Local-chain donation convergence test
+        working-directory: backend
+        run: npm run test:local-chain
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/greenpay
+          GREENPAY_WASM_PATH: ../contracts/target/wasm32-unknown-unknown/release/greenpay_contract.wasm
+          LOCAL_STELLAR_HORIZON_URL: http://127.0.0.1:8000
+          LOCAL_STELLAR_RPC_URL: http://127.0.0.1:8000/soroban/rpc
       - run: npx playwright install chromium
       - run: npm run build
         env:
           NEXT_PUBLIC_STELLAR_NETWORK: testnet
           NEXT_PUBLIC_HORIZON_URL: https://horizon-testnet.stellar.org
           NEXT_PUBLIC_API_URL: http://localhost:4000
+      - name: Capture local Stellar logs
+        if: always()
+        run: docker logs greenpay-stellar-local > /tmp/greenpay-stellar-local.log 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: local-stellar-logs
+          path: /tmp/greenpay-stellar-local.log
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Stop local Stellar network
+        if: always()
+        run: docker rm -f greenpay-stellar-local || true
       - name: Run E2E Integration Tests
         run: npx playwright test --config=playwright.integration.config.ts
         env:

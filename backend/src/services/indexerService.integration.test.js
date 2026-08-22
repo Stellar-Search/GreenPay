@@ -14,7 +14,8 @@
 
 const fs = require("fs");
 const path = require("path");
-const { execSync } = require("child_process");
+const { createHash } = require("crypto");
+const { execFileSync } = require("child_process");
 const { v4: uuid } = require("uuid");
 
 const pool = require("../db/pool");
@@ -45,7 +46,7 @@ function checkDbAvailableSync() {
       .catch(() => { process.exit(1); });
   `;
   try {
-    execSync(`node -e ${JSON.stringify(probeScript)}`, {
+    execFileSync(process.execPath, ["-e", probeScript], {
       stdio: "ignore",
       timeout: CONNECTIVITY_TIMEOUT_MS + 2000,
       cwd: __dirname,
@@ -74,8 +75,7 @@ function makePublicKey(seed) {
 }
 
 function makeTxHash(seed) {
-  const cleaned = seed.replace(/[^A-Za-z0-9]/g, "").toLowerCase();
-  return cleaned.padEnd(64, "0").slice(0, 64);
+  return createHash("sha256").update(seed).digest("hex");
 }
 
 async function seedProject(projectId) {
@@ -94,6 +94,11 @@ async function seedDonationMatch(projectId, matcherAddress) {
     `INSERT INTO donation_matches (id, project_id, matcher_address, cap_xlm, multiplier, expires_at, matched_xlm)
      VALUES ($1, $2, $3, 1000, 2, NOW() + INTERVAL '1 day', 0)`,
     [matchId, projectId, matcherAddress]
+  );
+  await pool.query(
+    `INSERT INTO match_state (match_id, matched_xlm, cap_xlm, multiplier)
+     VALUES ($1, 0, 1000, 2)`,
+    [matchId]
   );
   return matchId;
 }

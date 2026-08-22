@@ -15,11 +15,15 @@ const { stellarPublicKey } = require("../schemas/common");
 const donorKeyParamsSchema = z.object({ publicKey: stellarPublicKey });
 const { computeBadges, mapDonationRow } = require("../services/store");
 const donationLimiter = createRateLimiter(10, 1, "donation-post");
-const { execute } = require("../eventSourcing/commandBus");
+const { execute, DonationReplayConflictError } = require("../eventSourcing/commandBus");
 const { DonationRecordedEvent, MatchAppliedEvent } = require("../eventSourcing/events"); // 10 requests per minute
 const { logger: rootLogger } = require("../utils/logger");
 
 const logger = rootLogger.child({ service: "donations-route" });
+
+function publicDonationData(data) {
+  return { ...data, amountXlm: Number.parseFloat(data.amountXlm) };
+}
 
 // POST /api/donations — record a donation after on-chain tx via Event Sourcing CQRS
 async function recordDonation(req, res, next) {
@@ -63,18 +67,18 @@ async function recordDonation(req, res, next) {
         })
       );
     } catch (err) {
-      if (err.message && (err.message.includes("Duplicate event") || err.message.includes("already exists"))) {
-        const existing = await pool.query(
-          `SELECT event_id, payload FROM event_stream
-           WHERE event_type = 'DonationRecorded'
-             AND payload->'data'->>'transactionHash' = $1`,
-          [transactionHash]
-        );
-        if (existing.rows[0]) {
-          logger.info({ msg: "donation deduplicated", transactionHash, donationId: existing.rows[0].event_id });
-          res.apiMeta({ deduplicated: true });
-          return res.json({ id: existing.rows[0].event_id, ...existing.rows[0].payload.data });
-        }
+      if (err instanceof DonationReplayConflictError) {
+        // Same transaction hash, different payload: tampering, not a retry.
+        logger.warn({
+          msg: "suspicious donation replay rejected",
+          transactionHash,
+          donorAddress,
+          projectId,
+          mismatches: err.mismatches,
+        });
+        throw createApiError(409, "DONATION_TX_CONFLICT",
+          "Transaction hash already recorded with different details",
+          { transactionHash, mismatches: err.mismatches });
       }
       throw err;
     }
@@ -96,7 +100,7 @@ async function recordDonation(req, res, next) {
       io.emit("donation_event", {
         projectId,
         donorAddress,
-        amountXLM: mainEvent.data.amountXlm,
+        amountXLM: Number.parseFloat(mainEvent.data.amountXlm),
         transactionHash,
         timestamp: new Date().toISOString(),
       });
