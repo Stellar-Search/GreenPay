@@ -169,7 +169,6 @@ async function handleDonation(projectId, op) {
     ? BigInt(op.amount_stroops)
     : xlmToStroops(op.amount);
   const amountXLM = stroopsToXlm(amountStroops);
-  const amountXLMNumber = Number.parseFloat(amountXLM);
 
   const client = await pool.connect();
   let inTransaction = false;
@@ -212,12 +211,15 @@ async function handleDonation(projectId, op) {
 
     if (matchesResult.rows.length > 0 && !donationResult.deduplicated) {
       for (const match of matchesResult.rows) {
-        const matchedXlm = parseFloat(match.matched_xlm || "0");
-        const capXlm = parseFloat(match.cap_xlm);
-        const remaining = capXlm - matchedXlm;
+        // Cap accounting in integer stroops: doubles could let a match
+        // overshoot its cap by a rounding hair or strand an unused stroop.
+        const matchedStroops = xlmToStroops(match.matched_xlm?.toString() || "0");
+        const capStroops = xlmToStroops(match.cap_xlm?.toString() || "0");
+        const remainingStroops = capStroops - matchedStroops;
 
-        if (remaining > 0) {
-          const matchAmount = Math.min(amountXLMNumber * match.multiplier, remaining);
+        if (remainingStroops > 0n) {
+          const fullMatch = amountStroops * BigInt(match.multiplier);
+          const matchAmountStroops = fullMatch < remainingStroops ? fullMatch : remainingStroops;
 
           await execute(
             new (require("../eventSourcing/commands").ApplyMatchCommand)({
@@ -225,7 +227,7 @@ async function handleDonation(projectId, op) {
               matchId: match.id,
               projectId,
               donorAddress: match.matcher_address,
-              matchAmount,
+              matchAmount: stroopsToXlm(matchAmountStroops),
               originalTxHash: txHash,
               multiplier: match.multiplier,
             }),
@@ -244,7 +246,8 @@ async function handleDonation(projectId, op) {
       io.emit("donation_event", {
         projectId,
         donorAddress,
-        amountXLM: amountXLMNumber,
+        // Display boundary: exact stroops → JS number for the websocket feed.
+        amountXLM: Number(amountStroops) / 10_000_000,
         transactionHash: txHash,
         timestamp: new Date().toISOString()
       });

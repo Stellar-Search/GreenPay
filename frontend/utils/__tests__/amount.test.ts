@@ -10,6 +10,10 @@ import {
   isValidAmount,
   isValidDonationAmount,
   hasSufficientBalance,
+  sumToStroops,
+  sumXLM,
+  goalReached,
+  progressTowardGoal,
   STROOPS_PER_XLM,
   MAX_DECIMALS,
 } from "@/utils/amount";
@@ -261,6 +265,57 @@ describe("amount utility", () => {
       
       // parseFloat might have precision issues
       expect(amountNum * STROOPS_PER_XLM).toBeCloseTo(1000000, 0);
+    });
+  });
+
+  describe("exact aggregation (no double arithmetic)", () => {
+    const xlmAmountArb = fc.tuple(
+      fc.integer({ min: 0, max: 1_000_000 }),
+      fc.integer({ min: 0, max: 9_999_999 }),
+    ).map(([whole, frac]) => `${whole}.${frac.toString().padStart(7, "0")}`);
+
+    it("property: summing many donations yields exactly the stroop total", () => {
+      fc.assert(
+        fc.property(fc.array(xlmAmountArb, { minLength: 0, maxLength: 300 }), (amounts) => {
+          const expected = amounts.reduce((acc, a) => acc + parseToStroops(a), 0);
+          expect(sumToStroops(amounts)).toBe(expected);
+          expect(sumXLM(amounts)).toBe(stroopsToXLM(expected));
+        }),
+        { numRuns: 500 },
+      );
+    });
+
+    it("sums values with all seven decimals exactly where doubles drift", () => {
+      // Double accumulation loses a stroop here; stroop accumulation does not.
+      const amounts = ["0.1000001", "0.2000002", "0.3000003", "0.4000004"];
+      expect(sumXLM(amounts)).toBe("1.0000010");
+    });
+
+    it("ignores invalid entries instead of poisoning the total", () => {
+      expect(sumXLM(["1.0000000", "abc", "", "2.5000000"])).toBe("3.5000000");
+    });
+  });
+
+  describe("goalReached / progressTowardGoal boundary", () => {
+    it("one stroop below the milestone is not reached; at or above is", () => {
+      expect(goalReached("99.9999999", "100.0000000")).toBe(false);
+      expect(goalReached("100.0000000", "100.0000000")).toBe(true);
+      expect(goalReached("100.0000001", "100.0000000")).toBe(true);
+    });
+
+    it("respects the milestone percentage exactly", () => {
+      // 25% of 100 XLM = 25 XLM
+      expect(goalReached("24.9999999", "100.0000000", 25)).toBe(false);
+      expect(goalReached("25.0000000", "100.0000000", 25)).toBe(true);
+      expect(goalReached("25.0000001", "100.0000000", 25)).toBe(true);
+    });
+
+    it("progressTowardGoal caps at 100 and guards division by zero", () => {
+      expect(progressTowardGoal("50.0000000", "100.0000000", 100)).toBe(50);
+      expect(progressTowardGoal("150.0000000", "100.0000000", 100)).toBe(100);
+      expect(progressTowardGoal("10.0000000", "0.0000000", 100)).toBe(0);
+      expect(progressTowardGoal("10.0000000", "100.0000000", 0)).toBe(0);
+      expect(progressTowardGoal("abc", "100.0000000", 100)).toBe(0);
     });
   });
 });

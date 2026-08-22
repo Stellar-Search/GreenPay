@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { parseToStroops } from "../utils/amount";
 
 const SEEDED_PROJECT_ID = "8d9ac19b-52eb-42f7-80d9-19a88ba59e43";
 // Must be checksum-valid Stellar addresses: this suite ("No API Mocking")
@@ -135,7 +136,7 @@ test.describe("E2E Integration Tests (No API Mocking)", () => {
     // recording the donation (see storeProjectAggregate in
     // backend/src/eventSourcing/commandBus.js) — that's what we verify.
     const beforeRes = await page.request.get(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/projects/${SEEDED_PROJECT_ID}`);
-    const raisedBefore = parseFloat((await beforeRes.json()).data.raisedXLM);
+    const raisedBefore = (await beforeRes.json()).data.raisedXLM as string;
 
     // Fill donation form
     const form = page.locator(".card", { hasText: /make a donation/i });
@@ -153,8 +154,10 @@ test.describe("E2E Integration Tests (No API Mocking)", () => {
     // The project's raised total reflects the donation immediately.
     await expect(async () => {
       const afterRes = await page.request.get(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/projects/${SEEDED_PROJECT_ID}`);
-      const raisedAfter = parseFloat((await afterRes.json()).data.raisedXLM);
-      expect(raisedAfter).toBeCloseTo(raisedBefore + 25, 5);
+      const raisedAfter = (await afterRes.json()).data.raisedXLM as string;
+      // Exact stroop comparison: the stored total must equal the previous
+      // total plus exactly 25 XLM — no float tolerance.
+      expect(parseToStroops(raisedAfter)).toBe(parseToStroops(raisedBefore) + 250_000_000);
     }).toPass({ timeout: 5000 });
   });
 

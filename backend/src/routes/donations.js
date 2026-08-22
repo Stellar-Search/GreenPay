@@ -13,16 +13,22 @@ const { validateBody, validate } = require("../middleware/validate");
 const { DonationCreateSchema } = require("../schemas/donations");
 const { stellarPublicKey } = require("../schemas/common");
 const donorKeyParamsSchema = z.object({ publicKey: stellarPublicKey });
-const { computeBadges, mapDonationRow } = require("../services/store");
+const { mapDonationRow } = require("../services/store");
 const donationLimiter = createRateLimiter(10, 1, "donation-post");
 const { execute } = require("../eventSourcing/commandBus");
 const { DonationRecordedEvent, MatchAppliedEvent } = require("../eventSourcing/events"); // 10 requests per minute
 const { logger: rootLogger } = require("../utils/logger");
+const { xlmToStroops } = require("../utils/xlm");
 
 const logger = rootLogger.child({ service: "donations-route" });
 
-function publicDonationData(data) {
-  return { ...data, amountXlm: Number.parseFloat(data.amountXlm) };
+// The websocket feed is a display boundary: clients render the amount, they
+// never re-sum it. Convert the exact stroop payload to a JS number only here.
+function stroopsToDisplayNumber(amountXlm, amountStroops) {
+  const stroops = amountStroops !== null && amountStroops !== undefined
+    ? BigInt(amountStroops)
+    : xlmToStroops(amountXlm || 0);
+  return Number(stroops) / 10_000_000;
 }
 
 // POST /api/donations — record a donation after on-chain tx via Event Sourcing CQRS
@@ -100,7 +106,7 @@ async function recordDonation(req, res, next) {
       io.emit("donation_event", {
         projectId,
         donorAddress,
-        amountXLM: Number.parseFloat(mainEvent.data.amountXlm),
+        amountXLM: stroopsToDisplayNumber(mainEvent.data.amountXlm, mainEvent.data.amountStroops),
         transactionHash,
         timestamp: new Date().toISOString(),
       });

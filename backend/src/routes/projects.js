@@ -16,6 +16,7 @@ const { Contract, TransactionBuilder } = require("@stellar/stellar-sdk");
 const { validate } = require("../middleware/validate");
 const { createApiError } = require("../middleware/apiEnvelope");
 const { ProjectStatusUpdateSchema } = require("../schemas/projects");
+const { xlmToStroopsRounded, normalizeXlm } = require("../utils/xlm");
 
 const VALID_STATUSES = ["active", "completed", "paused"];
 const VALID_CATEGORIES = [
@@ -38,21 +39,32 @@ const VALID_CATEGORIES = [
 let featuredCache = null;
 let featuredCacheExpiry = 0;
 
+// Goal completion and progress are decided in integer stroops: NUMERIC(20, 7)
+// values exceed double precision, so raised-vs-goal comparisons done in
+// floats could mark a project funded while it is a stroop short.
+function campaignProgress(goalXlm, raisedXlm, deadlineMs, nowMs) {
+  const goalStroops = xlmToStroopsRounded(goalXlm);
+  const raisedStroops = xlmToStroopsRounded(raisedXlm);
+  const completed = raisedStroops >= goalStroops || nowMs >= deadlineMs;
+  // round(raised/goal * 100) with half-up rounding, exactly in integers.
+  const progressPercent = goalStroops > 0n
+    ? Math.min(Number((raisedStroops * 200n + goalStroops) / (goalStroops * 2n)), 100)
+    : 0;
+  return { completed, progressPercent };
+}
+
 function mapCampaignRow(row) {
-  const now = Date.now();
-  const goalXLM = Number.parseFloat(row.goal_xlm?.toString() || "0");
-  const raisedXLM = Number.parseFloat(row.raised_xlm?.toString() || "0");
+  const goalXLM = row.goal_xlm?.toString() || "0";
   const deadlineMs = new Date(row.deadline).getTime();
-  const completed = raisedXLM >= goalXLM || now >= deadlineMs;
-  const progressPercent = goalXLM > 0 ? Math.min(Math.round((raisedXLM / goalXLM) * 100), 100) : 0;
+  const { completed, progressPercent } = campaignProgress(goalXLM, row.raised_xlm?.toString() || "0", deadlineMs, Date.now());
 
   return {
     id: row.id,
     projectId: row.project_id,
     title: row.title,
     description: row.description || "",
-    goalXLM: row.goal_xlm?.toString() || "0",
-    raisedXLM: raisedXLM.toFixed(7),
+    goalXLM,
+    raisedXLM: normalizeXlm(row.raised_xlm),
     deadline: new Date(row.deadline).toISOString(),
     progressPercent,
     completed,
@@ -202,19 +214,25 @@ router.post("/:id/campaigns", async (req, res, next) => {
     const { title, goalXLM, deadline, description } = req.body || {};
     const trimmedTitle = typeof title === "string" ? title.trim() : "";
     const trimmedDescription = typeof description === "string" ? description.trim() : "";
-    const goal = Number.parseFloat(goalXLM);
-    const deadlineDate = new Date(deadline);
+    const goalDate = new Date(deadline);
+
+    let goalStroops;
+    try {
+      goalStroops = xlmToStroopsRounded(goalXLM ?? 0);
+    } catch {
+      goalStroops = 0n;
+    }
 
     if (trimmedTitle.length < 3 || trimmedTitle.length > 120) {
       throw createApiError(400, "TITLE_LENGTH_INVALID", "title must be between 3 and 120 characters");
     }
-    if (!Number.isFinite(goal) || goal <= 0) {
+    if (goalStroops <= 0n) {
       throw createApiError(400, "GOAL_XLM_INVALID", "goalXLM must be a positive number");
     }
-    if (!deadline || Number.isNaN(deadlineDate.getTime())) {
+    if (!deadline || Number.isNaN(goalDate.getTime())) {
       throw createApiError(400, "DEADLINE_INVALID", "deadline must be a valid ISO date string");
     }
-    if (deadlineDate.getTime() <= Date.now()) {
+    if (goalDate.getTime() <= Date.now()) {
       throw createApiError(400, "DEADLINE_NOT_FUTURE", "deadline must be in the future");
     }
     if (trimmedDescription.length > 500) {
@@ -230,7 +248,7 @@ router.post("/:id/campaigns", async (req, res, next) => {
       `INSERT INTO project_campaigns (id, project_id, title, description, goal_xlm, deadline, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, NOW())
        RETURNING *, 0::numeric AS raised_xlm`,
-      [uuid(), req.params.id, trimmedTitle, trimmedDescription || null, goal.toFixed(7), deadlineDate.toISOString()],
+      [uuid(), req.params.id, trimmedTitle, trimmedDescription || null, normalizeXlm(goalStroops), goalDate.toISOString()],
     );
 
     logAdminAction({
@@ -238,7 +256,7 @@ router.post("/:id/campaigns", async (req, res, next) => {
       action: "project.campaign.create",
       targetType: "project_campaign",
       targetId: result.rows[0].id,
-      metadata: { projectId: req.params.id, title: trimmedTitle, goalXLM: goal, deadline },
+      metadata: { projectId: req.params.id, title: trimmedTitle, goalXLM: normalizeXlm(goalStroops), deadline },
       ipAddress: req.ip,
     });
 
@@ -526,7 +544,13 @@ router.post("/:id/matching", async (req, res, next) => {
     if (!matcherAddress || typeof matcherAddress !== "string") {
       throw createApiError(400, "MATCHER_ADDRESS_REQUIRED", "matcherAddress is required");
     }
-    if (!capXLM || isNaN(Number.parseFloat(capXLM)) || Number.parseFloat(capXLM) <= 0) {
+    let capStroops;
+    try {
+      capStroops = xlmToStroopsRounded(capXLM ?? 0);
+    } catch {
+      capStroops = 0n;
+    }
+    if (capStroops <= 0n) {
       throw createApiError(400, "CAP_XLM_INVALID", "capXLM must be a positive number");
     }
     if (!multiplier || typeof multiplier !== "number" || multiplier < 1) {
@@ -548,7 +572,7 @@ router.post("/:id/matching", async (req, res, next) => {
       `INSERT INTO donation_matches (id, project_id, matcher_address, cap_xlm, multiplier, expires_at)
        VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id, project_id, matcher_address, cap_xlm, multiplier, matched_xlm, expires_at, created_at`,
-      [uuid(), req.params.id, matcherAddress, Number.parseFloat(capXLM).toFixed(7), multiplier, new Date(expiresAt).toISOString()],
+      [uuid(), req.params.id, matcherAddress, normalizeXlm(capStroops), multiplier, new Date(expiresAt).toISOString()],
     );
 
     logAdminAction({
@@ -578,8 +602,13 @@ router.post("/:id/matching", async (req, res, next) => {
 
 router.get("/:id/matching", async (req, res, next) => {
   try {
+    // Remaining match capacity is computed by Postgres in exact NUMERIC
+    // arithmetic — subtracting doubles here could show capacity that is not
+    // really there (or hide the final stroop of it).
     const result = await pool.query(
-      `SELECT id, project_id, matcher_address, cap_xlm, multiplier, matched_xlm, expires_at, created_at
+      `SELECT id, project_id, matcher_address, cap_xlm, multiplier, matched_xlm,
+              (cap_xlm - matched_xlm)::text AS remaining_xlm,
+              expires_at, created_at
        FROM donation_matches
        WHERE project_id = $1 AND expires_at > NOW()
        ORDER BY created_at DESC`,
@@ -593,7 +622,7 @@ router.get("/:id/matching", async (req, res, next) => {
       capXLM: row.cap_xlm?.toString() || "0",
       multiplier: row.multiplier,
       matchedXLM: row.matched_xlm?.toString() || "0",
-      remainingXLM: (Number.parseFloat(row.cap_xlm) - Number.parseFloat(row.matched_xlm)).toFixed(7),
+      remainingXLM: normalizeXlm(row.remaining_xlm),
       expiresAt: new Date(row.expires_at).toISOString(),
       createdAt: new Date(row.created_at).toISOString(),
     }));
@@ -655,3 +684,6 @@ router.patch(
   });
 
 module.exports = router;
+// Exported for unit tests of the exact goal-completion boundary logic.
+module.exports.mapCampaignRow = mapCampaignRow;
+module.exports.campaignProgress = campaignProgress;

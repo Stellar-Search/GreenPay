@@ -3,6 +3,7 @@
  * Formatting helpers and small UI-friendly utilities shared across the frontend.
  */
 import { formatDistanceToNow, format } from "date-fns";
+import { parseToStroops } from "./amount";
 import type { ProjectStatus, BadgeTier } from "./types";
 
 /**
@@ -83,9 +84,11 @@ export function formatCO2(kg: number, locale = "en-US"): string {
  * progressPercent("9999", "100") // 100
  */
 export function progressPercent(raised: string, goal: string): number {
-  const r = parseFloat(raised), g = parseFloat(goal);
-  if (!g || isNaN(r) || isNaN(g)) return 0;
-  return Math.min(100, Math.round((r / g) * 100));
+  const r = parseToStroops(raised);
+  const g = parseToStroops(goal);
+  // Exact integer math in stroops: round(r/g × 100) with half-up rounding.
+  if (Number.isNaN(r) || Number.isNaN(g) || g <= 0) return 0;
+  return Math.min(100, Math.floor((r * 200 + g) / (g * 2)));
 }
 
 /**

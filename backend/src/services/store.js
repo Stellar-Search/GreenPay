@@ -4,6 +4,8 @@
  */
 "use strict";
 
+const { normalizeXlm } = require("../utils/xlm");
+
 const now = Date.now();
 
 const seedProjects = [
@@ -195,7 +197,8 @@ function mapDonationRow(row) {
   };
 
   if (row.amount_xlm !== null && row.amount_xlm !== undefined) {
-    data.amountXLM = Number.parseFloat(row.amount_xlm).toFixed(7);
+    // NUMERIC(20, 7) → exact 7-decimal string without a double round-trip.
+    data.amountXLM = normalizeXlm(row.amount_xlm);
   }
 
   return data;

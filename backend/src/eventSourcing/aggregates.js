@@ -2,17 +2,29 @@
 
 const { DonationRecordedEvent, MatchAppliedEvent, MatchCreatedEvent, ProjectStatusChangedEvent, MilestoneReachedEvent, JobReleasedEvent, ProjectCreatedEvent, ProfileCreatedEvent } = require("./events");
 const { RecordDonationCommand, ApplyMatchCommand, ChangeProjectStatusCommand, ReachMilestoneCommand, ReleaseEscrowCommand, CreateMatchOfferCommand } = require("./commands");
-const { BADGE_THRESHOLDS } = require("../services/store");
+const { xlmToStroopsRounded, stroopsToXlm } = require("../utils/xlm");
 
 const VALID_PROJECT_STATUSES = new Set(["active", "completed", "paused", "rejected"]);
+
+// All monetary aggregate state is held as BigInt stroops (1 XLM = 10^7
+// stroops). Sums and comparisons are integer-exact; the only conversions to
+// decimal strings happen in getState()/fromState(), i.e. at the persistence
+// boundary where NUMERIC(20, 7) columns already speak 7-decimal strings.
+
+function eventAmountStroops(data) {
+  if (data.amountStroops !== null && data.amountStroops !== undefined) {
+    return BigInt(data.amountStroops);
+  }
+  return xlmToStroopsRounded(data.amountXlm || 0);
+}
 
 class ProjectAggregate {
   constructor(state = null) {
     this.state = state || {
-      raisedXlm: 0,
+      raisedXlmStroops: 0n,
       donorCount: 0,
       status: "active",
-      goalXlm: 0,
+      goalXlmStroops: 0n,
     };
     this.uncommitted = [];
   }
@@ -20,10 +32,10 @@ class ProjectAggregate {
   static fromState(row) {
     if (!row) return new ProjectAggregate(null);
     return new ProjectAggregate({
-      raisedXlm: parseFloat(row.raised_xlm?.toString() || "0"),
+      raisedXlmStroops: row.raised_xlm === null || row.raised_xlm === undefined ? 0n : xlmToStroopsRounded(row.raised_xlm.toString()),
       donorCount: row.donor_count || 0,
       status: row.status || "active",
-      goalXlm: parseFloat(row.goal_xlm?.toString() || "0"),
+      goalXlmStroops: row.goal_xlm === null || row.goal_xlm === undefined ? 0n : xlmToStroopsRounded(row.goal_xlm.toString()),
     });
   }
 
@@ -36,15 +48,17 @@ class ProjectAggregate {
   apply(event, track = true) {
     switch (event.eventType) {
     case "ProjectCreated":
-      this.state.raisedXlm = 0;
+      this.state.raisedXlmStroops = 0n;
       this.state.donorCount = 0;
       this.state.status = "active";
-      this.state.goalXlm = event.data.goalXlm;
+      this.state.goalXlmStroops = event.data.goalStroops !== undefined && event.data.goalStroops !== null
+        ? BigInt(event.data.goalStroops)
+        : xlmToStroopsRounded(event.data.goalXlm || 0);
       break;
     case "DonationRecorded":
     case "MigratedDonation":
       if (event.data.currency === "XLM") {
-        this.state.raisedXlm = round7(this.state.raisedXlm + Number.parseFloat(event.data.amountXlm));
+        this.state.raisedXlmStroops += eventAmountStroops(event.data);
       }
       break;
     case "ProjectStatusChanged":
@@ -61,6 +75,7 @@ class ProjectAggregate {
     case "RecordDonation":
     case "ApplyMatch": {
       if (command.commandType === "RecordDonation") {
+        const isXlm = command.payload.currency === "XLM";
         this.uncommitted.push(
           new DonationRecordedEvent({
             aggregateId: createStreamId("Donation", command.getTransactionHash()),
@@ -68,7 +83,8 @@ class ProjectAggregate {
             actor: command.actor,
             projectId: command.payload.projectId,
             donorAddress: command.payload.donorAddress,
-            amountXlm: command.getAmount(),
+            amountXlm: command.getAmountXlm(),
+            amountStroops: isXlm ? command.getAmountStroops().toString() : undefined,
             currency: command.payload.currency,
             message: command.payload.message,
             transactionHash: command.getTransactionHash(),
@@ -123,14 +139,21 @@ class ProjectAggregate {
   }
 
   getState() {
-    return { ...this.state };
+    return {
+      raisedXlm: stroopsToXlm(this.state.raisedXlmStroops),
+      raisedXlmStroops: this.state.raisedXlmStroops,
+      goalXlm: stroopsToXlm(this.state.goalXlmStroops),
+      goalXlmStroops: this.state.goalXlmStroops,
+      donorCount: this.state.donorCount,
+      status: this.state.status,
+    };
   }
 }
 
 class DonorAggregate {
   constructor(state = null) {
     this.state = state || {
-      totalDonatedXlm: 0,
+      totalDonatedXlmStroops: 0n,
       projectsSupported: new Set(),
       badges: [],
       displayName: null,
@@ -143,7 +166,7 @@ class DonorAggregate {
     if (!row) return new DonorAggregate(null);
     const badges = Array.isArray(row.badges) ? row.badges : [];
     return new DonorAggregate({
-      totalDonatedXlm: parseFloat(row.total_donated_xlm?.toString() || "0"),
+      totalDonatedXlmStroops: row.total_donated_xlm === null || row.total_donated_xlm === undefined ? 0n : xlmToStroopsRounded(row.total_donated_xlm.toString()),
       projectsSupported: new Set(row.projects_supported ? [] : []),
       badges,
       displayName: row.display_name || null,
@@ -162,7 +185,7 @@ class DonorAggregate {
     case "DonationRecorded":
     case "MigratedDonation":
       if (event.data.currency === "XLM") {
-        this.state.totalDonatedXlm = round7(this.state.totalDonatedXlm + Number.parseFloat(event.data.amountXlm));
+        this.state.totalDonatedXlmStroops += eventAmountStroops(event.data);
       }
       this.state.projectsSupported.add(event.data.projectId);
       break;
@@ -182,7 +205,8 @@ class DonorAggregate {
           actor: command.actor,
           projectId: command.payload.projectId,
           donorAddress: command.payload.donorAddress,
-          amountXlm: command.getAmount(),
+          amountXlm: command.getAmountXlm(),
+          amountStroops: command.payload.currency === "XLM" ? command.getAmountStroops().toString() : undefined,
           currency: command.payload.currency,
           message: command.payload.message,
           transactionHash: command.getTransactionHash(),
@@ -226,9 +250,10 @@ class DonorAggregate {
 
   getState() {
     return {
-      totalDonatedXlm: this.state.totalDonatedXlm,
+      totalDonatedXlm: stroopsToXlm(this.state.totalDonatedXlmStroops),
+      totalDonatedXlmStroops: this.state.totalDonatedXlmStroops,
       projectsSupported: this.state.projectsSupported,
-      badges: computeBadges(this.state.totalDonatedXlm),
+      badges: computeBadges(this.state.totalDonatedXlmStroops),
       displayName: this.state.displayName,
       bio: this.state.bio,
     };
@@ -238,8 +263,8 @@ class DonorAggregate {
 class MatchAggregate {
   constructor(state = null) {
     this.state = state || {
-      matchedXlm: 0,
-      capXlm: 0,
+      matchedXlmStroops: 0n,
+      capXlmStroops: 0n,
       multiplier: 1,
       matcherAddress: null,
       projectId: null,
@@ -251,8 +276,8 @@ class MatchAggregate {
   static fromState(row) {
     if (!row) return new MatchAggregate(null);
     return new MatchAggregate({
-      matchedXlm: parseFloat(row.matched_xlm?.toString() || "0"),
-      capXlm: parseFloat(row.cap_xlm?.toString() || "0"),
+      matchedXlmStroops: row.matched_xlm === null || row.matched_xlm === undefined ? 0n : xlmToStroopsRounded(row.matched_xlm.toString()),
+      capXlmStroops: row.cap_xlm === null || row.cap_xlm === undefined ? 0n : xlmToStroopsRounded(row.cap_xlm.toString()),
       multiplier: row.multiplier || 1,
       matcherAddress: null,
       projectId: null,
@@ -269,15 +294,19 @@ class MatchAggregate {
   apply(event, track = true) {
     switch (event.eventType) {
     case "MatchCreated":
-      this.state.matchedXlm = 0;
-      this.state.capXlm = event.data.capXlm;
+      this.state.matchedXlmStroops = 0n;
+      this.state.capXlmStroops = event.data.capStroops !== undefined && event.data.capStroops !== null
+        ? BigInt(event.data.capStroops)
+        : xlmToStroopsRounded(event.data.capXlm || 0);
       this.state.multiplier = event.data.multiplier;
       this.state.matcherAddress = event.data.matcherAddress;
       this.state.projectId = event.data.projectId;
       this.state.expiresAt = event.data.expiresAt;
       break;
     case "MatchApplied":
-      this.state.matchedXlm = round7(this.state.matchedXlm + event.data.matchAmount);
+      this.state.matchedXlmStroops += event.data.matchAmountStroops !== undefined && event.data.matchAmountStroops !== null
+        ? BigInt(event.data.matchAmountStroops)
+        : xlmToStroopsRounded(event.data.matchAmount || 0);
       break;
     default:
       break;
@@ -322,13 +351,13 @@ class MatchAggregate {
     }
   }
 
-  validateApplyMatch(amount) {
-    const remaining = this.state.capXlm - this.state.matchedXlm;
-    if (remaining <= 0) {
+  validateApplyMatch(amountStroops) {
+    const remaining = this.state.capXlmStroops - this.state.matchedXlmStroops;
+    if (remaining <= 0n) {
       throw new Error("Match cap has been fully consumed");
     }
-    if (amount > remaining) {
-      throw new Error(`Match amount ${amount} exceeds remaining cap ${remaining}`);
+    if (amountStroops > remaining) {
+      throw new Error(`Match amount ${stroopsToXlm(amountStroops)} exceeds remaining cap ${stroopsToXlm(remaining)}`);
     }
   }
 
@@ -412,11 +441,9 @@ function createStreamId(aggregateType, id) {
   return `${aggregateType}:${id}`;
 }
 
-function round7(n) {
-  return Math.round(n * 1e7) / 1e7;
-}
-
-function computeBadges(totalXLM) {
+// Badge thresholds in whole XLM, compared exactly against the donor's stroop
+// total (min × 10^7).
+function computeBadges(totalStroops) {
   const BADGE_THRESHOLDS = [
     { tier: "earth", min: 2000 },
     { tier: "forest", min: 500 },
@@ -425,7 +452,7 @@ function computeBadges(totalXLM) {
   ];
   const earned = [];
   for (const badge of BADGE_THRESHOLDS) {
-    if (totalXLM >= badge.min) {
+    if (totalStroops >= BigInt(badge.min) * 10_000_000n) {
       earned.push({ tier: badge.tier, earnedAt: new Date().toISOString() });
       break;
     }
@@ -439,6 +466,5 @@ module.exports = {
   MatchAggregate,
   JobAggregate,
   createStreamId,
-  round7,
   VALID_PROJECT_STATUSES,
 };

@@ -2,7 +2,7 @@
 
 const { v4: uuid } = require("uuid");
 const { getCorrelationId } = require("../utils/logger");
-const { xlmToStroops, stroopsToXlm } = require("../utils/xlm");
+const { xlmToStroops, xlmToStroopsRounded, stroopsToXlm } = require("../utils/xlm");
 
 class DomainEvent {
   static AGGREGATE_TYPE = null;
@@ -74,7 +74,10 @@ class DonationRecordedEvent extends DomainEvent {
     this.data = {
       projectId,
       donorAddress,
-      amountXlm: normalizedStroops === null ? Number.parseFloat(amountXlm) : stroopsToXlm(normalizedStroops),
+      // XLM amounts are always the exact 7-decimal string derived from
+      // stroops. Non-XLM currencies carry the original-currency amount and
+      // never enter stroop arithmetic, so they pass through untouched.
+      amountXlm: normalizedStroops === null ? amountXlm : stroopsToXlm(normalizedStroops),
       amountStroops: normalizedStroops,
       currency,
       message: message ? message.trim().slice(0, 100) : null,
@@ -96,11 +99,16 @@ class MatchAppliedEvent extends DomainEvent {
 
   constructor({ aggregateId, version, actor, matchId, projectId, donorAddress, matchAmount, originalTxHash, multiplier }) {
     super({ aggregateId, version, actor });
+    // Exact money: the canonical 7-decimal string plus its integer stroops.
+    // xlmToStroopsRounded keeps payloads written before exact handling (which
+    // serialized matchAmount as a double) hydrating deterministically.
+    const stroops = xlmToStroopsRounded(matchAmount ?? 0);
     this.data = {
       matchId,
       projectId,
       donorAddress,
-      matchAmount: Number.parseFloat(matchAmount),
+      matchAmount: stroopsToXlm(stroops),
+      matchAmountStroops: stroops.toString(),
       originalTxHash,
       multiplier: Number.parseInt(multiplier, 10) || 1,
     };
@@ -120,11 +128,13 @@ class MatchCreatedEvent extends DomainEvent {
 
   constructor({ aggregateId, version, actor, matchId, projectId, matcherAddress, capXlm, multiplier, expiresAt }) {
     super({ aggregateId, version, actor });
+    const stroops = xlmToStroopsRounded(capXlm ?? 0);
     this.data = {
       matchId,
       projectId,
       matcherAddress,
-      capXlm: Number.parseFloat(capXlm),
+      capXlm: stroopsToXlm(stroops),
+      capStroops: stroops.toString(),
       multiplier: Number.parseInt(multiplier, 10) || 1,
       expiresAt,
     };
@@ -188,10 +198,12 @@ class JobReleasedEvent extends DomainEvent {
 
   constructor({ aggregateId, version, actor, clientPublicKey, freelancerPublicKey, amountXlm, releaseTransactionHash }) {
     super({ aggregateId, version, actor });
+    const stroops = xlmToStroopsRounded(amountXlm ?? 0);
     this.data = {
       clientPublicKey,
       freelancerPublicKey,
-      amountXlm: Number.parseFloat(amountXlm),
+      amountXlm: stroopsToXlm(stroops),
+      amountStroops: stroops.toString(),
       releaseTransactionHash,
     };
   }
@@ -216,7 +228,8 @@ class ProjectCreatedEvent extends DomainEvent {
       category,
       location,
       walletAddress,
-      goalXlm: Number.parseFloat(goalXlm),
+      goalXlm: stroopsToXlm(xlmToStroopsRounded(goalXlm ?? 0)),
+      goalStroops: xlmToStroopsRounded(goalXlm ?? 0).toString(),
       tags: tags || [],
     };
   }
@@ -256,10 +269,17 @@ class MigratedDonationEvent extends DomainEvent {
   constructor({ originalId, donationId, version, actor, originalCreatedAt, projectId, donorAddress, amountXlm, currency, message, transactionHash, isMatch = false, matchId = null, originalDonationTxHash = null }) {
     super({ aggregateId: donationId, version, actor });
     this.originalId = originalId;
+    // Legacy rows are NUMERIC(20, 7) strings; keep them exact by converting
+    // through string stroops rather than parseFloat. amountStroops is null
+    // for non-XLM currencies, mirroring DonationRecordedEvent.
+    const stroops = currency === undefined || currency === null || currency === "XLM"
+      ? xlmToStroopsRounded(amountXlm ?? 0)
+      : null;
     this.data = {
       projectId,
       donorAddress,
-      amountXlm: Number.parseFloat(amountXlm),
+      amountXlm: stroops === null ? amountXlm : stroopsToXlm(stroops),
+      ...(stroops !== null && { amountStroops: stroops.toString() }),
       currency: currency || "XLM",
       message: message ? message.trim().slice(0, 100) : null,
       transactionHash,

@@ -15,6 +15,7 @@ const router = express.Router();
 const pool = require("../db/pool");
 const cache = require("../services/cache");
 const { createApiError } = require("../middleware/apiEnvelope");
+const { normalizeXlm } = require("../utils/xlm");
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const KG_CO2_PER_TREE = 21.77; // heuristic, used for treesEquivalent
@@ -47,36 +48,39 @@ router.get("/project/:id", async (req, res, next) => {
     if (hit) return res.json(hit);
 
     const projectResult = await pool.query(
-      `SELECT id, category, raised_xlm, co2_offset_kg
-       FROM projects
-       WHERE id = $1`,
+      "SELECT id FROM projects WHERE id = $1",
       [req.params.id],
     );
     if (!projectResult.rows[0]) {
       throw createApiError(404, "PROJECT_NOT_FOUND", "Project not found");
     }
 
+    // All aggregation (including the per-project kg-per-XLM ratio) runs in
+    // exact NUMERIC arithmetic inside Postgres.
     const aggResult = await pool.query(
       `SELECT
         COALESCE(SUM(d.amount_xlm), 0) AS "totalDonationsXLM",
-        COUNT(DISTINCT d.donor_address)::int AS "donorCount"
+        COUNT(DISTINCT d.donor_address)::int AS "donorCount",
+        COALESCE(SUM(
+          CASE
+            WHEN p.raised_xlm > 0 THEN (d.amount_xlm * (p.co2_offset_kg::numeric / p.raised_xlm))
+            ELSE 0
+          END
+        ), 0) AS "co2OffsetKg"
        FROM donations d
+       JOIN projects p ON p.id = d.project_id
        WHERE d.project_id = $1
          AND (d.currency = 'XLM' OR d.currency IS NULL)`,
       [req.params.id],
     );
 
-    const p = projectResult.rows[0];
-    const totalDonationsXLM = Number.parseFloat(aggResult.rows[0].totalDonationsXLM || "0");
-    const donorCount = aggResult.rows[0].donorCount || 0;
-
-    const raisedXlm = Number.parseFloat(p.raised_xlm?.toString() || "0");
-    const projectCo2OffsetKg = Number.parseFloat(p.co2_offset_kg?.toString() || "0");
-    const kgPerXlm = raisedXlm > 0 ? projectCo2OffsetKg / raisedXlm : 0;
-    const co2OffsetKg = Math.round(totalDonationsXLM * kgPerXlm);
+    const row = aggResult.rows[0];
+    const totalDonationsXLM = normalizeXlm(row.totalDonationsXLM);
+    const donorCount = row.donorCount || 0;
+    const co2OffsetKg = Math.round(Number.parseFloat(row.co2OffsetKg || "0"));
 
     return sendCached(req, res, {
-      totalDonationsXLM: totalDonationsXLM.toFixed(7),
+      totalDonationsXLM,
       donorCount,
       co2OffsetKg,
       treesEquivalent: treesEquivalentFromKg(co2OffsetKg),
@@ -133,19 +137,19 @@ router.get("/global", async (req, res, next) => {
     );
 
     const totalsRow = totalsResult.rows[0] || {};
-    const totalDonationsXLM = Number.parseFloat(totalsRow.totalDonationsXLM || "0");
+    const totalDonationsXLM = normalizeXlm(totalsRow.totalDonationsXLM);
     const donorCount = totalsRow.donorCount || 0;
     const co2OffsetKg = Math.round(Number.parseFloat(totalsRow.co2OffsetKg || "0"));
 
     const breakdownByCategory = breakdownResult.rows.map((row) => ({
       category: row.category,
-      totalDonationsXLM: Number.parseFloat(row.totalDonationsXLM || "0").toFixed(7),
+      totalDonationsXLM: normalizeXlm(row.totalDonationsXLM),
       donorCount: row.donorCount || 0,
       co2OffsetKg: Math.round(Number.parseFloat(row.co2OffsetKg || "0")),
     }));
 
     return sendCached(req, res, {
-      totalDonationsXLM: totalDonationsXLM.toFixed(7),
+      totalDonationsXLM,
       donorCount,
       co2OffsetKg,
       treesEquivalent: treesEquivalentFromKg(co2OffsetKg),
@@ -200,13 +204,13 @@ router.get("/donor/:publicKey", async (req, res, next) => {
     );
 
     const row = totalsResult.rows[0] || {};
-    const totalDonatedXLM = Number.parseFloat(row.totalDonatedXLM || "0");
+    const totalDonatedXLM = normalizeXlm(row.totalDonatedXLM);
     const projectsSupported = row.projectsSupported || 0;
     const co2OffsetKg = Math.round(Number.parseFloat(row.co2OffsetKg || "0"));
     const topCategory = topCategoryResult.rows[0]?.category || null;
 
     return sendCached(req, res, {
-      totalDonatedXLM: totalDonatedXLM.toFixed(7),
+      totalDonatedXLM,
       co2OffsetKg,
       projectsSupported,
       topCategory,

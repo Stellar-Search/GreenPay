@@ -14,6 +14,7 @@ import DescriptionAccordion from "@/components/DescriptionAccordion";
 import { createProjectCampaign, fetchProject, fetchProjectMatches, fetchProjectUpdates, fetchSubscriberCount, generateProjectSummary, getApiErrorMessage, subscribeToProject, toggleUpdateLike } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import { formatXLM, formatCO2, progressPercent, timeAgo, statusClass, statusLabel, CATEGORY_ICONS, copyToClipboard, shortenAddress } from "@/utils/format";
+import { parseToStroops, stroopsToXLM, goalReached, progressTowardGoal } from "@/utils/amount";
 import { accountUrl, fetchProjectDiscussion, type ProjectDiscussionMessage } from "@/lib/stellar";
 import { markMonthlySubscriptionPaid } from "@/lib/monthlyGiving";
 import type {
@@ -661,7 +662,9 @@ export default function ProjectDetail({
     ? formatCountdown(activeCampaign.deadline, countdownNow)
     : null;
 
-  const calcAmountNum = parseFloat(calcAmount) || 0;
+  // Impact estimates are heuristic (kg CO₂ per XLM), so the final figure is
+  // a display number — but the XLM amount enters it via exact stroops.
+  const calcAmountNum = parseToStroops(calcAmount) / 10_000_000 || 0;
   const estimatedCO2 = calcAmountNum * (project.co2OffsetKg || 0);
   const treesEquivalent = estimatedCO2 / 22;
   
@@ -1108,7 +1111,10 @@ export default function ProjectDetail({
               </h2>
               <div className="space-y-4">
                 {project.milestones.map((m) => {
-                  const reached = parseFloat(project.raisedXLM) >= (parseFloat(project.goalXLM) * m.percentage / 100);
+                  // Exact stroop comparison: one stroop short of a milestone
+                  // must not read as reached.
+                  const reached = goalReached(project.raisedXLM, project.goalXLM, m.percentage);
+                  const milestoneWidth = progressTowardGoal(project.raisedXLM, project.goalXLM, m.percentage);
                   return (
                     <div key={m.id} className="relative">
                       <div className="flex items-center justify-between mb-2">
@@ -1130,9 +1136,9 @@ export default function ProjectDetail({
                         )}
                       </div>
                       <div className="w-full bg-forest-100 h-1.5 rounded-full overflow-hidden">
-                        <div 
+                        <div
                           className={`h-full transition-all duration-1000 ${m.reachedAt ? 'bg-emerald-500' : reached ? 'bg-amber-400' : 'bg-forest-300'}`}
-                          style={{ width: `${Math.min(100, (parseFloat(project.raisedXLM) / (parseFloat(project.goalXLM) * m.percentage / 100)) * 100)}%` }}
+                          style={{ width: `${milestoneWidth}%` }}
                         />
                       </div>
                     </div>
@@ -1471,14 +1477,11 @@ export default function ProjectDetail({
               initialMessage={prefillReplyMemo}
               onSuccess={() => {
                 if (monthlySubId && prefillAmount) {
-                  const parsedPrefillAmount = Number.parseFloat(prefillAmount);
-                  if (
-                    Number.isFinite(parsedPrefillAmount) &&
-                    parsedPrefillAmount > 0
-                  ) {
+                  const prefillStroops = parseToStroops(prefillAmount);
+                  if (!Number.isNaN(prefillStroops) && prefillStroops > 0) {
                     markMonthlySubscriptionPaid(
                       monthlySubId,
-                      parsedPrefillAmount.toFixed(7),
+                      stroopsToXLM(prefillStroops),
                     );
                   }
                 }

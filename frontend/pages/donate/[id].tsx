@@ -3,6 +3,7 @@ import type { GetServerSideProps, NextPage } from "next";
 import Head from "next/head";
 import Link from "next/link";
 import DonationQRCode, { DonationQRCodeHandle } from "../../components/DonationQRCode";
+import { parseToStroops, progressTowardGoal } from "@/utils/amount";
 import type { DonateProject, DonatePageProps } from "../../utils/types";
 
 //Category icons (matches the live site's category set)//
@@ -25,14 +26,14 @@ function categoryIcon(category: string): string {
 
 //  SEP-0007 URI builder //
 
-function buildStellarUri(project: DonateProject, presetAmount: number | null): string {
+function buildStellarUri(project: DonateProject, presetAmount: string | null): string {
   // Base: web+stellar:pay?destination=<address>&memo=GreenPay:<name>
   const params = new URLSearchParams();
   params.set("destination", project.walletAddress);
   params.set("memo", `GreenPay:${project.name}`);
   params.set("memo_type", "MEMO_TEXT");
-  if (presetAmount && presetAmount > 0) {
-    params.set("amount", String(presetAmount));
+  if (presetAmount && parseToStroops(presetAmount) > 0) {
+    params.set("amount", presetAmount);
   }
   // SEP-0007 uses "web+stellar:pay?" (no double-encoding)
   return `web+stellar:pay?${params.toString()}`;
@@ -40,16 +41,18 @@ function buildStellarUri(project: DonateProject, presetAmount: number | null): s
 
 // Progress bar //
 
-function GoalProgress({ raised, goal }: { raised: number; goal: number }) {
-  const pct = goal > 0 ? Math.min(100, Math.round((raised / goal) * 100)) : 0;
+function GoalProgress({ raised, goal }: { raised: string; goal: string }) {
+  const pct = progressTowardGoal(raised, goal);
+  const raisedStroops = parseToStroops(raised);
+  const goalStroops = parseToStroops(goal);
   return (
     <div className="goal-progress">
       <div className="goal-progress__bar-track">
         <div className="goal-progress__bar-fill" style={{ width: `${pct}%` }} />
       </div>
       <p className="goal-progress__label">
-        <strong>{raised.toLocaleString()} XLM</strong> raised of{" "}
-        {goal.toLocaleString()} XLM goal &mdash; <strong>{pct}%</strong>
+        <strong>{(Number.isNaN(raisedStroops) ? 0 : raisedStroops / 10_000_000).toLocaleString()} XLM</strong> raised of{" "}
+        {(Number.isNaN(goalStroops) ? 0 : goalStroops / 10_000_000).toLocaleString()} XLM goal &mdash; <strong>{pct}%</strong>
       </p>
     </div>
   );
@@ -390,7 +393,7 @@ const DonatePage: NextPage<DonatePageProps> = ({ project, presetAmount }) => {
 
           <h1 className="donate-card__title">{project.name}</h1>
           <GoalProgress raised={project.raisedXLM} goal={project.goalXLM} />
-          {presetAmount && presetAmount > 0 && (
+          {presetAmount && parseToStroops(presetAmount) > 0 && (
             <p className="donate-card__amount-chip">
               Preset donation: <span>{presetAmount} XLM</span>
             </p>
@@ -452,9 +455,11 @@ const DonatePage: NextPage<DonatePageProps> = ({ project, presetAmount }) => {
 export const getServerSideProps: GetServerSideProps<DonatePageProps> = async (ctx) => {
   const { id } = ctx.params as { id: string };
   const amountParam = ctx.query?.amount;
+  // Keep the preset as the raw string; validity is checked exactly in
+  // stroops, never through a double.
   const presetAmount =
-    amountParam && !Array.isArray(amountParam) && Number(amountParam) > 0
-      ? Number(amountParam)
+    amountParam && !Array.isArray(amountParam) && parseToStroops(amountParam) > 0
+      ? amountParam
       : null;
 
   // Fetch project from the GreenPay backend API
@@ -476,8 +481,9 @@ export const getServerSideProps: GetServerSideProps<DonatePageProps> = async (ct
       name: data.name ?? data.title ?? "Untitled Project",
       category: data.category ?? "Other",
       walletAddress: data.walletAddress ?? data.wallet_address ?? "",
-      goalXLM: Number(data.goalXLM ?? data.goal_xlm ?? 0),
-      raisedXLM: Number(data.raisedXLM ?? data.raised_xlm ?? 0),
+      // Exact strings from the API — no double conversion.
+      goalXLM: String(data.goalXLM ?? data.goal_xlm ?? 0),
+      raisedXLM: String(data.raisedXLM ?? data.raised_xlm ?? 0),
       description: data.description ?? null,
     };
 

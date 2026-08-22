@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Fragment, useMemo, useState } from "react";
 import { formatCO2, formatXLM, progressPercent } from "@/utils/format";
+import { parseToStroops } from "@/utils/amount";
 import type { ClimateProject } from "@/utils/types";
 
 interface ProjectComparisonProps {
@@ -64,8 +65,9 @@ export default function ProjectComparison({ projects, onClose }: ProjectComparis
               </div>
               {projects.map((project) => {
                 const pct = progressPercent(project.raisedXLM, project.goalXLM);
-                const co2PerXLM = Number.parseFloat(project.goalXLM) > 0
-                  ? project.co2OffsetKg / Number.parseFloat(project.goalXLM)
+                const goalStroops = parseToStroops(project.goalXLM);
+                const co2PerXLM = !Number.isNaN(goalStroops) && goalStroops > 0
+                  ? project.co2OffsetKg / (goalStroops / 10_000_000)
                   : 0;
                 let value = "";
                 if (row.key === "co2") value = `${co2PerXLM.toFixed(2)} kg`;
