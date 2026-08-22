@@ -435,3 +435,68 @@ export function min(a: string | number, b: string | number): XLMString {
 export function max(a: string | number, b: string | number): XLMString {
   return isGreaterThanOrEqual(a, b) ? stroopsToXLM(parseToStroops(a)) : stroopsToXLM(parseToStroops(b));
 }
+
+/**
+ * Sum a list of XLM amounts exactly, returning stroops.
+ *
+ * Sums of monetary values must never be accumulated as IEEE-754 doubles —
+ * NUMERIC(20, 7) totals exceed double precision. Accumulate the integer
+ * stroops instead and convert only when displaying.
+ *
+ * @param amounts - List of XLM amounts (string or number).
+ * @returns Total in stroops; invalid entries are ignored.
+ */
+export function sumToStroops(amounts: Array<string | number | null | undefined>): Stroops {
+  return amounts.reduce<Stroops>((acc, value) => {
+    const stroops = parseToStroops(value ?? 0);
+    return Number.isNaN(stroops) ? acc : acc + stroops;
+  }, 0);
+}
+
+/**
+ * Sum a list of XLM amounts exactly.
+ *
+ * @param amounts - List of XLM amounts (string or number).
+ * @returns Exact sum as a 7-decimal XLM string.
+ */
+export function sumXLM(amounts: Array<string | number | null | undefined>): XLMString {
+  return stroopsToXLM(sumToStroops(amounts));
+}
+
+/**
+ * Whether a funding goal is reached, exactly.
+ *
+ * Equivalent to `raised >= goal * percentage / 100` but evaluated in integer
+ * stroops: `raised × 100 ≥ goal × percentage`. A project one stroop short of
+ * a milestone must not read as reached.
+ *
+ * @param raised - Raised XLM amount (string or number).
+ * @param goal - Goal XLM amount (string or number).
+ * @param percentage - Milestone percentage (defaults to 100).
+ */
+export function goalReached(raised: string | number, goal: string | number, percentage = 100): boolean {
+  const raisedStroops = parseToStroops(raised);
+  const goalStroops = parseToStroops(goal);
+  if (Number.isNaN(raisedStroops) || Number.isNaN(goalStroops)) return false;
+  return raisedStroops * 100 >= goalStroops * percentage;
+}
+
+/**
+ * Progress toward a milestone as a display percentage (0-100).
+ *
+ * Complements {@link goalReached}: same exact comparison, expressed as the
+ * bar width `raised / (goal × percentage / 100) × 100`, rounded.
+ *
+ * @param raised - Raised XLM amount (string or number).
+ * @param goal - Goal XLM amount (string or number).
+ * @param percentage - Milestone percentage (defaults to 100).
+ */
+export function progressTowardGoal(raised: string | number, goal: string | number, percentage = 100): number {
+  const raisedStroops = parseToStroops(raised);
+  const goalStroops = parseToStroops(goal);
+  if (
+    Number.isNaN(raisedStroops) || Number.isNaN(goalStroops) ||
+    goalStroops <= 0 || percentage <= 0
+  ) return 0;
+  return Math.min(100, Math.round((raisedStroops * 10_000) / (goalStroops * percentage)));
+}

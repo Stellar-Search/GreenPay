@@ -10,6 +10,7 @@
 
 const { Server, TransactionBuilder, Networks, Operation, Asset, Horizon } = require("@stellar/stellar-sdk");
 const pool = require("../db/pool");
+const { xlmToStroopsRounded, stroopsToXlm } = require("../utils/xlm");
 
 // Network configuration
 const NETWORK = process.env.STELLAR_NETWORK || "testnet";
@@ -57,7 +58,9 @@ async function matchDonationTxFunction(payment) {
     }
 
     const project = projectResult.rows[0];
-    const donationAmount = parseFloat(amount);
+    // Horizon amounts arrive as decimal strings; convert once to integer
+    // stroops and keep all cap arithmetic exact.
+    const donationStroops = xlmToStroopsRounded(amount);
 
     // Check for active matching offers
     const matchesResult = await pool.query(
@@ -74,25 +77,28 @@ async function matchDonationTxFunction(payment) {
     }
 
     // Process matching offers
-    let totalMatched = 0;
+    let totalMatchedStroops = 0n;
     const matchResults = [];
 
     for (const match of matchesResult.rows) {
-      const matchedXlm = parseFloat(match.matched_xlm || "0");
-      const capXlm = parseFloat(match.cap_xlm);
-      const remaining = capXlm - matchedXlm;
+      const matchedStroops = xlmToStroopsRounded(match.matched_xlm || "0");
+      const capStroops = xlmToStroopsRounded(match.cap_xlm);
+      const remainingStroops = capStroops - matchedStroops;
 
-      if (remaining <= 0) continue;
+      if (remainingStroops <= 0n) continue;
 
-      const matchAmount = Math.min(donationAmount * match.multiplier, remaining);
+      const matchAmountStroops = donationStroops * BigInt(match.multiplier) < remainingStroops
+        ? donationStroops * BigInt(match.multiplier)
+        : remainingStroops;
+      const matchAmountXlm = stroopsToXlm(matchAmountStroops);
 
-      if (matchAmount <= 0) continue;
+      if (matchAmountStroops <= 0n) continue;
 
       // Build and submit the matching payment transaction
       const matchResult = await submitMatchingPayment({
         matcherAddress: match.matcher_address,
         projectWallet: to,
-        amount: matchAmount,
+        amount: matchAmountXlm,
         originalTxHash: transaction_hash,
         matchId: match.id,
         projectId: project.id
@@ -101,16 +107,16 @@ async function matchDonationTxFunction(payment) {
       if (matchResult.success) {
         // Update the matched amount in the database
         await pool.query(
-          `UPDATE donation_matches 
-           SET matched_xlm = matched_xlm + $1 
+          `UPDATE donation_matches
+           SET matched_xlm = matched_xlm + $1::numeric
            WHERE id = $2`,
-          [matchAmount, match.id]
+          [matchAmountXlm, match.id]
         );
 
         // Record the matched donation
         await pool.query(
           `INSERT INTO donations (
-            id, project_id, donor_address, amount_xlm, amount, currency, 
+            id, project_id, donor_address, amount_xlm, amount, currency,
             message, transaction_hash, created_at
           )
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
@@ -118,27 +124,27 @@ async function matchDonationTxFunction(payment) {
             require("uuid").v4(),
             project.id,
             match.matcher_address,
-            matchAmount,
-            matchAmount,
+            matchAmountXlm,
+            matchAmountXlm,
             "XLM",
             `Matching donation for ${from}`,
             matchResult.txHash
           ]
         );
 
-        totalMatched += matchAmount;
+        totalMatchedStroops += matchAmountStroops;
         matchResults.push({
           matchId: match.id,
           matcherAddress: match.matcher_address,
-          amount: matchAmount,
+          amount: matchAmountXlm,
           txHash: matchResult.txHash
         });
       }
     }
 
     return {
-      matched: totalMatched > 0,
-      totalMatched,
+      matched: totalMatchedStroops > 0n,
+      totalMatched: stroopsToXlm(totalMatchedStroops),
       matches: matchResults,
       projectId: project.id,
       projectName: project.name
@@ -162,6 +168,9 @@ async function matchDonationTxFunction(payment) {
 /**
  * Submit a matching payment transaction
  * This uses pre-signed transactions from the matcher's account
+ *
+ * @param {object} opts
+ * @param {string} opts.amount - XLM amount as an exact 7-decimal string.
  */
 async function submitMatchingPayment({
   matcherAddress,
@@ -184,7 +193,7 @@ async function submitMatchingPayment({
         Operation.payment({
           destination: projectWallet,
           asset: Asset.native(),
-          amount: amount.toFixed(7)
+          amount
         })
       )
       .addMemo(
@@ -236,6 +245,11 @@ async function submitMatchingPayment({
 /**
  * Generate pre-signed transactions for a matcher up to a cap
  * This allows the Turret to submit transactions without needing the secret key at runtime
+ *
+ * @param {object} opts
+ * @param {string|number} opts.capXlm - Match cap in XLM (exact string preferred).
+ * @param {number} opts.multiplier - Integer multiplier.
+ * @returns {Promise<Array<{donationAmount:number,matchAmount:string,xdr:string}>}>
  */
 async function generatePreSignedTransactions({
   matcherAddress,
@@ -247,18 +261,22 @@ async function generatePreSignedTransactions({
 }) {
   const transactions = [];
   const matcherKeypair = require("@stellar/stellar-sdk").Keypair.fromSecret(matcherSecret);
-  
+  const capStroops = xlmToStroopsRounded(capXlm ?? 0);
+
   // Generate transactions for different donation amounts
   const donationAmounts = [10, 25, 50, 100, 250];
-  
+
   for (const donationAmount of donationAmounts) {
-    const matchAmount = Math.min(donationAmount * multiplier, capXlm);
-    
-    if (matchAmount <= 0) continue;
+    const fullMatchStroops = BigInt(donationAmount) * BigInt(multiplier);
+    const matchAmountStroops = fullMatchStroops < capStroops ? fullMatchStroops : capStroops;
+
+    if (matchAmountStroops <= 0n) continue;
+
+    const matchAmountXlm = stroopsToXlm(matchAmountStroops);
 
     try {
       const account = await getServer().loadAccount(matcherAddress);
-      
+
       const tx = new TransactionBuilder(account, {
         fee: "100",
         networkPassphrase: NETWORK_PASSPHRASE
@@ -267,17 +285,17 @@ async function generatePreSignedTransactions({
           Operation.payment({
             destination: projectWallet,
             asset: Asset.native(),
-            amount: matchAmount.toFixed(7)
+            amount: matchAmountXlm
           })
         )
         .setTimeout(60)
         .build();
 
       tx.sign(matcherKeypair);
-      
+
       transactions.push({
         donationAmount,
-        matchAmount,
+        matchAmount: matchAmountXlm,
         xdr: tx.toXDR()
       });
     } catch (error) {
@@ -361,8 +379,8 @@ function startTurretsServer(port = 3001) {
         matcherAddress,
         matcherSecret,
         projectWallet,
-        capXlm: parseFloat(capXlm),
-        multiplier: parseFloat(multiplier),
+        capXlm,
+        multiplier: parseInt(multiplier, 10) || 1,
         projectId
       });
 

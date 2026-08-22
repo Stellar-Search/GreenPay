@@ -103,13 +103,13 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
     return () => { mounted = false; };
   }, [publicKey, currency, balanceRefresh]);
 
-  const amountNum = Number.parseFloat(amount);
   const amountStroops = parseToStroops(amount);
   const isValid = isValidDonationAmount(amount) && parseToStroops(amount) >= parseToStroops("1");
 
-  // Calculate CO₂ impact for XLM donations
+  // Calculate CO₂ impact for XLM donations. The stroops stay integer; only
+  // the final kg estimate becomes a display number.
   const co2Impact = currency === "XLM" && amount && isValid && project.co2_per_xlm
-    ? (parseFloat(stroopsToXLM(amountStroops)) * project.co2_per_xlm) / 1000 // Convert to kg
+    ? (amountStroops * project.co2_per_xlm) / 10_000_000_000 // stroops → XLM, g → kg
     : 0;
 
   // Calculate tree equivalent (rough estimate: 1 tree absorbs ~22kg CO₂ per year)
@@ -265,7 +265,9 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
       await recordDonation({
         projectId: project.id,
         donorAddress: publicKey,
-        amount: currency === "XLM" ? stroopsToXLM(amountStroops) : amountNum.toFixed(2),
+        // XLM goes down in exact stroops-derived string; fiat stays the raw
+        // user input (no float round-trip) and is validated server-side.
+        amount: currency === "XLM" ? stroopsToXLM(amountStroops) : amount.trim(),
         currency: currency,
         message: message.trim() || undefined,
         transactionHash: hash,
@@ -360,7 +362,7 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
           {amount && !isValid && <p className="mt-1 text-xs text-red-500">Minimum donation is 1 {currency}</p>}
           
           {/* CO₂ Impact Calculator */}
-          {currency === "XLM" && amount && !isNaN(amountNum) && co2Impact > 0 && (
+          {currency === "XLM" && amount && !isNaN(amountStroops) && co2Impact > 0 && (
             <div className="mt-3 p-3 bg-forest-50 border border-forest-200 rounded-xl">
               <p className="text-sm font-medium text-forest-900 mb-1">
                 🌱 Your donation will offset approximately <span className="font-bold text-forest-700">{formatCO2(co2Impact, localeTag)}</span>

@@ -11,7 +11,7 @@ const {
   fromPayload,
 } = require("./events");
 const { dispatchToProjections } = require("./projections");
-const { round7 } = require("./aggregates");
+const { compareXlm } = require("../utils/xlm");
 
 const BATCH_SIZE = 500;
 const EVENT_STORE_BATCH = 200;
@@ -48,7 +48,9 @@ async function runLegacyMigration() {
           category: project.category,
           location: project.location,
           walletAddress: project.wallet_address,
-          goalXlm: parseFloat(project.goal_xlm?.toString() || "0"),
+          // NUMERIC columns arrive as strings — hand them straight to the
+          // event, which normalizes exactly in stroops (no parseFloat).
+          goalXlm: project.goal_xlm?.toString() || "0",
           tags: project.tags || [],
         })
       );
@@ -80,10 +82,6 @@ async function runLegacyMigration() {
       if (seenTxHashes.has(donation.transaction_hash)) continue;
       seenTxHashes.add(donation.transaction_hash);
 
-      const amount = donation.amount_xlm
-        ? parseFloat(donation.amount_xlm.toString())
-        : parseFloat(donation.amount?.toString() || "0");
-
       events.push(
         new MigratedDonationEvent({
           originalId: donation.id,
@@ -93,7 +91,7 @@ async function runLegacyMigration() {
           originalCreatedAt: donation.created_at?.toISOString ? donation.created_at.toISOString() : donation.created_at,
           projectId: donation.project_id,
           donorAddress: donation.donor_address,
-          amountXlm: amount,
+          amountXlm: (donation.amount_xlm ?? donation.amount ?? 0).toString(),
           currency: donation.currency || "XLM",
           message: donation.message,
           transactionHash: donation.transaction_hash,
@@ -122,15 +120,15 @@ async function runLegacyMigration() {
           matchId: match.id,
           projectId: match.project_id,
           matcherAddress: match.matcher_address,
-          capXlm: parseFloat(match.cap_xlm?.toString() || "0"),
+          capXlm: match.cap_xlm?.toString() || "0",
           multiplier: match.multiplier || 1,
           expiresAt: match.expires_at?.toISOString ? match.expires_at.toISOString() : match.expires_at,
         })
       );
       matchCreatedCount++;
 
-      const matchedXlm = parseFloat(match.matched_xlm?.toString() || "0");
-      if (matchedXlm > 0) {
+      const matchedXlm = match.matched_xlm?.toString() || "0";
+      if (compareXlm(matchedXlm, "0") > 0) {
         events.push(
           new (require("./events").MatchAppliedEvent)({
             aggregateId: `Match:${match.id}`,
@@ -188,7 +186,7 @@ async function runLegacyMigration() {
           actor: "migration",
           clientPublicKey: job.client_public_key,
           freelancerPublicKey: job.freelancer_public_key,
-          amountXlm: parseFloat(job.amount_escrow_xlm?.toString() || "0"),
+          amountXlm: job.amount_escrow_xlm?.toString() || "0",
           releaseTransactionHash: job.release_transaction_hash,
         })
       );
@@ -294,10 +292,12 @@ async function verifyMigration(expectedUniqueTxCount, expectedDonationCount) {
      FROM event_stream
      WHERE event_type IN ('DonationRecorded', 'MigratedDonation') AND payload->'data'->>'isMatch' = 'false'`
   );
-  const eventTotalXlm = parseFloat(donationResult.rows[0]?.total?.toString() || "0");
+  // NUMERIC sums come back as strings; compare them exactly in stroops
+  // rather than tolerating a drift window between two doubles.
+  const eventTotalXlm = donationResult.rows[0]?.total?.toString() || "0";
 
   const legacyTotalResult = await pool.query("SELECT SUM(amount_xlm::numeric) AS total FROM donations WHERE currency = 'XLM'");
-  const legacyTotalXlm = parseFloat(legacyTotalResult.rows[0]?.total?.toString() || "0");
+  const legacyTotalXlm = legacyTotalResult.rows[0]?.total?.toString() || "0";
 
   const donorEventsResult = await pool.query(
     "SELECT COUNT(DISTINCT (payload->'data'->>'donorAddress')) AS count FROM event_stream WHERE aggregate_type IN ('Donation', 'MigratedDonation')"
@@ -317,13 +317,13 @@ async function verifyMigration(expectedUniqueTxCount, expectedDonationCount) {
   const legacyMatchResult = await pool.query(
     "SELECT SUM(matched_xlm::numeric) AS total FROM donation_matches"
   );
-  const legacyMatchTotal = parseFloat(legacyMatchResult.rows[0]?.total?.toString() || "0");
+  const legacyMatchTotal = legacyMatchResult.rows[0]?.total?.toString() || "0";
 
   return {
     uniqueTxHashesMatch: actualUniqueTxCount === expectedUniqueTxCount,
     expectedUniqueTxCount,
     actualUniqueTxCount,
-    xlmTotalMatch: Math.abs(eventTotalXlm - legacyTotalXlm) < 0.0000001,
+    xlmTotalMatch: compareXlm(eventTotalXlm, legacyTotalXlm) === 0,
     eventTotalXlm,
     legacyTotalXlm,
     uniqueDonorsMatch: eventUniqueDonors === legacyUniqueDonors,

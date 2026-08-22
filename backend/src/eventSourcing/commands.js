@@ -1,7 +1,7 @@
 "use strict";
 
 const { v4: uuid } = require("uuid");
-const { xlmToStroops, stroopsToXlm } = require("../utils/xlm");
+const { xlmToStroops, xlmToStroopsRounded, stroopsToXlm } = require("../utils/xlm");
 
 class Command {
   static COMMAND_TYPE = null;
@@ -54,15 +54,18 @@ class RecordDonationCommand extends Command {
         errors.push("amount must be a positive XLM amount with at most 7 decimal places");
       }
     } else {
-      const parsed = Number.parseFloat(this.payload.amount);
-      if (isNaN(parsed) || parsed <= 0) errors.push("amount must be a positive number");
-      if (parsed > 1e15) errors.push("amount exceeds allowed maximum");
+      // Fiat amounts never enter stroop arithmetic; validate positivity and
+      // magnitude on their decimal string without going through a double.
+      try {
+        const units = xlmToStroopsRounded(this.payload.amount ?? 0);
+        if (units <= 0n) errors.push("amount must be a positive number");
+        // Same ceiling as before (> 1e15), enforced on the exact scaled integer.
+        if (units > 10_000_000_000_000_000_000_000n) errors.push("amount exceeds allowed maximum");
+      } catch {
+        errors.push("amount must be a positive number");
+      }
     }
     return errors;
-  }
-
-  getAmount() {
-    return Number.parseFloat(this.getAmountXlm());
   }
 
   getAmountXlm() {
@@ -99,9 +102,16 @@ class ApplyMatchCommand extends Command {
     if (!this.payload.donorAddress || !/^G[A-Z0-9]{55}$/.test(this.payload.donorAddress)) {
       errors.push("donorAddress must be a valid Stellar public key");
     }
-    const matchAmt = Number.parseFloat(this.payload.matchAmount);
-    if (isNaN(matchAmt) || matchAmt <= 0) errors.push("matchAmount must be a positive number");
+    try {
+      if (this.getMatchAmountStroops() <= 0n) errors.push("matchAmount must be a positive number");
+    } catch {
+      errors.push("matchAmount must be a positive XLM amount with at most 7 decimal places");
+    }
     return errors;
+  }
+
+  getMatchAmountStroops() {
+    return xlmToStroopsRounded(this.payload.matchAmount ?? 0);
   }
 }
 
@@ -171,8 +181,11 @@ class CreateMatchOfferCommand extends Command {
     if (!this.payload.matcherAddress || !/^G[A-Z0-9]{55}$/.test(this.payload.matcherAddress)) {
       errors.push("matcherAddress must be a valid Stellar public key");
     }
-    const cap = Number.parseFloat(this.payload.capXlm);
-    if (isNaN(cap) || cap <= 0) errors.push("capXlm must be a positive number");
+    try {
+      if (this.getCapStroops() <= 0n) errors.push("capXlm must be a positive number");
+    } catch {
+      errors.push("capXlm must be a positive XLM amount with at most 7 decimal places");
+    }
     const mult = Number.parseInt(this.payload.multiplier, 10);
     if (isNaN(mult) || mult < 1) errors.push("multiplier must be >= 1");
     if (!this.payload.expiresAt || Number.isNaN(new Date(this.payload.expiresAt).getTime())) {
@@ -182,6 +195,10 @@ class CreateMatchOfferCommand extends Command {
       errors.push("expiresAt must be in the future");
     }
     return errors;
+  }
+
+  getCapStroops() {
+    return xlmToStroopsRounded(this.payload.capXlm ?? 0);
   }
 }
 

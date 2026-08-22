@@ -8,6 +8,7 @@
 const express = require("express");
 const router = express.Router();
 const pool = require("../db/pool");
+const { xlmToStroopsRounded } = require("../utils/xlm");
 
 const MAX_EDGES = 50000;
 
@@ -45,27 +46,37 @@ router.get("/graph", async (req, res, next) => {
     const nodes = new Map();
     const touchNode = (address) => {
       if (!nodes.has(address)) {
-        nodes.set(address, { id: address, totalIn: 0, totalOut: 0, degree: 0 });
+        nodes.set(address, { id: address, totalInStroops: 0n, totalOutStroops: 0n, degree: 0 });
       }
       return nodes.get(address);
     };
 
     for (const edge of edges) {
-      const amount = parseFloat(edge.amount) || 0;
+      // Accumulate per-node totals in integer stroops — summing doubles here
+      // drifted for wallets with many donations.
+      const amountStroops = xlmToStroopsRounded(edge.amount ?? 0);
       const source = touchNode(edge.source);
       const target = touchNode(edge.target);
-      source.totalOut += amount;
+      source.totalOutStroops += amountStroops;
       source.degree += 1;
-      target.totalIn += amount;
+      target.totalInStroops += amountStroops;
       target.degree += 1;
     }
 
+    // Stroops → JS number only at this display boundary (WebGL visualizer).
+    const toDisplayXlm = (stroops) => Number(stroops) / 10_000_000;
+
     res.json({
-      nodes: Array.from(nodes.values()),
+      nodes: Array.from(nodes.values()).map((node) => ({
+        id: node.id,
+        totalIn: toDisplayXlm(node.totalInStroops),
+        totalOut: toDisplayXlm(node.totalOutStroops),
+        degree: node.degree,
+      })),
       edges: edges.map((e) => ({
         source: e.source,
         target: e.target,
-        amount: parseFloat(e.amount) || 0,
+        amount: toDisplayXlm(xlmToStroopsRounded(e.amount ?? 0)),
         type: e.type,
         txHash: e.txHash,
       })),

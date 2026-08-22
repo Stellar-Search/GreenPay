@@ -10,6 +10,7 @@ import ImpactCertificate from "@/components/ImpactCertificate";
 import ProjectRating from "@/components/ProjectRating";
 import { fetchProfile, fetchDonorHistory, fetchProjects } from "@/lib/api";
 import { getDueMonthlySubscriptions } from "@/lib/monthlyGiving";
+import { parseToStroops } from "@/utils/amount";
 import { getXLMBalance, getFriendBotFunding, NETWORK } from "@/lib/stellar";
 import { formatXLM, formatCO2, timeAgo, shortenAddress, badgeEmoji, badgeLabel, calculateStreak } from "@/utils/format";
 import { explorerUrl } from "@/lib/stellar";
@@ -110,7 +111,8 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
   );
 
   const totalDonated  = profile?.totalDonatedXLM || "0";
-  const co2Estimate   = Math.round(parseFloat(totalDonated) * 12); // rough estimate
+  // Rough kg CO₂ estimate (12 kg per XLM) computed from exact stroops.
+  const co2Estimate   = Math.round((parseToStroops(totalDonated) * 12) / 10_000_000);
   const projectsCount = profile?.projectsSupported || 0;
 
   const topBadgeTier = profile?.badges?.length ? profile.badges[0].tier : null;

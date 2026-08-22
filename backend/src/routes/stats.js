@@ -6,6 +6,7 @@
 const express = require("express");
 const router = express.Router();
 const pool = require("../db/pool");
+const { normalizeXlm } = require("../utils/xlm");
 
 // GET /api/stats/global
 router.get("/global", async (req, res, next) => {
@@ -23,7 +24,9 @@ router.get("/global", async (req, res, next) => {
     const row = result.rows[0];
     res.json({
       totalDonations: row.totalDonations,
-      totalXLMRaised: parseFloat(row.totalXLMRaised).toFixed(7),
+      // SUM arrives as an exact NUMERIC string; normalize it without a
+      // double round-trip so the reported total never drifts by a stroop.
+      totalXLMRaised: normalizeXlm(row.totalXLMRaised),
       totalCO2OffsetKg: row.totalCO2OffsetKg,
     });
   } catch (e) {

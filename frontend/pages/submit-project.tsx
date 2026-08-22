@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useRouter } from "next/router";
 import { getApiErrorMessage, submitProject } from "@/lib/api";
 import { PROJECT_CATEGORIES } from "@/utils/format";
+import { parseToStroops, stroopsToXLM } from "@/utils/amount";
 
 type Step = "org" | "project" | "wallet" | "methodology" | "done";
 
@@ -101,7 +102,13 @@ export default function SubmitProjectPage() {
       if (!form.projectName.trim()) errs.projectName = "Required";
       if (!form.description.trim()) errs.description = "Required";
       if (!form.location.trim()) errs.location = "Required";
-      if (!form.goalXLM || Number(form.goalXLM) <= 0) errs.goalXLM = "Must be greater than 0";
+      if (!form.goalXLM) {
+        errs.goalXLM = "Must be greater than 0";
+      } else {
+        // Exact stroop validation: rejects garbage as well as non-positive values.
+        const goalStroops = parseToStroops(form.goalXLM);
+        if (Number.isNaN(goalStroops) || goalStroops <= 0) errs.goalXLM = "Must be greater than 0";
+      }
     }
 
     if (step === "wallet") {

@@ -1,6 +1,6 @@
 "use strict";
 
-const { xlmToStroops, stroopsToXlm } = require("../utils/xlm");
+const { xlmToStroops, xlmToStroopsRounded, stroopsToXlm, normalizeXlm } = require("../utils/xlm");
 
 const PROJECTION_BATCH_SIZE = 500;
 
@@ -54,7 +54,27 @@ function exactXlmAmount(data) {
   if (data.amountStroops !== null && data.amountStroops !== undefined) {
     return stroopsToXlm(data.amountStroops);
   }
-  return stroopsToXlm(xlmToStroops(data.amountXlm || 0));
+  // Fallback for payloads written before amountStroops existed: repair any
+  // double artifacts from old JSONB data by rounding to the nearest stroop.
+  return stroopsToXlm(xlmToStroopsRounded(data.amountXlm || 0));
+}
+
+// MatchAppliedEvent/MatchCreatedEvent serialize matchAmount/capXlm as
+// canonical 7-decimal strings (older payloads stored doubles; the event
+// constructors normalize them on hydration), so they go into the numeric
+// columns verbatim — no toFixed round-trip through a double.
+function exactMatchAmount(data) {
+  if (data.matchAmountStroops !== null && data.matchAmountStroops !== undefined) {
+    return stroopsToXlm(data.matchAmountStroops);
+  }
+  return normalizeXlm(data.matchAmount);
+}
+
+function exactCapAmount(data) {
+  if (data.capStroops !== null && data.capStroops !== undefined) {
+    return stroopsToXlm(data.capStroops);
+  }
+  return normalizeXlm(data.capXlm);
 }
 
 async function applyProjectProjection(client, event) {
@@ -68,7 +88,7 @@ async function applyProjectProjection(client, event) {
            updated_at = NOW(),
            projection_cursor = GREATEST(projection_cursor, $2)
        WHERE id = $3`,
-      [data.matchAmount.toFixed(7), event.version, data.projectId]
+      [exactMatchAmount(data), event.version, data.projectId]
     );
   } else if (event.eventType === "DonationRecorded") {
     const xlmDonation = data.currency === "XLM" ? exactXlmAmount(data) : "0.0000000";
@@ -210,14 +230,14 @@ async function applyMatchProjection(client, event) {
        SET matched_xlm = matched_xlm + $1::numeric,
            projection_cursor = GREATEST(projection_cursor, $2)
        WHERE match_id = $3`,
-      [data.matchAmount.toFixed(7), event.version, matchId]
+      [exactMatchAmount(data), event.version, matchId]
     );
   } else if (event.eventType === "MatchCreated" || event.eventType === "MigratedDonation" && data.isMatch === true) {
     await client.query(
       `INSERT INTO match_state (match_id, matched_xlm, cap_xlm, multiplier, projection_cursor)
        VALUES ($1, '0'::numeric, $2, $3, $4)
        ON CONFLICT (match_id) DO NOTHING`,
-      [matchId, data.capXlm?.toFixed(7) || "0", data.multiplier || 1, event.version]
+      [matchId, exactCapAmount(data), data.multiplier || 1, event.version]
     );
   }
 }

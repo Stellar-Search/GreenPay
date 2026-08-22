@@ -188,8 +188,9 @@ export interface DonateProject {
   description: string;
   category: ProjectCategory;
   walletAddress: string;
-  goalXLM: number;
-  raisedXLM: number;
+  /** Exact XLM amounts stay strings (NUMERIC(20, 7) round-trips losslessly). */
+  goalXLM: string;
+  raisedXLM: string;
 }
 
 /**
@@ -198,7 +199,7 @@ export interface DonateProject {
 export interface DonatePageProps {
   
   project: DonateProject | null;
-  presetAmount: number | null;
+  presetAmount: string | null;
 }
 
 /**

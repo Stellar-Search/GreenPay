@@ -7,6 +7,7 @@ import { confirmProjectRegistration, createProjectUpdate, csrfFetch, fetchProjec
 import { buildMilestoneTransaction, submitTransaction } from "@/lib/stellar";
 import { useDonationSocket } from "@/hooks/useDonationSocket";
 import { formatCO2, formatXLM, shortenAddress, timeAgo } from "@/utils/format";
+import { parseToStroops, stroopsToXLM, sumToStroops, goalReached, progressTowardGoal } from "@/utils/amount";
 import { useI18n } from "@/lib/i18n";
 import type { ClimateProject, Donation } from "@/utils/types";
 
@@ -115,33 +116,41 @@ export default function ProjectAdmin({ publicKey, onConnect }: AdminProps) {
   const isOwner = !!publicKey && !!project && publicKey === project.walletAddress;
 
   const donorBreakdown = useMemo(() => {
-    const byDonor = new Map<string, { donorAddress: string; total: number; count: number }>();
+    // Aggregate in integer stroops — donor totals from NUMERIC(20, 7) data
+    // are exact, unlike double accumulation.
+    const byDonor = new Map<string, { donorAddress: string; totalStroops: number; count: number }>();
     for (const d of donations) {
       const donorAddress = d.donorAddress;
-      const amount = parseFloat(d.amountXLM || d.amount || "0");
-      const curr = byDonor.get(donorAddress) || { donorAddress, total: 0, count: 0 };
-      curr.total += Number.isFinite(amount) ? amount : 0;
+      const stroops = parseToStroops(d.amountXLM || d.amount || "0");
+      const curr = byDonor.get(donorAddress) || { donorAddress, totalStroops: 0, count: 0 };
+      curr.totalStroops += Number.isFinite(stroops) ? stroops : 0;
       curr.count += 1;
       byDonor.set(donorAddress, curr);
     }
-    return Array.from(byDonor.values()).sort((a, b) => b.total - a.total);
+    return Array.from(byDonor.values())
+      .sort((a, b) => b.totalStroops - a.totalStroops)
+      .map(({ donorAddress, totalStroops, count }) => ({
+        donorAddress,
+        totalXLM: stroopsToXLM(totalStroops),
+        count,
+      }));
   }, [donations]);
 
   const weeklyGrowth = useMemo(() => {
     const byWeek = new Map<string, number>();
     for (const d of donations) {
       const key = weekKey(d.createdAt);
-      const amount = parseFloat(d.amountXLM || d.amount || "0");
-      byWeek.set(key, (byWeek.get(key) || 0) + (Number.isFinite(amount) ? amount : 0));
+      const stroops = parseToStroops(d.amountXLM || d.amount || "0");
+      byWeek.set(key, (byWeek.get(key) || 0) + (Number.isFinite(stroops) ? stroops : 0));
     }
     return Array.from(byWeek.entries())
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([week, totalXLM]) => ({ week, totalXLM: Number(totalXLM.toFixed(2)) }));
+      .map(([week, totalStroops]) => ({ week, totalXLM: Number((totalStroops / 10_000_000).toFixed(2)) }));
   }, [donations]);
 
   const downloadCsv = () => {
     const header = ["donorAddress", "totalXLM", "donationCount"];
-    const lines = donorBreakdown.map((d) => [d.donorAddress, d.total.toFixed(7), String(d.count)]);
+    const lines = donorBreakdown.map((d) => [d.donorAddress, d.totalXLM, String(d.count)]);
     const csv = [header, ...lines]
       .map((row) => row.map((v) => `"${String(v).replace(/\"/g, '""')}"`).join(","))
       .join("\n");
@@ -406,7 +415,8 @@ export default function ProjectAdmin({ publicKey, onConnect }: AdminProps) {
               <p className="text-sm text-[#4b654b] font-body">No milestones defined yet.</p>
             ) : (
               milestones.map((m) => {
-                const reached = parseFloat(project.raisedXLM) >= (parseFloat(project.goalXLM) * m.percentage / 100);
+                const reached = goalReached(project.raisedXLM, project.goalXLM, m.percentage);
+                const milestoneWidth = progressTowardGoal(project.raisedXLM, project.goalXLM, m.percentage);
                 return (
                   <div key={m.id} className={`p-4 rounded-xl border ${m.reachedAt ? 'bg-emerald-50 border-emerald-100' : 'bg-white border-forest-100'}`}>
                     <div className="flex items-center justify-between mb-2">
@@ -440,9 +450,9 @@ export default function ProjectAdmin({ publicKey, onConnect }: AdminProps) {
                       )}
                     </div>
                     <div className="w-full bg-forest-100 h-1.5 rounded-full overflow-hidden">
-                      <div 
+                      <div
                         className={`h-full transition-all duration-1000 ${m.reachedAt ? 'bg-emerald-500' : reached ? 'bg-amber-400' : 'bg-forest-300'}`}
-                        style={{ width: `${Math.min(100, (parseFloat(project.raisedXLM) / (parseFloat(project.goalXLM) * m.percentage / 100)) * 100)}%` }}
+                        style={{ width: `${milestoneWidth}%` }}
                       />
                     </div>
                   </div>

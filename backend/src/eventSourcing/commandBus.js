@@ -2,7 +2,7 @@
 
 const { v4: uuid } = require("uuid");
 const pool = require("../db/pool");
-const { ProjectAggregate, DonorAggregate, MatchAggregate, JobAggregate, round7 } = require("./aggregates");
+const { ProjectAggregate, DonorAggregate, MatchAggregate, JobAggregate } = require("./aggregates");
 const { eventStore } = require("./eventStore");
 
 const COMMAND_HANDLERS = new Map();
@@ -139,7 +139,7 @@ class ApplyMatchCommandHandler {
 
     const matchState = await getMatchState(matchId, db);
     if (matchState) {
-      matchState.validateApplyMatch(command.payload.matchAmount);
+      matchState.validateApplyMatch(command.getMatchAmountStroops());
     }
 
     const donorAddress = command.payload.donorAddress;
@@ -250,7 +250,7 @@ class ReleaseEscrowCommandHandler {
       actor: command.actor,
       clientPublicKey: jobRow.rows[0].client_public_key,
       freelancerPublicKey: jobRow.rows[0].freelancer_public_key,
-      amountXlm: parseFloat(jobRow.rows[0].amount_escrow_xlm?.toString() || "0"),
+      amountXlm: jobRow.rows[0].amount_escrow_xlm?.toString() || "0",
       releaseTransactionHash: command.payload.releaseTransactionHash,
     });
 
@@ -327,7 +327,9 @@ async function storeProjectAggregate(pool, projectId, aggregate, { includeRaised
          status = $3,
          updated_at = NOW()
      WHERE id = $4`,
-    [state.raisedXlm.toFixed(7), state.donorCount, state.status, projectId]
+    // raisedXlm is the aggregate's canonical 7-decimal string, summed exactly
+    // in stroops — no double ever touches the total.
+    [state.raisedXlm, state.donorCount, state.status, projectId]
   );
 }
 
