@@ -9,7 +9,10 @@
     "lint": "eslint src",
     "docs": "typedoc --options typedoc.json",
     "test": "jest --runInBand",
-    "test:local-chain": "RUN_LOCAL_CHAIN_TESTS=true jest src/services/localChainDonation.integration.test.js --runInBand"
+    "test:local-chain": "RUN_LOCAL_CHAIN_TESTS=true jest src/services/localChainDonation.integration.test.js --runInBand",
+    "db:migrate": "node -e \"require('./src/db/migrate').runMigrations().then(() => process.exit(0)).catch((err) => { console.error(err); process.exit(1); })\"",
+    "db:rollback": "node -e \"require('./src/db/migrate').rollbackLastMigration().then(() => process.exit(0)).catch((err) => { console.error(err); process.exit(1); })\"",
+    "db:status": "node -e \"require('./src/db/migrate').getMigrationStatus().then((s) => { console.log(s); process.exit(0); }).catch((err) => { console.error(err); process.exit(1); })\""
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.91.1",

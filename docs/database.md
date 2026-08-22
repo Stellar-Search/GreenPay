@@ -4,6 +4,54 @@
 
 GreenPay uses PostgreSQL 16 as its primary database for managing user accounts, transactions, and smart contract interactions.
 
+## Database Migration System
+
+GreenPay uses a versioned database migration runner located in `backend/src/db/migrate.js`.
+
+### How Migrations Work
+
+- **Migrations Table:** Applied migrations are tracked in the `schema_migrations` table (`id`, `name`, `applied_at`).
+- **Transactional Advisory Locking:** Concurrent backend starts use `pg_advisory_xact_lock` to prevent racing on schema updates.
+- **Migration Files:** Incremental schema changes are stored in `backend/src/db/migrations/NNN_description.js` files exporting `id`, `name`, `up(client)`, and `down(client)`.
+- **Baseline Schema:** `backend/src/db/schema.sql` serves as the baseline schema reference.
+
+### CLI Migration Commands
+
+In `backend/`:
+
+```bash
+# Apply pending migrations
+npm run db:migrate
+
+# Rollback the last applied migration
+npm run db:rollback
+
+# View migration status
+npm run db:status
+```
+
+### Adding New Migrations
+
+1. Create a file in `backend/src/db/migrations/` following the naming pattern `NNN_description.js` (e.g., `002_add_index.js`).
+2. Implement the module interface:
+
+```javascript
+"use strict";
+
+module.exports = {
+  id: 2,
+  name: "002_add_index",
+  async up(client) {
+    await client.query("CREATE INDEX IF NOT EXISTS idx_example ON example_table (column_name)");
+  },
+  async down(client) {
+    await client.query("DROP INDEX IF EXISTS idx_example");
+  },
+};
+```
+
+3. Update `backend/src/db/schema.sql` if appropriate to keep the snapshot in sync.
+
 ## Database Setup
 
 ### Docker Compose (Development)

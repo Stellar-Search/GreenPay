@@ -3,6 +3,7 @@
 const pool = require("../db/pool");
 const { eventStore } = require("./eventStore");
 const { runLegacyMigration, rebuildReadModels } = require("./migrate");
+const { runMigrations } = require("../db/migrate");
 
 async function initializeEventSourcing() {
   console.log("[EventSourcing] Initializing...");
@@ -18,26 +19,8 @@ async function initializeEventSourcing() {
 }
 
 async function ensureEventStoreSchema() {
-  const schemaPath = require("path").join(__dirname, "..", "db", "schema.sql");
-  const fs = require("fs");
-  const schemaSql = fs.readFileSync(schemaPath, "utf8");
-
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    await client.query(schemaSql);
-    await client.query("COMMIT");
-    console.log("[EventSourcing] Schema applied");
-  } catch (err) {
-    await client.query("ROLLBACK");
-    if (err.message && err.message.includes("already exists")) {
-      console.log("[EventSourcing] Schema already present");
-    } else {
-      throw err;
-    }
-  } finally {
-    client.release();
-  }
+  await runMigrations();
+  console.log("[EventSourcing] Schema applied");
 }
 
 async function getEventStoreStatus() {
