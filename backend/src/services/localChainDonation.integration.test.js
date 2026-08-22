@@ -69,31 +69,53 @@ async function fundAccount(publicKey) {
   }
 }
 
-async function submitContractOperation({ source, operation, horizon, rpcServer }) {
-  const account = await horizon.loadAccount(source.publicKey());
-  const transaction = new TransactionBuilder(account, {
-    fee: "100",
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(operation)
-    .setTimeout(30)
-    .build();
-
-  const prepared = await rpcServer.prepareTransaction(transaction);
-  prepared.sign(source);
-  const submission = await rpcServer.sendTransaction(prepared);
-  if (submission.status === "ERROR") {
-    throw new Error(`[contract submission] RPC rejected ${submission.hash}: ${submission.errorResult?.toXDR("base64") || "unknown error"}`);
-  }
-
-  const result = await converge(
-    "chain finality",
-    () => rpcServer.getTransaction(submission.hash),
-    (result) => result.status === rpc.Api.GetTransactionStatus.SUCCESS,
-    { timeoutMs: 20_000, intervalMs: 100 }
+// Errors that indicate the Soroban RPC container is still warming up rather
+// than a genuine contract-logic failure.  These are safe to retry.
+function isTransientRpcError(err) {
+  return /ECONNREFUSED|ECONNRESET|ETIMEDOUT|503|502|network error|socket hang up|failed to fetch/i.test(
+    String(err?.message || err)
   );
-  result.txHash = submission.hash;
-  return result;
+}
+
+async function submitContractOperation({ source, operation, horizon, rpcServer }, { maxAttempts = 5 } = {}) {
+  let lastError;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      const account = await horizon.loadAccount(source.publicKey());
+      const transaction = new TransactionBuilder(account, {
+        fee: "100",
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(operation)
+        .setTimeout(30)
+        .build();
+
+      const prepared = await rpcServer.prepareTransaction(transaction);
+      prepared.sign(source);
+      const submission = await rpcServer.sendTransaction(prepared);
+      if (submission.status === "ERROR") {
+        throw new Error(`[contract submission] RPC rejected ${submission.hash}: ${submission.errorResult?.toXDR("base64") || "unknown error"}`);
+      }
+
+      const result = await converge(
+        "chain finality",
+        () => rpcServer.getTransaction(submission.hash),
+        (r) => r.status === rpc.Api.GetTransactionStatus.SUCCESS,
+        { timeoutMs: 20_000, intervalMs: 100 }
+      );
+      result.txHash = submission.hash;
+      return result;
+    } catch (err) {
+      lastError = err;
+      // Only retry on transient connectivity/availability errors — never on
+      // contract-logic rejections (those will fail identically on every retry).
+      if (!isTransientRpcError(err) || attempt === maxAttempts - 1) throw err;
+      const delayMs = 1_000 * 2 ** attempt; // 1 s, 2 s, 4 s, 8 s
+      console.warn(`[contract submission] transient error on attempt ${attempt + 1}/${maxAttempts}, retrying in ${delayMs}ms: ${err.message}`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  throw lastError;
 }
 
 async function deployGreenPay({ admin, horizon, rpcServer }) {

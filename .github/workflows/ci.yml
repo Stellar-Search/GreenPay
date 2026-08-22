@@ -300,7 +300,15 @@ jobs:
               friendbot_status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
                 'http://127.0.0.1:8000/friendbot?addr=not-a-stellar-address')
               if [ "$friendbot_status" = "400" ]; then
-                exit 0
+                # Horizon is ready; now wait for the Soroban RPC to also be serving.
+                # The RPC port can lag behind Horizon by several seconds inside quickstart.
+                rpc_status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+                  --max-time 2 -X POST http://127.0.0.1:8000/soroban/rpc \
+                  -H 'Content-Type: application/json' \
+                  -d '{"jsonrpc":"2.0","id":1,"method":"getNetwork","params":{}}')
+                if [ "$rpc_status" = "200" ]; then
+                  exit 0
+                fi
               fi
             fi
             sleep 1
