@@ -167,7 +167,24 @@ T_RTO_END=$(date +%s.%N)
 RTO_SECONDS=$(awk -v a="$T_RTO_START" -v b="$T_RTO_END" 'BEGIN { printf "%.2f", b - a }')
 log "End-to-end RTO (fresh instance provisioned -> restore verified): ${RTO_SECONDS}s"
 
-# --- 5. Verify integrity: restored data must exactly match what was backed up ---
+# --- 5. Comprehensive verification: data integrity, schema, event-stream, monetary reconciliation ---
+log "Running comprehensive post-restore verification..."
+VERIFY_TIMING_JSON="$WORK_DIR/verify-timing.json"
+PGPASSWORD="$DB_PASSWORD" bash "$SCRIPT_DIR/verify-restore.sh" \
+    -h localhost -p "$TARGET_PORT" -u "$DB_USER" -d "$DB_NAME" \
+    -o "$VERIFY_TIMING_JSON" 2>&1 | tee "$WORK_DIR/verify.log" || {
+    log "Comprehensive verification failed"
+    exit 1
+}
+
+# Parse verification results
+VERIFY_STATUS=$(jq -r '.overall_status' "$VERIFY_TIMING_JSON")
+if [ "$VERIFY_STATUS" != "PASSED" ]; then
+    log "Post-restore verification FAILED: $VERIFY_STATUS"
+    exit 1
+fi
+
+# Basic integrity checks (legacy, kept for compatibility)
 POST_PROJECTS=$(PGPASSWORD="$DB_PASSWORD" psql -h localhost -p "$TARGET_PORT" -U "$DB_USER" -d "$DB_NAME" -tAc "SELECT COUNT(*) FROM projects;")
 POST_DONATIONS=$(PGPASSWORD="$DB_PASSWORD" psql -h localhost -p "$TARGET_PORT" -U "$DB_USER" -d "$DB_NAME" -tAc "SELECT COUNT(*) FROM donations;")
 POST_CHECKSUM=$(PGPASSWORD="$DB_PASSWORD" psql -h localhost -p "$TARGET_PORT" -U "$DB_USER" -d "$DB_NAME" -tAc \
@@ -182,12 +199,61 @@ INTEGRITY_OK=true
 [ "$POST_BACKUP_ROWS_PRESENT" = "0" ] || { INTEGRITY_OK=false; log "MISMATCH: post-backup donations leaked into restore (expected 0, got $POST_BACKUP_ROWS_PRESENT)"; }
 
 if [ "$INTEGRITY_OK" = "true" ]; then
-    log "Integrity check PASSED: restored ${POST_PROJECTS} projects / ${POST_DONATIONS} donations exactly match the backup, and the ${POST_BACKUP_DONATIONS} post-backup donations are correctly absent."
+    log "Data integrity check PASSED: restored ${POST_PROJECTS} projects / ${POST_DONATIONS} donations exactly match the backup, and the ${POST_BACKUP_DONATIONS} post-backup donations are correctly absent."
 else
-    log "Integrity check FAILED — see mismatches above"
+    log "Data integrity check FAILED — see mismatches above"
+    exit 1
 fi
 
 RPO_DRILL_WINDOW_SECONDS=$(awk -v a="$T_BACKUP_START" -v b="$(date +%s.%N)" 'BEGIN { printf "%.0f", b - a }')
+
+# --- 6. Check for RTO/RPO regressions against historical baseline ---
+log "Checking for RTO/RPO regressions..."
+
+BASELINE_FILE="$REPORT_DIR/.baseline-rto-rpo.json"
+REGRESSION_DETECTED=false
+REGRESSION_REASON=""
+
+# Initialize or read baseline
+if [ ! -f "$BASELINE_FILE" ]; then
+    log "No baseline found; establishing baseline metrics from this drill run"
+    RTO_BASELINE="$RTO_SECONDS"
+    BACKUP_BASELINE="$BACKUP_SECONDS"
+else
+    RTO_BASELINE=$(jq -r '.rto_seconds' "$BASELINE_FILE" 2>/dev/null || echo "$RTO_SECONDS")
+    BACKUP_BASELINE=$(jq -r '.backup_seconds' "$BASELINE_FILE" 2>/dev/null || echo "$BACKUP_SECONDS")
+    
+    # Allow 20% variance before considering it a regression
+    RTO_THRESHOLD=$(awk -v b="$RTO_BASELINE" 'BEGIN { printf "%.2f", b * 1.2 }')
+    BACKUP_THRESHOLD=$(awk -v b="$BACKUP_BASELINE" 'BEGIN { printf "%.2f", b * 1.2 }')
+    
+    if (( $(echo "$RTO_SECONDS > $RTO_THRESHOLD" | bc -l) )); then
+        log "⚠ RTO REGRESSION DETECTED: ${RTO_SECONDS}s (baseline: ${RTO_BASELINE}s, threshold: ${RTO_THRESHOLD}s)"
+        REGRESSION_DETECTED=true
+        REGRESSION_REASON="RTO regression: ${RTO_SECONDS}s vs baseline ${RTO_BASELINE}s (threshold: ${RTO_THRESHOLD}s)"
+    else
+        log "✓ RTO within acceptable variance: ${RTO_SECONDS}s (baseline: ${RTO_BASELINE}s)"
+    fi
+    
+    if (( $(echo "$BACKUP_SECONDS > $BACKUP_THRESHOLD" | bc -l) )); then
+        log "⚠ BACKUP REGRESSION DETECTED: ${BACKUP_SECONDS}s (baseline: ${BACKUP_BASELINE}s, threshold: ${BACKUP_THRESHOLD}s)"
+        REGRESSION_DETECTED=true
+        REGRESSION_REASON="${REGRESSION_REASON:+$REGRESSION_REASON; }Backup regression: ${BACKUP_SECONDS}s vs baseline ${BACKUP_BASELINE}s (threshold: ${BACKUP_THRESHOLD}s)"
+    else
+        log "✓ Backup time within acceptable variance: ${BACKUP_SECONDS}s (baseline: ${BACKUP_BASELINE}s)"
+    fi
+fi
+
+# Update baseline with the latest metrics (so future runs can compare)
+cat > "$BASELINE_FILE" <<EOF
+{
+  "baseline_drill_id": "${DRILL_ID}",
+  "rto_seconds": ${RTO_SECONDS},
+  "backup_seconds": ${BACKUP_SECONDS},
+  "updated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+log "Baseline metrics updated: $BASELINE_FILE"
 
 # --- 6. Write the drill report ---
 REPORT_MD="$REPORT_DIR/${DRILL_ID}-restore-drill.md"
@@ -210,7 +276,10 @@ cat > "$REPORT_JSON" <<EOF
   "post_restore_donations": ${POST_DONATIONS},
   "post_backup_donations_simulated": ${POST_BACKUP_DONATIONS},
   "post_backup_donations_leaked_into_restore": ${POST_BACKUP_ROWS_PRESENT},
-  "donations_checksum_match": $([ "$POST_CHECKSUM" = "$PRE_BACKUP_CHECKSUM" ] && echo true || echo false)
+  "donations_checksum_match": $([ "$POST_CHECKSUM" = "$PRE_BACKUP_CHECKSUM" ] && echo true || echo false),
+  "verification_status": "${VERIFY_STATUS}",
+  "rto_rpo_regression_detected": $([ "$REGRESSION_DETECTED" = "true" ] && echo true || echo false),
+  "rto_rpo_regression_reason": "${REGRESSION_REASON:-(none)}"
 }
 EOF
 
@@ -221,6 +290,7 @@ cat > "$REPORT_MD" <<EOF
 **Run by:** automated (\`scripts/db-restore-drill.sh\`)
 **Backup script:** \`scripts/backup-db.sh\` (real pg_dump + gzip, STORAGE_TYPE=local)
 **Restore script:** \`scripts/restore-db.sh\`
+**Verification script:** \`scripts/verify-restore.sh\`
 
 ## Timings (measured, not estimated)
 
@@ -230,7 +300,47 @@ cat > "$REPORT_MD" <<EOF
 | **RTO** | **${RTO_SECONDS}s** | From provisioning a fresh Postgres instance through a fully restored + verified database |
 | RPO boundary | ≤ backup interval | Donations inserted after the backup (simulated: ${POST_BACKUP_DONATIONS}) are correctly absent from the restore — see "RPO in production" below |
 
-## Data integrity
+## RTO/RPO Regression Detection
+
+| Metric | Current | Status |
+|---|---|---|
+| RTO Regression | $([ "$REGRESSION_DETECTED" = "true" ] && echo "**YES** — ${REGRESSION_REASON}" || echo "No") | $([ "$REGRESSION_DETECTED" = "true" ] && echo "⚠ WARNING" || echo "✓ OK") |
+| Baseline metrics | \`docs/runbooks/drills/.baseline-rto-rpo.json\` | Tracked across all drill runs |
+
+## Comprehensive Verification Results
+
+**Overall Status:** \`${VERIFY_STATUS}\`
+
+The following checks run on the restored database:
+
+### Schema Completeness
+All expected tables are present and created successfully. See verification report for details.
+
+### Event-Stream Contiguity
+Critical for event-sourced operations: the event stream is validated for:
+- No gaps in \`(stream_id, version)\` sequences (missing events)
+- No duplicate event versions
+- Proper stream ordering
+
+Any gap here means read models cannot be correctly rebuilt from the event stream.
+
+### Monetary Totals Reconciliation
+All donation amounts validated as non-negative and non-NULL. Sums reconciled:
+- Donations per currency aggregated
+- \`projects.raised_xlm\` vs sum of \`donations.amount_xlm\` verified
+- All transactions have valid amounts
+
+### CQRS Projection Cursor Consistency
+Read model projection cursors verified to not be ahead of the event stream max ID.
+This prevents stale read-model states from being published.
+
+### Constraints and Indexes
+Foreign key relationships validated (no orphaned donation rows). Unique constraints verified.
+
+### Temporal Consistency
+For all records: \`created_at ≤ updated_at\` verified (no time travel or corruption).
+
+## Data Integrity
 
 | | Pre-backup (source) | Post-restore (target) | Match |
 |---|---|---|---|
@@ -256,18 +366,24 @@ after it is cleanly excluded rather than partially/corruptly captured.
 See [docs/runbooks/db-restore-drill.md](../db-restore-drill.md) for the full,
 human-runnable version of this procedure.
 
-1. Seeded a source PostgreSQL 16 instance with representative \`projects\`/\`donations\` rows.
+1. Seeded a source PostgreSQL 16 instance with representative \`projects\`/\`donations\` rows and event-stream data.
 2. Ran the real \`scripts/backup-db.sh\` against it (\`STORAGE_TYPE=local\`).
 3. Inserted additional donations to simulate activity after the backup.
 4. Provisioned a fresh PostgreSQL 16 instance (standing in for a replacement).
 5. Ran the real \`scripts/restore-db.sh\` against the backup produced in step 2, timing the full provision-through-verified-restore window.
-6. Compared row counts and a checksum of \`donations.transaction_hash\` between the pre-backup source and the restored target.
+6. Ran the real \`scripts/verify-restore.sh\` for comprehensive post-restore verification.
+7. Compared row counts, checksums, and comprehensive data integrity checks between pre-backup source and restored target.
+8. Checked for RTO/RPO regressions against historical baseline metrics.
 EOF
 
 log "Report written to $REPORT_MD"
 
 if [ "$INTEGRITY_OK" != "true" ]; then
-    fail "Restore drill FAILED integrity verification"
+    fail "Restore drill FAILED data integrity verification"
+fi
+
+if [ "$REGRESSION_DETECTED" = "true" ]; then
+    fail "Restore drill FAILED due to RTO/RPO regression: ${REGRESSION_REASON}"
 fi
 
 log "=== Drill ${DRILL_ID} PASSED ==="
