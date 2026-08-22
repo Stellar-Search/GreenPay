@@ -1,5 +1,5 @@
 import fc from "fast-check";
-import { renderMarkdown } from "../[id]";
+import { renderMarkdown } from "../pages/projects/[id]";
 
 describe("renderMarkdown", () => {
   describe("Benign Input Rendering", () => {
