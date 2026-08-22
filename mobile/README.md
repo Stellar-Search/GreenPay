@@ -71,3 +71,49 @@ See `.env.example` for required variables:
 - `EXPO_PUBLIC_API_URL`: Backend API URL
 - `EXPO_PUBLIC_STELLAR_NETWORK`: testnet or mainnet
 - `EXPO_PUBLIC_HORIZON_URL`: Stellar Horizon URL
+
+## Offline & Resilience
+
+### Donation Queue
+
+Donations can be initiated while the device is offline. The intent (project,
+amount, donor public address, optional message) is persisted to
+`AsyncStorage` via `utils/donationQueue.ts`. **Secret keys are never stored.**
+When connectivity is restored, `hooks/useDonationSync.ts` runs a preflight
+check (balance, project status, duplicate detection) and marks the entry
+`ready` for the user to complete on the donate screen.
+
+### Horizon-accepted / Backend-failed Recovery (issue #359)
+
+If a payment is accepted by the Stellar network but the backend confirmation
+POST fails afterward — whether the donation originated from the offline queue
+*or* from a plain online attempt — the transaction hash is **always persisted**
+in a queue entry before the user can navigate away. This guarantees:
+
+- **No resubmission**: once a `horizonTransactionHash` is recorded on an
+  entry, no code path will call `server.submitTransaction()` for it again.
+- **Automatic retry on reconnect**: `useDonationSync` detects entries with a
+  recorded hash on the next reconnect and retries only the backend
+  confirmation POST, never the Horizon submission.
+- **On-screen retry**: the donate screen's *Confirm with server* button
+  becomes available immediately after the failure so users can retry without
+  leaving the screen.
+- **Single recording**: the donation is recorded in the backend exactly once
+  regardless of how many retry attempts are needed.
+
+## Testing
+
+```bash
+cd mobile
+npm test                                              # all tests
+npm test -- --testPathPattern DonateScreen            # donate screen + issue #359 tests
+npm test -- --testPathPattern donationSync            # reconnect sync engine tests
+```
+
+Key test files:
+
+| File | What it covers |
+|---|---|
+| `__tests__/DonateScreen.test.tsx` | Biometric gate, offline queueing, queue completion, issue #359 recovery |
+| `__tests__/donationSync.test.tsx` | Reconnect preflight: conflicts, balance checks, rate-limit backoff, deduplication |
+| `__tests__/donationQueue.test.ts` | Queue CRUD and serialisation |

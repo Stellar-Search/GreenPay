@@ -44,7 +44,7 @@ import {
   isBalanceSufficient,
 } from '../utils/amount';
 import { useNetworkReconnect } from './useNetworkReconnect';
-import { apiGet } from '../utils/api';
+import { apiGet, apiPost } from '../utils/api';
 
 const HORIZON_URL = process.env.EXPO_PUBLIC_HORIZON_URL || 'https://horizon-testnet.stellar.org';
 /** Small reserve added on top of the donation amount to account for network fees. */
@@ -90,9 +90,28 @@ async function preflightCheck(
   allEntries: QueuedDonation[],
   accountCache: Map<string, AccountCacheEntry>,
 ): Promise<QueuedDonation> {
-  // A prior attempt already reached Horizon successfully — nothing left to do.
+  // A prior attempt already reached Horizon — the backend confirmation may
+  // still be outstanding. Retry it now (never resubmit to Horizon).
+  // Only mark as 'completed' (and remove) if the backend confirms successfully;
+  // leave as pending-sync on failure so the next reconnect retries again.
   if (entry.horizonTransactionHash) {
-    return { ...entry, status: 'completed' };
+    try {
+      await apiPost('/api/donations', {
+        projectId: entry.projectId,
+        donorAddress: entry.donorAddress,
+        amountXLM: entry.amountXLM,
+        amount: entry.amountXLM,
+        currency: 'XLM',
+        message: entry.message,
+        transactionHash: entry.horizonTransactionHash,
+      });
+      // Backend confirmed — entry is fully resolved.
+      return { ...entry, status: 'completed' };
+    } catch {
+      // Backend still unreachable — leave as pending-sync for the next cycle.
+      console.warn('Donation queue sync: backend confirmation retry failed for', entry.id);
+      return entry;
+    }
   }
 
   // Duplicate detection: check if another queued entry for the same project +
