@@ -6,7 +6,8 @@ import { View, Text, ScrollView, StyleSheet, TouchableOpacity } from 'react-nati
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { apiGet, API_URL, parseApiFetchResponse } from '../../utils/api';
-import { getPushToken, followProject, unfollowProject } from '../../utils/notifications';
+import { getPushToken, followProject, unfollowProject, requestNotificationPermissions } from '../../utils/notifications';
+import { Alert, Linking } from 'react-native';
 
 interface ClimateProject {
   id: string;
@@ -76,16 +77,46 @@ export default function ProjectDetailScreen() {
   };
 
   const handleToggleFollow = async () => {
-    if (!pushToken || !project) return;
+    if (!project) return;
 
     setFollowLoading(true);
     try {
       if (isFollowing) {
-        await unfollowProject(project.id, pushToken);
+        if (pushToken) {
+          await unfollowProject(project.id, pushToken);
+        }
         setIsFollowing(false);
       } else {
-        await followProject(project.id, pushToken);
-        setIsFollowing(true);
+        const permissionStatus = await requestNotificationPermissions();
+        
+        if (permissionStatus === 'denied') {
+          Alert.alert(
+            'Notifications Disabled',
+            'Please enable notifications in your system settings to receive updates about this project.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Open Settings', onPress: () => Linking.openSettings() }
+            ]
+          );
+          setFollowLoading(false);
+          return;
+        }
+
+        if (permissionStatus !== 'granted') {
+          setFollowLoading(false);
+          return;
+        }
+
+        let currentToken = pushToken;
+        if (!currentToken) {
+          currentToken = await getPushToken();
+          if (currentToken) setPushToken(currentToken);
+        }
+
+        if (currentToken) {
+          await followProject(project.id, currentToken);
+          setIsFollowing(true);
+        }
       }
     } catch (error) {
       console.error('Error toggling follow:', error);
@@ -165,17 +196,15 @@ export default function ProjectDetailScreen() {
         <Text style={[styles.description, { color: colors.secondaryText }]}>{project.description}</Text>
       </View>
 
-      {pushToken && (
-        <TouchableOpacity
-          style={[styles.followButton, isFollowing && styles.followButtonActive]}
-          onPress={handleToggleFollow}
-          disabled={followLoading}
-        >
-          <Text style={styles.followButtonText}>
-            {followLoading ? 'Loading...' : isFollowing ? '🔔 Following' : '🔔 Follow for Updates'}
-          </Text>
-        </TouchableOpacity>
-      )}
+      <TouchableOpacity
+        style={[styles.followButton, isFollowing && styles.followButtonActive]}
+        onPress={handleToggleFollow}
+        disabled={followLoading}
+      >
+        <Text style={styles.followButtonText}>
+          {followLoading ? 'Loading...' : isFollowing ? '🔔 Following' : '🔔 Follow for Updates'}
+        </Text>
+      </TouchableOpacity>
 
       <TouchableOpacity
         style={[styles.donateButton, { backgroundColor: colors.buttonBackground }]}
