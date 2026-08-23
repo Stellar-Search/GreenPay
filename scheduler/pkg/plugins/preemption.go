@@ -68,6 +68,11 @@ func GetPodRequestedGPUCount(pod *corev1.Pod) int64 {
 	return 0
 }
 
+// freesNeededResources checks if candidate victim pod frees at least one resource required by preemptor.
+func freesNeededResources(targetGPUs, vFreedGPUs, targetVRAM, vFreedVRAM int64) bool {
+	return (targetGPUs > 0 && vFreedGPUs > 0) || (targetVRAM > 0 && vFreedVRAM > 0)
+}
+
 // isPodEvictable checks whether a pod is eligible for preemption eviction.
 // DaemonSet pods, mirror pods, and terminating pods are non-evictable.
 func isPodEvictable(pod *corev1.Pod) bool {
@@ -233,7 +238,7 @@ func (p *MLWorkloadPreemption) PostFilter(
 			vFreedVRAM := GetPodRequestedVRAM(victimPod)
 			vFreedGPUs := GetPodRequestedGPUCount(victimPod)
 			// A victim that frees none of the needed resources is never selected
-			if (targetGPUs > 0 && vFreedGPUs > 0) || (targetVRAM > 0 && vFreedVRAM > 0) {
+			if freesNeededResources(targetGPUs, vFreedGPUs, targetVRAM, vFreedVRAM) {
 				candidateVictims = append(candidateVictims, pInfo)
 			}
 		}
@@ -268,7 +273,7 @@ func (p *MLWorkloadPreemption) PostFilter(
 
 			vFreedVRAM := GetPodRequestedVRAM(vPod)
 			vFreedGPUs := GetPodRequestedGPUCount(vPod)
-			if (targetGPUs > 0 && vFreedGPUs == 0) && (targetVRAM > 0 && vFreedVRAM == 0) {
+			if !freesNeededResources(targetGPUs, vFreedGPUs, targetVRAM, vFreedVRAM) {
 				continue
 			}
 

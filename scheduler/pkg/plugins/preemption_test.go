@@ -461,6 +461,26 @@ func TestPreemption_VictimFreeingZeroNeededResources_NeverSelected(t *testing.T)
 	if result2 != nil {
 		t.Errorf("expected nil result when candidate frees 0 required resources, got: %v", result2.NominatedNodeName)
 	}
+
+	// Test when preemptor requests GPU count only, and candidate frees 0 GPU count: preemption should fail
+	gpuCountPreemptor := makePodWithPriority("gpu-count-preemptor", 1000, nil)
+	gpuCountPreemptor.Spec.Containers = []corev1.Container{
+		{
+			Name: "worker",
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceName("nvidia.com/gpu"): resource.MustParse("2"),
+				},
+			},
+		},
+	}
+	result3, status3 := pOnlyNonGPU.PostFilter(context.Background(), &framework.CycleState{}, gpuCountPreemptor, framework.NodeToStatusMap{})
+	if status3.Code() != framework.Unschedulable {
+		t.Errorf("expected Unschedulable when candidate frees 0 required GPUs, got: %v", status3.Code())
+	}
+	if result3 != nil {
+		t.Errorf("expected nil result when candidate frees 0 required GPUs, got: %v", result3.NominatedNodeName)
+	}
 }
 
 func TestPreemption_DeterministicCost_TieOnCountDifferOnPriority(t *testing.T) {
