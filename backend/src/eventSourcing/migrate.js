@@ -95,7 +95,7 @@ async function runLegacyMigration() {
   try {
     // === 1. Migrate Projects ===
     const projectsResult = await pool.query(
-      "SELECT id, name, description, category, location, wallet_address, goal_xlm, tags, created_at FROM projects"
+      "SELECT id, name, description, category, location, wallet_address, goal_xlm, tags, status, created_at FROM projects"
     );
     for (const project of projectsResult.rows) {
       events.push(
@@ -394,4 +394,74 @@ async function verifyMigration(expectedUniqueTxCount, expectedDonationCount) {
   };
 }
 
-module.exports = { runLegacyMigration, rebuildReadModels, verifyMigration, normalizeDoublePrefixedStreamIds };
+async function repairBogusProjectStatusEvents() {
+  const alreadyDone = await pool.query(
+    "SELECT id FROM event_store_migration_state WHERE id = 'repair-bogus-project-status'"
+  );
+  if (alreadyDone.rows[0]) {
+    console.log("[Migration] Bogus ProjectStatusChanged events already repaired. Skipping.");
+    return { status: "already_migrated", eventsWritten: 0 };
+  }
+
+  console.log("[Migration] Repairing bogus ProjectStatusChanged events...");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const result = await client.query(
+      `SELECT stream_id, aggregate_id, MAX(version) as max_version
+       FROM event_stream 
+       WHERE event_type = 'ProjectStatusChanged' 
+       AND NOT (payload->'data' ? 'newStatus')
+       GROUP BY stream_id, aggregate_id`
+    );
+
+    const badStreams = result.rows;
+    let eventsWritten = 0;
+
+    if (badStreams.length > 0) {
+      const { eventStore } = require("./eventStore");
+      const { ProjectStatusChangedEvent } = require("./events");
+      const events = [];
+
+      for (const stream of badStreams) {
+        const projRes = await client.query("SELECT status FROM projects WHERE id = $1", [stream.aggregate_id]);
+        const actualStatus = projRes.rows[0]?.status || 'active';
+        
+        events.push(
+          new ProjectStatusChangedEvent({
+            aggregateId: stream.aggregate_id,
+            version: parseInt(stream.max_version, 10) + 1,
+            actor: "migration_repair",
+            previousStatus: null,
+            newStatus: actualStatus,
+            reason: "Repair bogus undefined status from legacy migration",
+          })
+        );
+      }
+      
+      for (let i = 0; i < events.length; i += EVENT_STORE_BATCH) {
+        const batch = events.slice(i, i + EVENT_STORE_BATCH);
+        await eventStore.appendBatch(batch);
+      }
+      eventsWritten = events.length;
+    }
+
+    await client.query(
+      "INSERT INTO event_store_migration_state (id, migrated_at, event_count) VALUES ('repair-bogus-project-status', NOW(), $1)",
+      [eventsWritten]
+    );
+
+    await client.query("COMMIT");
+    console.log(`[Migration] Repaired ${eventsWritten} bogus ProjectStatusChanged events`);
+    return { status: "completed", eventsWritten };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("[Migration] Repair bogus ProjectStatusChanged events failed:", err.message);
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+module.exports = { runLegacyMigration, rebuildReadModels, verifyMigration, normalizeDoublePrefixedStreamIds, repairBogusProjectStatusEvents };
