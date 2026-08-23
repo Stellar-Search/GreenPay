@@ -958,6 +958,17 @@
                     },
                     {
                       "key": {
+                        "symbol": "quorum_requirement"
+                      },
+                      "val": {
+                        "i128": {
+                          "hi": 0,
+                          "lo": 100000
+                        }
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "snapshot_ledger"
                       },
                       "val": {
@@ -1208,7 +1219,7 @@
                             },
                             {
                               "key": {
-                                "symbol": "quorum"
+                                "symbol": "quorum_bps"
                               },
                               "val": {
                                 "i128": {
@@ -1276,6 +1287,21 @@
                         },
                         "val": {
                           "u64": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "TotalLocked"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "i128": {
+                            "hi": 0,
+                            "lo": 1000000
+                          }
                         }
                       }
                     ]
@@ -2070,7 +2096,7 @@
                 },
                 {
                   "key": {
-                    "symbol": "quorum"
+                    "symbol": "quorum_bps"
                   },
                   "val": {
                     "i128": {
@@ -3382,6 +3408,17 @@
                 },
                 {
                   "key": {
+                    "symbol": "quorum_requirement"
+                  },
+                  "val": {
+                    "i128": {
+                      "hi": 0,
+                      "lo": 100000
+                    }
+                  }
+                },
+                {
+                  "key": {
                     "symbol": "snapshot_ledger"
                   },
                   "val": {
@@ -3494,7 +3531,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'target/function not allowlisted' from contract function 'Symbol(obj#1275)'"
+                  "string": "caught panic 'target/function not allowlisted' from contract function 'Symbol(obj#1379)'"
                 },
                 {
                   "u64": 1
