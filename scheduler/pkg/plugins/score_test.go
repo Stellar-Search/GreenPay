@@ -2,6 +2,7 @@ package plugins_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -571,4 +572,168 @@ func TestBinPackingScore_Isolation(t *testing.T) {
 	if score80 <= score0 {
 		t.Errorf("expected 80%% utilized node score (%.2f) > 0%% utilized node score (%.2f)", score80, score0)
 	}
+}
+
+// foreignState implements framework.StateData to simulate another plugin or collision.
+type foreignState struct {
+	data string
+}
+
+func (f *foreignState) Clone() framework.StateData {
+	return &foreignState{data: f.data}
+}
+
+func TestScore_ForeignCycleStateValue_DegradesGracefully(t *testing.T) {
+	ctx := context.Background()
+	lister := &mockNodeInfoLister{}
+	handle := &mockHandle{
+		sharedLister: &mockSharedLister{nodeLister: lister},
+	}
+
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "node-test",
+			Labels: map[string]string{
+				hardware.LabelNetworkBandwidthGbps: "100",
+			},
+		},
+	}
+	ni := framework.NewNodeInfo()
+	ni.SetNode(node)
+	lister.nodes = []*framework.NodeInfo{ni}
+
+	p, err := plugins.NewMLWorkloadScore(ctx, nil, handle)
+	if err != nil {
+		t.Fatalf("NewMLWorkloadScore: %v", err)
+	}
+	plugin := p.(*plugins.MLWorkloadScore)
+
+	pod := &corev1.Pod{}
+	cycleState := framework.NewCycleState()
+
+	// Store a foreign value under the bandwidth key.
+	cycleState.Write("greenpay/bandwidthState", &foreignState{data: "foreign-data"})
+
+	// Score should degrade gracefully and not panic on type mismatch.
+	score, status := plugin.Score(ctx, cycleState, pod, "node-test")
+	if !status.IsSuccess() {
+		t.Fatalf("Score failed with foreign cycle state: %v", status.Message())
+	}
+	if score < framework.MinNodeScore || score > framework.MaxNodeScore {
+		t.Errorf("score %d out of bounds [0, 100]", score)
+	}
+}
+
+func TestScore_MissingCycleStateValue_DegradesGracefully(t *testing.T) {
+	ctx := context.Background()
+	lister := &mockNodeInfoLister{}
+	handle := &mockHandle{
+		sharedLister: &mockSharedLister{nodeLister: lister},
+	}
+
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "node-test",
+			Labels: map[string]string{
+				hardware.LabelNetworkBandwidthGbps: "100",
+			},
+		},
+	}
+	ni := framework.NewNodeInfo()
+	ni.SetNode(node)
+	lister.nodes = []*framework.NodeInfo{ni}
+
+	p, err := plugins.NewMLWorkloadScore(ctx, nil, handle)
+	if err != nil {
+		t.Fatalf("NewMLWorkloadScore: %v", err)
+	}
+	plugin := p.(*plugins.MLWorkloadScore)
+
+	pod := &corev1.Pod{}
+	cycleState := framework.NewCycleState()
+
+	// Score without PreScore (empty CycleState) should degrade gracefully.
+	score, status := plugin.Score(ctx, cycleState, pod, "node-test")
+	if !status.IsSuccess() {
+		t.Fatalf("Score failed with empty cycle state: %v", status.Message())
+	}
+	if score < framework.MinNodeScore || score > framework.MaxNodeScore {
+		t.Errorf("score %d out of bounds [0, 100]", score)
+	}
+}
+
+func TestScore_ConcurrentScoreAndClone_RaceFree(t *testing.T) {
+	ctx := context.Background()
+	lister := &mockNodeInfoLister{}
+	handle := &mockHandle{
+		sharedLister: &mockSharedLister{nodeLister: lister},
+	}
+
+	var nodes []*framework.NodeInfo
+	for i := 0; i < 10; i++ {
+		node := &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "node-" + string(rune('a'+i)),
+				Labels: map[string]string{
+					hardware.LabelGPUVendor:            "nvidia",
+					hardware.LabelGPUCount:             "8",
+					hardware.LabelNetworkBandwidthGbps: "100",
+				},
+			},
+		}
+		ni := framework.NewNodeInfo()
+		ni.SetNode(node)
+		nodes = append(nodes, ni)
+	}
+	lister.nodes = nodes
+
+	p, err := plugins.NewMLWorkloadScore(ctx, nil, handle)
+	if err != nil {
+		t.Fatalf("NewMLWorkloadScore: %v", err)
+	}
+	plugin := p.(*plugins.MLWorkloadScore)
+
+	pod := &corev1.Pod{}
+	cycleState := framework.NewCycleState()
+
+	preStatus := plugin.PreScore(ctx, cycleState, pod, nodes)
+	if !preStatus.IsSuccess() {
+		t.Fatalf("PreScore failed: %v", preStatus.Message())
+	}
+
+	const workers = 30
+	var wg sync.WaitGroup
+	wg.Add(workers * 2)
+
+	// Goroutines executing Score concurrently across nodes
+	for i := 0; i < workers; i++ {
+		nodeName := nodes[i%len(nodes)].Node().Name
+		go func(name string) {
+			defer wg.Done()
+			for iter := 0; iter < 50; iter++ {
+				score, status := plugin.Score(ctx, cycleState, pod, name)
+				if !status.IsSuccess() {
+					t.Errorf("Score failed: %v", status.Message())
+				}
+				if score < 0 || score > 100 {
+					t.Errorf("score %d out of range", score)
+				}
+			}
+		}(nodeName)
+	}
+
+	// Goroutines executing CycleState.Clone() concurrently
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			for iter := 0; iter < 50; iter++ {
+				cloned := cycleState.Clone()
+				if cloned == nil {
+					t.Errorf("expected non-nil cloned cycle state")
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
 }
