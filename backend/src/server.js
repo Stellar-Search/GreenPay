@@ -27,6 +27,16 @@ const { logger } = require("./utils/logger");
 
 const app = express();
 const server = http.createServer(app);
+
+// Behind the nginx ingress controller (or any proxy) Express must be told to
+// trust the proxy chain before req.ip reflects the real client: X-Forwarded-For
+// is ignored otherwise, every request looks like it comes from the proxy, and
+// every IP-keyed rate-limit bucket collapses to one shared counter. Kept off by
+// default so local dev can't spoof headers; deployments set TRUST_PROXY=true
+// and TRUST_PROXY_HOPS to match their topology (see helm configmap). A number
+// of hops (not `true`) is deliberate — see express-rate-limit's
+// ERR_ERL_PERMISSIVE_TRUST_PROXY.
+app.set("trust proxy", env.trustProxy ? env.trustProxyHops : false);
 // Kubernetes sends SIGTERM (not SIGINT) to terminate pods during rolling
 // deploys, HPA scale-down, or node drains — keep this below the pod's
 // terminationGracePeriodSeconds (see k8s/backend.yaml) so the process has

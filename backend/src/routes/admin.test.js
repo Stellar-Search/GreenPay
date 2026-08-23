@@ -6,6 +6,11 @@ const { apiEnvelope, errorHandler } = require("../middleware/apiEnvelope");
 
 jest.mock("../middleware/rateLimiter", () => ({
   createRateLimiter: () => (req, res, next) => next(),
+  createLayeredRateLimiter: () => (req, res, next) => next(),
+}));
+
+jest.mock("../middleware/progressiveDelay", () => ({
+  createProgressiveDelay: () => (req, res, next) => next(),
 }));
 
 jest.mock("../db/pool", () => ({

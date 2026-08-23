@@ -3,7 +3,8 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../db/pool");
 const { signToken, adminRequired } = require("../middleware/auth");
-const { createRateLimiter } = require("../middleware/rateLimiter");
+const { createRateLimiter, createLayeredRateLimiter } = require("../middleware/rateLimiter");
+const { createProgressiveDelay } = require("../middleware/progressiveDelay");
 const { validate } = require("../middleware/validate");
 const { createApiError } = require("../middleware/apiEnvelope");
 const { AdminLoginSchema, AdminRefreshSchema, AdminAuditQuerySchema } = require("../schemas/admin");
@@ -11,12 +12,36 @@ const { logAdminAction } = require("../services/audit");
 const { enqueueAISummary } = require("../services/summaryQueue");
 const { env } = require("../config/env");
 
+// Per-IP floor on login attempts (10 per 15 minutes per address). The real
+// anti-brute-force barrier is the per-account progressive delay below, which
+// follows the attempted username across any number of source addresses.
 const loginLimiter = createRateLimiter(10, 15, "admin-login");
+
+// Progressive delay keyed on the account being attempted: delays kick in after
+// a handful of failures and grow exponentially, so a distributed attack that
+// rotates IPs is still throttled per account, and a successful login resets
+// the counter.
+const loginAccountDelay = createProgressiveDelay();
+
+// Bounds every authenticated admin operation per subject (not per IP) so the
+// same admin session is constrained regardless of its source address.
+const adminSubjectLimiter = createRateLimiter(120, 1, "admin-subject", { keyBy: "subject" });
+
+// Replaying a permanently-failed AI summary job enqueues a paid Claude call,
+// so beyond the subject cap this endpoint also carries a global cap that no
+// number of distinct clients can exceed.
+const summaryRetryLimiter = createLayeredRateLimiter({
+  name: "admin-summary-retry",
+  windowMinutes: 1,
+  ip: 30,
+  subject: 10,
+  global: 10,
+});
 
 const TOKEN_EXPIRY = "1h";
 const REFRESH_EXPIRY = "24h";
 
-router.post("/login", loginLimiter, validate(AdminLoginSchema), (req, res) => {
+router.post("/login", loginLimiter, loginAccountDelay, validate(AdminLoginSchema), (req, res) => {
   const { username, password } = req.body || {};
 
   if (!env.adminPassword) {
@@ -37,7 +62,7 @@ router.post("/login", loginLimiter, validate(AdminLoginSchema), (req, res) => {
   });
 });
 
-router.get("/audit", adminRequired, validate(AdminAuditQuerySchema, { source: "query" }), async (req, res, next) => {
+router.get("/audit", adminRequired, adminSubjectLimiter, validate(AdminAuditQuerySchema, { source: "query" }), async (req, res, next) => {
   try {
     const { actor, action, limit = 50, offset = 0 } = req.query;
     const where = [];
@@ -101,7 +126,7 @@ router.get("/audit", adminRequired, validate(AdminAuditQuerySchema, { source: "q
  * this a permanently-failed job is only visible by querying pg-boss's own
  * tables directly.
  */
-router.get("/ai-summary-failures", adminRequired, async (req, res, next) => {
+router.get("/ai-summary-failures", adminRequired, adminSubjectLimiter, async (req, res, next) => {
   try {
     const limit = Math.min(Number.parseInt(req.query.limit, 10) || 50, 200);
     const offset = Math.max(Number.parseInt(req.query.offset, 10) || 0, 0);
@@ -148,7 +173,7 @@ router.get("/ai-summary-failures", adminRequired, async (req, res, next) => {
  * Re-enqueues a permanently-failed summary job from its recorded payload and
  * marks the failure retried, so the same record cannot be replayed twice.
  */
-router.post("/ai-summary-failures/:id/retry", adminRequired, async (req, res, next) => {
+router.post("/ai-summary-failures/:id/retry", adminRequired, summaryRetryLimiter, async (req, res, next) => {
   try {
     const failureResult = await pool.query(
       "SELECT id, project_id, payload, status FROM ai_summary_job_failures WHERE id = $1",
@@ -205,7 +230,7 @@ router.post("/refresh", validate(AdminRefreshSchema), (req, res) => {
   }
 });
 
-router.get("/me", adminRequired, (req, res) => {
+router.get("/me", adminRequired, adminSubjectLimiter, (req, res) => {
   res.json({
     username: req.admin.sub,
     role: req.admin.role,

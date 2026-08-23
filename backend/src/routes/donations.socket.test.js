@@ -16,6 +16,7 @@ jest.mock("../eventSourcing/commandBus", () => ({
 }));
 jest.mock("../middleware/rateLimiter", () => ({
   createRateLimiter: () => (req, res, next) => next(),
+  createLayeredRateLimiter: () => (req, res, next) => next(),
 }));
 
 const http = require("http");

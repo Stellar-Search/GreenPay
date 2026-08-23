@@ -52,6 +52,28 @@ const schema = {
       "Grace period for server shutdown before forcing exit (ms); must align with Kubernetes pod terminationGracePeriodSeconds",
   },
 
+  // When the app sits behind the nginx ingress controller or a cloud load
+  // balancer, Express must trust the proxy chain before it will honour the
+  // X-Forwarded-For header — otherwise req.ip (and every IP-keyed rate-limit
+  // bucket) collapses to the proxy's address and all clients share one bucket.
+  // Kept OFF by default so a misconfigured dev box can't be spoofed; deploy
+  // manifests set it explicitly (see helm/greenpay/templates/configmap.yaml).
+  TRUST_PROXY: {
+    required: false,
+    type: "boolean-string",
+    default: "false",
+    description:
+      "Trust X-Forwarded-* headers from the proxy in front of the app (true when deployed behind nginx ingress or a load balancer)",
+  },
+
+  TRUST_PROXY_HOPS: {
+    required: false,
+    type: "number",
+    default: "1",
+    description:
+      "Number of proxy hops between the app and the internet when TRUST_PROXY=true (1 for a single nginx ingress; 2 if a cloud LB fronts the ingress, etc.)",
+  },
+
   // ── Database ──────────────────────────────────────────────────────────────
 
   DATABASE_URL: {
@@ -398,6 +420,8 @@ function buildConfig(isTestMode) {
     nodeEnv: get("NODE_ENV"),
     port: Number(get("PORT")),
     shutdownTimeoutMs: Number(get("SHUTDOWN_TIMEOUT_MS")),
+    trustProxy: parseBoolean(get("TRUST_PROXY")),
+    trustProxyHops: Number(get("TRUST_PROXY_HOPS")),
 
     // Database
     databaseUrl: get("DATABASE_URL"),
