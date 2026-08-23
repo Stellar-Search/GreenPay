@@ -168,36 +168,17 @@ async function matchDonationTxFunction(payment) {
       // This happens BEFORE the DB writes so that if the Horizon call fails
       // we never record a match that was not actually paid out.
       // Call via module.exports so that Jest spies can intercept it in tests.
-      const { CircuitBreaker } = require("./circuitBreaker");
+      const matchResult = await module.exports.submitMatchingPayment({
+        matcherAddress: match.matcher_address,
+        projectWallet: to,
+        amount: matchAmount,
+        originalTxHash: transaction_hash,
+        _matchId: match.id,
+      });
 
-// Inside turrets.js:
-      async function submitMatchingPayment(params) {
-        const { amount, matchId } = params;
-
-        // 1. Guard check: verifies hourly velocity limit & tripped state
-        CircuitBreaker.checkCanExecute(amount);
-
-        try {
-          const matcherSecret = process.env.MATCHER_SECRET_KEY;
-          if (!matcherSecret) {
-            throw new Error("MATCHER_SECRET_KEY is missing from environment");
-          }
-
-          // ... [existing transaction building & signing code] ...
-
-          // Assume `txResult` is the result from Horizon/Stellar submit
-          if (txResult && txResult.hash) {
-            // 2. Record successful payment to track spend velocity
-            CircuitBreaker.recordSuccess(amount);
-            return { success: true, hash: txResult.hash };
-          } else {
-            throw new Error("Transaction submission failed on-chain");
-          }
-        } catch (error) {
-          // 3. Track failures: automatically trips breaker after N consecutive errors
-          CircuitBreaker.recordFailure();
-          return { success: false, error: error.message };
-        }
+      if (!matchResult.success) {
+        console.error(`Failed to submit matching payment for match ${match.id}: ${matchResult.error || matchResult.reason}`);
+        continue;
       }
 
       // ── 5b. Persist atomically inside a single DB transaction ────────────
