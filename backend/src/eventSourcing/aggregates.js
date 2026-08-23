@@ -63,7 +63,7 @@ class ProjectAggregate {
       if (command.commandType === "RecordDonation") {
         this.uncommitted.push(
           new DonationRecordedEvent({
-            aggregateId: createStreamId("Donation", command.getTransactionHash()),
+            aggregateId: command.getTransactionHash(),
             version: this.uncommitted.length + 1,
             actor: command.actor,
             projectId: command.payload.projectId,
@@ -77,7 +77,7 @@ class ProjectAggregate {
       } else {
         this.uncommitted.push(
           new MatchAppliedEvent({
-            aggregateId: createStreamId("Match", command.payload.matchId),
+            aggregateId: command.payload.matchId,
             version: this.applyAndGetVersion(command),
             actor: command.actor,
             matchId: command.payload.matchId,
@@ -98,7 +98,7 @@ class ProjectAggregate {
       }
       this.uncommitted.push(
         new ProjectStatusChangedEvent({
-          aggregateId: createStreamId("Project", command.payload.projectId),
+          aggregateId: command.payload.projectId,
           version: this.applyAndGetVersion(command),
           actor: command.actor,
           previousStatus: this.state.status,
@@ -177,7 +177,7 @@ class DonorAggregate {
     case "RecordDonation":
       this.uncommitted.push(
         new DonationRecordedEvent({
-          aggregateId: createStreamId("Donor", command.payload.donorAddress),
+          aggregateId: command.getTransactionHash(),
           version: this.uncommitted.length + 1,
           actor: command.actor,
           projectId: command.payload.projectId,
@@ -192,7 +192,7 @@ class DonorAggregate {
     case "ApplyMatch":
       this.uncommitted.push(
         new MatchAppliedEvent({
-          aggregateId: createStreamId("Donor", command.payload.donorAddress),
+          aggregateId: command.payload.matchId,
           version: this.uncommitted.length + 1,
           actor: command.actor,
           matchId: command.payload.matchId,
@@ -207,7 +207,7 @@ class DonorAggregate {
     case "ProfileCreated":
       this.uncommitted.push(
         new ProfileCreatedEvent({
-          aggregateId: createStreamId("Profile", this.state.displayName || command.payload.displayName),
+          aggregateId: this.state.displayName || command.payload.displayName,
           version: this.uncommitted.length + 1,
           actor: command.actor,
           displayName: command.payload.displayName,
@@ -290,7 +290,7 @@ class MatchAggregate {
     case "CreateMatchOffer":
       this.uncommitted.push(
         new MatchCreatedEvent({
-          aggregateId: createStreamId("Match", command.payload.projectId),
+          aggregateId: command.payload.projectId,
           version: this.uncommitted.length + 1,
           actor: command.actor,
           matchId: command.payload.matchId,
@@ -305,7 +305,7 @@ class MatchAggregate {
     case "ApplyMatch":
       this.uncommitted.push(
         new MatchAppliedEvent({
-          aggregateId: createStreamId("Match", command.payload.matchId),
+          aggregateId: command.payload.matchId,
           version: this.uncommitted.length + 1,
           actor: command.actor,
           matchId: command.payload.matchId,
@@ -384,7 +384,7 @@ class JobAggregate {
       }
       this.uncommitted.push(
         new JobReleasedEvent({
-          aggregateId: createStreamId("Job", command.payload.jobId),
+          aggregateId: command.payload.jobId,
           version: this.uncommitted.length + 1,
           actor: command.actor,
           clientPublicKey: command.payload.clientPublicKey,
@@ -408,10 +408,6 @@ class JobAggregate {
   }
 }
 
-function createStreamId(aggregateType, id) {
-  return `${aggregateType}:${id}`;
-}
-
 function round7(n) {
   return Math.round(n * 1e7) / 1e7;
 }
@@ -421,7 +417,6 @@ module.exports = {
   DonorAggregate,
   MatchAggregate,
   JobAggregate,
-  createStreamId,
   round7,
   VALID_PROJECT_STATUSES,
 };

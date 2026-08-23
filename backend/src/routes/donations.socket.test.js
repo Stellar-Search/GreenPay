@@ -43,7 +43,7 @@ function queryResult(rows = []) {
 function mockSuccessfulDonation({ projectId, donorAddress, amountXlm, transactionHash }) {
   pool.query.mockResolvedValueOnce(queryResult([{ id: projectId }])); // project lookup
   const donationEvent = new DonationRecordedEvent({
-    aggregateId: `Donation:${transactionHash}`,
+    aggregateId: transactionHash,
     version: 1,
     actor: donorAddress,
     projectId,

@@ -2,13 +2,20 @@
 
 const pool = require("../db/pool");
 const { eventStore } = require("./eventStore");
-const { runLegacyMigration, rebuildReadModels } = require("./migrate");
+const { runLegacyMigration, rebuildReadModels, normalizeDoublePrefixedStreamIds } = require("./migrate");
 
 async function initializeEventSourcing() {
   console.log("[EventSourcing] Initializing...");
 
   await ensureEventStoreSchema();
   console.log("[EventSourcing] Event store schema verified");
+
+  // Must run before the legacy migration: it only rewrites rows that still
+  // have the historical double-prefixed stream_id, so fixing them first
+  // keeps the event store internally consistent before any new rows (from
+  // the legacy migration below, or the live write path) are added.
+  const normalizationResult = await normalizeDoublePrefixedStreamIds();
+  console.log(`[EventSourcing] Stream id normalization: ${JSON.stringify(normalizationResult)}`);
 
   const migrationResult = await runLegacyMigration();
   console.log(`[EventSourcing] Legacy migration: ${JSON.stringify(migrationResult)}`);
