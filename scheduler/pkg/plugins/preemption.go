@@ -53,7 +53,10 @@ func GetPodRequestedVRAM(pod *corev1.Pod) int64 {
 	return reqs.GPUVRAMMinMiB
 }
 
-// GetPodRequestedGPUCount returns the number of GPUs requested by a pod.
+// GetPodRequestedGPUCount returns the number of accelerators (GPUs or TPUs)
+// requested by a pod, derived from the container resource requests — never
+// from a node-label key. Pods that only express an accelerator need through
+// annotations (vendor/model/VRAM) with no explicit count report 1.
 func GetPodRequestedGPUCount(pod *corev1.Pod) int64 {
 	if pod == nil {
 		return 0
