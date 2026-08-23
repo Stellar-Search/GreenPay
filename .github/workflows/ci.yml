@@ -440,7 +440,6 @@ jobs:
           set -euo pipefail
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "${{ github.workspace }}/.trivyignore:/.trivyignore" \
             -v "${{ github.workspace }}:/workspace" \
             aquasec/trivy:latest image \
             --format json \
@@ -448,7 +447,7 @@ jobs:
             --severity HIGH,CRITICAL \
             --ignore-unfixed \
             --pkg-types os,library \
-            --ignorefile /.trivyignore \
+            --ignorefile /workspace/.trivyignore \
             ${{ matrix.image }}:local-scan
 
       - name: Evaluate Trivy severity gate
@@ -465,14 +464,3 @@ jobs:
             echo "❌ Trivy security gate failed: ${HIGH_CRIT_COUNT} HIGH/CRITICAL findings detected."
             exit 1
           fi
-      - name: Build and push image
-        uses: docker/build-push-action@v5
-        if: github.event_name != 'pull_request'
-        with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
