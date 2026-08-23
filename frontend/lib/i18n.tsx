@@ -31,43 +31,47 @@ const I18nContext = createContext<I18nContextValue | undefined>(undefined);
 
 export const STORAGE_KEY = "greenpay-locale";
 
-export function I18nProvider({ children }: { children: ReactNode }) {
-  const [locale, setLocaleState] = useState<Locale>("en");
+export function I18nProvider({
+  children,
+  initialLocale,
+}: {
+  children: ReactNode;
+  initialLocale?: Locale;
+}) {
+  const [locale, setLocaleState] = useState<Locale>(() => {
+    if (initialLocale !== undefined) return initialLocale;
 
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY) as Locale | null;
-      if (saved && LOCALES.includes(saved)) {
-        setLocaleState(saved);
-      }
-    } catch (err) {
-      console.warn("Failed to load locale from localStorage:", err);
+    if (typeof window !== "undefined") {
+      const stored = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem("locale");
+      if (stored && LOCALES.includes(stored as Locale)) return stored as Locale;
+    }
+
+    return "en";
+  });
+
+  const handleSetLocale = useCallback((l: Locale) => {
+    setLocaleState(l);
+    if (typeof window !== "undefined") {
+      localStorage.setItem(STORAGE_KEY, l);
+      localStorage.setItem("locale", l);
+      const expirationDate = new Date();
+      expirationDate.setFullYear(expirationDate.getFullYear() + 1);
+      document.cookie = `NEXT_LOCALE=${l}; path=/; expires=${expirationDate.toUTCString()}; SameSite=Strict`;
     }
   }, []);
 
-  // The provider computes `dir` for context consumers, but the document itself
-  // also has to carry it: logical CSS properties (start/end) and the browser's
-  // own bidi algorithm key off the element's dir attribute, not off React
-  // context. Without this an RTL locale renders left-to-right.
   useEffect(() => {
-    document.documentElement.dir = getDir(locale);
+    const dir = getDir(locale);
+    if (typeof document === "undefined") return;
+    document.documentElement.dir = dir;
     document.documentElement.lang = LOCALE_TAGS[locale];
   }, [locale]);
-
-  const setLocale = useCallback((newLocale: Locale) => {
-    setLocaleState(newLocale);
-    try {
-      localStorage.setItem(STORAGE_KEY, newLocale);
-    } catch (err) {
-      console.warn("Failed to save locale to localStorage:", err);
-    }
-  }, []);
 
   const t = useMemo(() => createT(locale), [locale]);
 
   const value: I18nContextValue = {
     locale,
-    setLocale,
+    setLocale: handleSetLocale,
     localeTag: LOCALE_TAGS[locale],
     dir: getDir(locale),
     t,

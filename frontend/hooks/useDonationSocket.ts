@@ -1,8 +1,4 @@
-<<<<<<< HEAD
 import { useEffect, useRef, useState } from "react";
-=======
-import { useEffect, useState, useRef } from "react";
->>>>>>> 5c38d31 (Implement reconnect-triggered donation backfill for issue #134)
 import { getSocket } from "@/lib/socket";
 
 export interface DonationSocketPayload {
