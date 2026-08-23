@@ -148,20 +148,12 @@ func (f *GPUHardwareFilter) Filter(
 	return framework.NewStatus(framework.Success)
 }
 
-func isGPUResource(name string) bool {
-	switch corev1.ResourceName(name) {
-	case "nvidia.com/gpu", "amd.com/gpu", "google.com/tpu", "intel.com/gpu", "gpu":
-		return true
-	}
-	return false
-}
-
 func computeGPUCapacity(nodeInfo *framework.NodeInfo, hw hardware.NodeHardware) (totalGPUs int64, allocatedGPUs int64, freeGPUs int64) {
 	totalGPUs = hw.GPUCount
 
 	if node := nodeInfo.Node(); node != nil && totalGPUs == 0 {
 		for resName, quant := range node.Status.Allocatable {
-			if isGPUResource(string(resName)) {
+			if hardware.IsAcceleratorResource(resName) {
 				totalGPUs += quant.Value()
 			}
 		}
@@ -170,7 +162,7 @@ func computeGPUCapacity(nodeInfo *framework.NodeInfo, hw hardware.NodeHardware) 
 	if nodeInfo.Allocatable != nil {
 		var scalarTotal int64
 		for resName, val := range nodeInfo.Allocatable.ScalarResources {
-			if isGPUResource(string(resName)) {
+			if hardware.IsAcceleratorResource(resName) {
 				scalarTotal += val
 			}
 		}
@@ -181,7 +173,7 @@ func computeGPUCapacity(nodeInfo *framework.NodeInfo, hw hardware.NodeHardware) 
 
 	if nodeInfo.Requested != nil {
 		for resName, val := range nodeInfo.Requested.ScalarResources {
-			if isGPUResource(string(resName)) {
+			if hardware.IsAcceleratorResource(resName) {
 				allocatedGPUs += val
 			}
 		}
@@ -209,14 +201,14 @@ func podRequiresGPU(pod *corev1.Pod, reqs hardware.PodHardwareReqs) bool {
 	}
 	for _, c := range pod.Spec.Containers {
 		for resName, quant := range c.Resources.Requests {
-			if isGPUResource(string(resName)) && quant.Value() > 0 {
+			if hardware.IsAcceleratorResource(resName) && quant.Value() > 0 {
 				return true
 			}
 		}
 	}
 	for _, c := range pod.Spec.InitContainers {
 		for resName, quant := range c.Resources.Requests {
-			if isGPUResource(string(resName)) && quant.Value() > 0 {
+			if hardware.IsAcceleratorResource(resName) && quant.Value() > 0 {
 				return true
 			}
 		}

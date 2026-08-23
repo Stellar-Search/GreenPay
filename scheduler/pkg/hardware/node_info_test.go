@@ -395,3 +395,90 @@ func TestParsePodHardwareReqs_InvalidBinPackWeight_DefaultsTo1(t *testing.T) {
 		t.Errorf("Invalid BinPackWeight: got %f, want 1.0", reqs.BinPackWeight)
 	}
 }
+
+// ── Accelerator resource predicate (Issue #331) ──────────────────────────────
+
+func TestIsAcceleratorResource(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"nvidia.com/gpu", true},
+		{"amd.com/gpu", true},
+		{"intel.com/gpu", true},
+		{"google.com/tpu", true},
+		{"gpu", true},
+		{"tpu", true},
+		{"gpu.example.com", true},
+		{"NVIDIA.COM/GPU", true}, // case-insensitive
+		{"example.com/fpga", false},
+		{"memory", false},
+		{"cpu", false},
+		{"ephemeral-storage", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := hardware.IsAcceleratorResource(corev1.ResourceName(tc.name)); got != tc.want {
+			t.Errorf("IsAcceleratorResource(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestParsePodHardwareReqs_TPUResourceRequestIsCounted(t *testing.T) {
+	// google.com/tpu is an accelerator resource: a TPU pod must produce a
+	// non-zero GPUCountReq so preemption and NUMA scoring treat it like any
+	// other accelerator workload. This regressed when the accelerator
+	// predicate only matched "*/gpu" resources.
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "tpu-job",
+			Namespace: "default",
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "worker",
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceName("google.com/tpu"): resource.MustParse("4"),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	reqs := hardware.ParsePodHardwareReqs(pod)
+	if reqs.GPUCountReq != 4 {
+		t.Errorf("TPU pod GPUCountReq: got %d, want 4", reqs.GPUCountReq)
+	}
+	if !reqs.NeedsGPU() {
+		t.Fatal("expected TPU resource request to require an accelerator")
+	}
+}
+
+func TestParsePodHardwareReqs_BareGPUResourceIsCounted(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "gpu-job",
+			Namespace: "default",
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "worker",
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceName("gpu"): resource.MustParse("8"),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	reqs := hardware.ParsePodHardwareReqs(pod)
+	if reqs.GPUCountReq != 8 {
+		t.Errorf("bare gpu resource GPUCountReq: got %d, want 8", reqs.GPUCountReq)
+	}
+}

@@ -913,6 +913,134 @@ func parseResourceQuantity(val string) resource.Quantity {
 	return resource.MustParse(val)
 }
 
+// ── Issue #331 regression tests ───────────────────────────────────────────
+// makePodWithAcceleratorRequest creates a pod whose single container requests
+// `count` of the named accelerator resource (e.g. nvidia.com/gpu or
+// google.com/tpu), with the given priority and annotations.
+func makePodWithAcceleratorRequest(
+	name string,
+	priority int32,
+	resourceName corev1.ResourceName,
+	count int64,
+	annots map[string]string,
+) *corev1.Pod {
+	pod := makePodWithPriority(name, priority, annots)
+	pod.Spec.Containers = []corev1.Container{
+		{
+			Name: "worker",
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					resourceName: resource.MustParse(fmt.Sprintf("%d", count)),
+				},
+			},
+		},
+	}
+	return pod
+}
+
+// An 8-GPU pod must require 8 GPUs of freed capacity during preemption — the
+// count comes from the container's resource requests, not from a node-label
+// key (issue #331).
+func TestPreemption_EightGPUPodRequiresEightGPUsFreed(t *testing.T) {
+	node := makeNode(map[string]string{
+		hardware.LabelGPUVendor:  "nvidia",
+		hardware.LabelGPUModel:   "a100",
+		hardware.LabelGPUVRAMMiB: "81920",
+		hardware.LabelGPUCount:   "8",
+	})
+	node.Name = "gpu-node-8"
+
+	// Eight victims, each holding one GPU.
+	var victims []*corev1.Pod
+	for i := 0; i < 8; i++ {
+		victims = append(victims, makePodWithAcceleratorRequest(
+			fmt.Sprintf("victim-%d", i), 100, "nvidia.com/gpu", 1, nil,
+		))
+	}
+	ni := makeNodeInfoWithPods(node, victims...)
+	p := newPreemptionPlugin(t, []*framework.NodeInfo{ni})
+
+	preemptor := makePodWithAcceleratorRequest(
+		"training-job", 1000, "nvidia.com/gpu", 8, map[string]string{
+			hardware.AnnotWorkloadType: hardware.WorkloadMLTraining,
+		})
+
+	if got := plugins.GetPodRequestedGPUCount(preemptor); got != 8 {
+		t.Fatalf("GetPodRequestedGPUCount: got %d, want 8", got)
+	}
+
+	result, status := p.PostFilter(context.Background(), &framework.CycleState{}, preemptor, framework.NodeToStatusMap{})
+	if !status.IsSuccess() {
+		t.Fatalf("expected Success when 8 GPUs can be freed, got: %v", status.Message())
+	}
+	if result == nil || result.NominatedNodeName != "gpu-node-8" {
+		t.Errorf("expected nominated node gpu-node-8, got: %v", result)
+	}
+}
+
+// The same 8-GPU preemptor must NOT be satisfied by a node whose victims only
+// free a single GPU: the freed capacity is compared against the requested 8.
+func TestPreemption_EightGPUPodRefusesInsufficientFreedCapacity(t *testing.T) {
+	node := makeNode(map[string]string{
+		hardware.LabelGPUVendor:  "nvidia",
+		hardware.LabelGPUModel:   "a100",
+		hardware.LabelGPUVRAMMiB: "81920",
+		hardware.LabelGPUCount:   "8",
+	})
+	node.Name = "gpu-node-1-free"
+
+	victim := makePodWithAcceleratorRequest("batch-job", 100, "nvidia.com/gpu", 1, nil)
+	ni := makeNodeInfoWithPods(node, victim)
+	p := newPreemptionPlugin(t, []*framework.NodeInfo{ni})
+
+	preemptor := makePodWithAcceleratorRequest(
+		"training-job", 1000, "nvidia.com/gpu", 8, map[string]string{
+			hardware.AnnotWorkloadType: hardware.WorkloadMLTraining,
+		})
+
+	result, status := p.PostFilter(context.Background(), &framework.CycleState{}, preemptor, framework.NodeToStatusMap{})
+	if status.Code() != framework.Unschedulable {
+		t.Fatalf("expected Unschedulable when only 1 of 8 GPUs can be freed, got: %v", status.Code())
+	}
+	if result != nil {
+		t.Errorf("expected nil result, got nominated node: %v", result.NominatedNodeName)
+	}
+}
+
+// A TPU pod (google.com/tpu resource request) must be counted as an
+// accelerator workload for preemption. Before the unified predicate this pod
+// reported zero requested accelerators and preemption bailed out early.
+func TestPreemption_TPUPodTriggersPreemption(t *testing.T) {
+	node := makeNode(map[string]string{
+		hardware.LabelGPUVendor: "google",
+		hardware.LabelGPUModel:  "tpu-v4",
+		hardware.LabelGPUCount:  "4",
+	})
+	node.Name = "tpu-node"
+
+	victim := makePodWithAcceleratorRequest("tpu-batch", 100, "google.com/tpu", 4, nil)
+	ni := makeNodeInfoWithPods(node, victim)
+	p := newPreemptionPlugin(t, []*framework.NodeInfo{ni})
+
+	preemptor := makePodWithAcceleratorRequest(
+		"tpu-training", 1000, "google.com/tpu", 4, map[string]string{
+			hardware.AnnotWorkloadType: hardware.WorkloadMLTraining,
+		})
+
+	if got := plugins.GetPodRequestedGPUCount(preemptor); got != 4 {
+		t.Fatalf("GetPodRequestedGPUCount for TPU pod: got %d, want 4", got)
+	}
+
+	result, status := p.PostFilter(context.Background(), &framework.CycleState{}, preemptor, framework.NodeToStatusMap{})
+	if !status.IsSuccess() {
+		t.Fatalf("expected Success for TPU preemption, got: %v", status.Message())
+	}
+	if result == nil || result.NominatedNodeName != "tpu-node" {
+		t.Errorf("expected nominated node tpu-node, got: %v", result)
+	}
+}
+
+// ── Upstream victim-selection regression tests (merged from main) ───────────
 func TestPreemption_VendorRejected_NeverCandidate(t *testing.T) {
 	node := makeNode(map[string]string{
 		hardware.LabelGPUVendor:  "amd",
@@ -1048,5 +1176,6 @@ func TestPreemption_FilterChainRevalidation_FailsIfNodeStillInvalid(t *testing.T
 	}
 	if result != nil {
 		t.Errorf("expected nil result when filter chain re-validation fails, got: %v", result.NominatedNodeName)
+
 	}
 }

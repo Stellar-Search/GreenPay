@@ -308,11 +308,12 @@ class ChangeProjectStatusCommandHandler {
     }
 
     const projectId = command.payload.projectId;
+    const previousStatus = project.state.status;
     const statusChangeEvent = new (require("./events").ProjectStatusChangedEvent)({
       aggregateId: projectId,
       version: await getNextVersion("Project", projectId, db),
       actor: command.actor,
-      previousStatus: project.state.status,
+      previousStatus,
       newStatus: command.payload.status,
       reason: command.payload.reason,
     });
@@ -326,7 +327,7 @@ class ChangeProjectStatusCommandHandler {
       [row.event_id, row.stream_id, row.aggregate_type, row.aggregate_id, row.event_type, row.version, row.aggregate_version, JSON.stringify(row.payload), row.actor, row.occurred_at, row.created_at]
     );
 
-    return { events: [statusChangeEvent], data: { previousStatus: project.state.status, newStatus: command.payload.status } };
+    return { events: [statusChangeEvent], data: { previousStatus, newStatus: command.payload.status } };
   }
 }
 
