@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -261,6 +262,278 @@ func TestPreemption_HigherPriorityVictimCannotBePreempted(t *testing.T) {
 	}
 	if result != nil {
 		t.Errorf("expected nil result, got: %v", result)
+	}
+}
+
+func TestPreemption_PreemptorWithoutGPUorVRAM_DoesNotTriggerPreemption(t *testing.T) {
+	node := makeNode(map[string]string{
+		hardware.LabelGPUVendor:  "nvidia",
+		hardware.LabelGPUModel:   "a100",
+		hardware.LabelGPUVRAMMiB: "81920",
+		hardware.LabelGPUCount:   "8",
+	})
+	node.Name = "gpu-node-1"
+
+	// Running lower-priority victim
+	victim := makePodWithPriority("batch-job", 100, map[string]string{
+		hardware.AnnotWorkloadType:  hardware.WorkloadMLBatch,
+		hardware.AnnotGPUVRAMMinMiB: "40960",
+	})
+
+	ni := makeNodeInfoWithPods(node, victim)
+	p := newPreemptionPlugin(t, []*framework.NodeInfo{ni})
+
+	// Preemptor has high priority (1000) but requires NO GPU and NO VRAM (e.g. CPU-only API pod)
+	preemptor := makePodWithPriority("cpu-api-job", 1000, map[string]string{
+		hardware.AnnotWorkloadType: hardware.WorkloadAPI,
+	})
+
+	result, status := p.PostFilter(context.Background(), &framework.CycleState{}, preemptor, framework.NodeToStatusMap{})
+	if status.Code() != framework.Unschedulable {
+		t.Errorf("expected Unschedulable when preemptor requires no GPU/VRAM, got: %v", status.Code())
+	}
+	if result != nil {
+		t.Errorf("expected nil result for non-GPU preemptor, got: %v", result.NominatedNodeName)
+	}
+}
+
+func TestPreemption_PreemptionPolicyNever_DoesNotPreempt(t *testing.T) {
+	node := makeNode(map[string]string{
+		hardware.LabelGPUVendor:  "nvidia",
+		hardware.LabelGPUModel:   "a100",
+		hardware.LabelGPUVRAMMiB: "81920",
+		hardware.LabelGPUCount:   "8",
+	})
+	node.Name = "gpu-node-1"
+
+	victim := makePodWithPriority("batch-job", 100, map[string]string{
+		hardware.AnnotWorkloadType:  hardware.WorkloadMLBatch,
+		hardware.AnnotGPUVRAMMinMiB: "40960",
+	})
+
+	ni := makeNodeInfoWithPods(node, victim)
+	p := newPreemptionPlugin(t, []*framework.NodeInfo{ni})
+
+	// Preemptor with high priority (1000) requiring 40GiB VRAM, but PreemptionPolicy: Never
+	neverPolicy := corev1.PreemptNever
+	preemptor := makePodWithPriority("training-job", 1000, map[string]string{
+		hardware.AnnotWorkloadType:  hardware.WorkloadMLTraining,
+		hardware.AnnotGPUVRAMMinMiB: "40960",
+	})
+	preemptor.Spec.PreemptionPolicy = &neverPolicy
+
+	result, status := p.PostFilter(context.Background(), &framework.CycleState{}, preemptor, framework.NodeToStatusMap{})
+	if status.Code() != framework.Unschedulable {
+		t.Errorf("expected Unschedulable when PreemptionPolicy is Never, got: %v", status.Code())
+	}
+	if result != nil {
+		t.Errorf("expected nil result for PreemptionPolicy Never, got: %v", result.NominatedNodeName)
+	}
+}
+
+func TestPreemption_NonEvictablePods_DaemonSetMirrorTerminating_Excluded(t *testing.T) {
+	node := makeNode(map[string]string{
+		hardware.LabelGPUVendor:  "nvidia",
+		hardware.LabelGPUModel:   "a100",
+		hardware.LabelGPUVRAMMiB: "81920",
+		hardware.LabelGPUCount:   "8",
+	})
+	node.Name = "gpu-node-1"
+
+	// 1. DaemonSet pod
+	dsPod := makePodWithPriority("ds-pod", 100, map[string]string{
+		hardware.AnnotGPUVRAMMinMiB: "40960",
+	})
+	dsPod.OwnerReferences = []metav1.OwnerReference{
+		{Kind: "DaemonSet", Name: "gpu-ds"},
+	}
+
+	// 2. Mirror pod
+	mirrorPod := makePodWithPriority("mirror-pod", 100, map[string]string{
+		corev1.MirrorPodAnnotationKey: "hash-mirror",
+		hardware.AnnotGPUVRAMMinMiB:   "40960",
+	})
+
+	// 3. Terminating pod
+	now := metav1.NewTime(time.Now())
+	terminatingPod := makePodWithPriority("terminating-pod", 100, map[string]string{
+		hardware.AnnotGPUVRAMMinMiB: "40960",
+	})
+	terminatingPod.DeletionTimestamp = &now
+
+	ni := makeNodeInfoWithPods(node, dsPod, mirrorPod, terminatingPod)
+	p := newPreemptionPlugin(t, []*framework.NodeInfo{ni})
+
+	preemptor := makePodWithPriority("training-job", 1000, map[string]string{
+		hardware.AnnotWorkloadType:  hardware.WorkloadMLTraining,
+		hardware.AnnotGPUVRAMMinMiB: "40960",
+	})
+
+	result, status := p.PostFilter(context.Background(), &framework.CycleState{}, preemptor, framework.NodeToStatusMap{})
+	if status.Code() != framework.Unschedulable {
+		t.Errorf("expected Unschedulable when all candidates are non-evictable, got: %v", status.Code())
+	}
+	if result != nil {
+		t.Errorf("expected nil result when only non-evictable candidates exist, got: %v", result.NominatedNodeName)
+	}
+}
+
+func TestPreemption_VictimFreeingZeroNeededResources_NeverSelected(t *testing.T) {
+	node := makeNode(map[string]string{
+		hardware.LabelGPUVendor:  "nvidia",
+		hardware.LabelGPUModel:   "a100",
+		hardware.LabelGPUVRAMMiB: "81920",
+		hardware.LabelGPUCount:   "8",
+	})
+	node.Name = "gpu-node-1"
+
+	// Non-GPU pod freeing 0 GPU/VRAM
+	nonGPUPod := makePodWithPriority("api-pod", 50, map[string]string{
+		hardware.AnnotWorkloadType: hardware.WorkloadAPI,
+	})
+
+	// GPU pod freeing 40GiB VRAM
+	gpuPod := makePodWithPriority("batch-job", 100, map[string]string{
+		hardware.AnnotWorkloadType:  hardware.WorkloadMLBatch,
+		hardware.AnnotGPUVRAMMinMiB: "40960",
+	})
+
+	ni := makeNodeInfoWithPods(node, nonGPUPod, gpuPod)
+	p := newPreemptionPlugin(t, []*framework.NodeInfo{ni})
+
+	preemptor := makePodWithPriority("training-job", 1000, map[string]string{
+		hardware.AnnotWorkloadType:  hardware.WorkloadMLTraining,
+		hardware.AnnotGPUVRAMMinMiB: "40960",
+	})
+
+	result, status := p.PostFilter(context.Background(), &framework.CycleState{}, preemptor, framework.NodeToStatusMap{})
+	if !status.IsSuccess() {
+		t.Fatalf("expected Success status, got: %v", status.Message())
+	}
+	if result == nil || result.NominatedNodeName != "gpu-node-1" {
+		t.Fatalf("expected nominated node gpu-node-1, got: %v", result)
+	}
+
+	// Test when ONLY the non-GPU pod exists: preemption should fail (Unschedulable)
+	niOnlyNonGPU := makeNodeInfoWithPods(node, nonGPUPod)
+	pOnlyNonGPU := newPreemptionPlugin(t, []*framework.NodeInfo{niOnlyNonGPU})
+	result2, status2 := pOnlyNonGPU.PostFilter(context.Background(), &framework.CycleState{}, preemptor, framework.NodeToStatusMap{})
+	if status2.Code() != framework.Unschedulable {
+		t.Errorf("expected Unschedulable when candidate frees 0 required resources, got: %v", status2.Code())
+	}
+	if result2 != nil {
+		t.Errorf("expected nil result when candidate frees 0 required resources, got: %v", result2.NominatedNodeName)
+	}
+}
+
+func TestPreemption_DeterministicCost_TieOnCountDifferOnPriority(t *testing.T) {
+	node1 := makeNode(map[string]string{
+		hardware.LabelGPUVendor:  "nvidia",
+		hardware.LabelGPUModel:   "a100",
+		hardware.LabelGPUVRAMMiB: "81920",
+		hardware.LabelGPUCount:   "8",
+	})
+	node1.Name = "gpu-node-higher-victim-priority"
+
+	node2 := makeNode(map[string]string{
+		hardware.LabelGPUVendor:  "nvidia",
+		hardware.LabelGPUModel:   "a100",
+		hardware.LabelGPUVRAMMiB: "81920",
+		hardware.LabelGPUCount:   "8",
+	})
+	node2.Name = "gpu-node-lower-victim-priority"
+
+	// Node 1 has 1 victim with priority 200
+	victimNode1 := makePodWithPriority("victim-200", 200, map[string]string{
+		hardware.AnnotWorkloadType:  hardware.WorkloadMLBatch,
+		hardware.AnnotGPUVRAMMinMiB: "40960",
+	})
+	ni1 := makeNodeInfoWithPods(node1, victimNode1)
+
+	// Node 2 has 1 victim with priority 100
+	victimNode2 := makePodWithPriority("victim-100", 100, map[string]string{
+		hardware.AnnotWorkloadType:  hardware.WorkloadMLBatch,
+		hardware.AnnotGPUVRAMMinMiB: "40960",
+	})
+	ni2 := makeNodeInfoWithPods(node2, victimNode2)
+
+	p := newPreemptionPlugin(t, []*framework.NodeInfo{ni1, ni2})
+
+	preemptor := makePodWithPriority("training-job", 1000, map[string]string{
+		hardware.AnnotWorkloadType:  hardware.WorkloadMLTraining,
+		hardware.AnnotGPUVRAMMinMiB: "40960",
+	})
+
+	result, status := p.PostFilter(context.Background(), &framework.CycleState{}, preemptor, framework.NodeToStatusMap{})
+	if !status.IsSuccess() {
+		t.Fatalf("expected Success status, got: %v", status.Message())
+	}
+	// Both nodes tie on victim count (1 victim each), but node2 has lower victim priority (100 < 200)
+	if result == nil || result.NominatedNodeName != "gpu-node-lower-victim-priority" {
+		t.Errorf("expected nominated node %q (lower victim priority), got: %v", "gpu-node-lower-victim-priority", result)
+	}
+}
+
+func TestPreemption_DeterministicCost_TieOnCountAndMaxPriorityDifferOnSum(t *testing.T) {
+	node1 := makeNode(map[string]string{
+		hardware.LabelGPUVendor:  "nvidia",
+		hardware.LabelGPUModel:   "a100",
+		hardware.LabelGPUVRAMMiB: "81920",
+		hardware.LabelGPUCount:   "8",
+	})
+	node1.Name = "gpu-node-1"
+
+	node2 := makeNode(map[string]string{
+		hardware.LabelGPUVendor:  "nvidia",
+		hardware.LabelGPUModel:   "a100",
+		hardware.LabelGPUVRAMMiB: "81920",
+		hardware.LabelGPUCount:   "8",
+	})
+	node2.Name = "gpu-node-2"
+
+	// Node 1: victims [100, 80] -> max 100, sum 180, count 2
+	v1a := makePodWithPriority("v1a", 100, map[string]string{hardware.AnnotGPUVRAMMinMiB: "20480"})
+	v1b := makePodWithPriority("v1b", 80, map[string]string{hardware.AnnotGPUVRAMMinMiB: "20480"})
+	ni1 := makeNodeInfoWithPods(node1, v1a, v1b)
+
+	// Node 2: victims [100, 20] -> max 100, sum 120, count 2
+	v2a := makePodWithPriority("v2a", 100, map[string]string{hardware.AnnotGPUVRAMMinMiB: "20480"})
+	v2b := makePodWithPriority("v2b", 20, map[string]string{hardware.AnnotGPUVRAMMinMiB: "20480"})
+	ni2 := makeNodeInfoWithPods(node2, v2a, v2b)
+
+	p := newPreemptionPlugin(t, []*framework.NodeInfo{ni1, ni2})
+
+	preemptor := makePodWithPriority("training-job", 1000, map[string]string{
+		hardware.AnnotWorkloadType:  hardware.WorkloadMLTraining,
+		hardware.AnnotGPUVRAMMinMiB: "40960",
+	})
+
+	result, status := p.PostFilter(context.Background(), &framework.CycleState{}, preemptor, framework.NodeToStatusMap{})
+	if !status.IsSuccess() {
+		t.Fatalf("expected Success status, got: %v", status.Message())
+	}
+	// Node 2 has lower sum of priorities (120 < 180)
+	if result == nil || result.NominatedNodeName != "gpu-node-2" {
+		t.Errorf("expected nominated node %q (lower sum of victim priorities), got: %v", "gpu-node-2", result)
+	}
+}
+
+func TestPreemption_GetPodPriority_NilPriorityReturnsZero(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "nil-priority-pod",
+			Annotations: map[string]string{
+				hardware.AnnotWorkloadType: hardware.WorkloadMLTraining,
+			},
+		},
+		Spec: corev1.PodSpec{
+			Priority: nil,
+		},
+	}
+
+	priority := plugins.GetPodPriority(pod)
+	if priority != 0 {
+		t.Errorf("GetPodPriority for pod with nil priority: got %d, want 0", priority)
 	}
 }
 

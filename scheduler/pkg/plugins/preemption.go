@@ -2,7 +2,7 @@ package plugins
 
 import (
 	"context"
-	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -36,47 +36,105 @@ func NewMLWorkloadPreemption(_ context.Context, _ runtime.Object, handle framewo
 	return &MLWorkloadPreemption{handle: handle}, nil
 }
 
-// GetPodPriority returns the integer priority for a pod.
+// GetPodPriority returns the integer priority for a pod. If Priority is unset, defaults to 0.
 func GetPodPriority(pod *corev1.Pod) int32 {
-	if pod.Spec.Priority != nil {
+	if pod != nil && pod.Spec.Priority != nil {
 		return *pod.Spec.Priority
 	}
-	reqs := hardware.ParsePodHardwareReqs(pod)
-	switch reqs.WorkloadType {
-	case hardware.WorkloadMLTraining:
-		return 1000
-	case hardware.WorkloadMLInference:
-		return 500
-	case hardware.WorkloadMLBatch:
-		return 300
-	case hardware.WorkloadAPI, hardware.WorkloadDB:
-		return 100
-	default:
-		return 0
-	}
+	return 0
 }
 
 // GetPodRequestedVRAM returns the per-pod required VRAM in MiB.
 func GetPodRequestedVRAM(pod *corev1.Pod) int64 {
+	if pod == nil {
+		return 0
+	}
 	reqs := hardware.ParsePodHardwareReqs(pod)
 	return reqs.GPUVRAMMinMiB
 }
 
 // GetPodRequestedGPUCount returns the number of GPUs requested by a pod.
 func GetPodRequestedGPUCount(pod *corev1.Pod) int64 {
-	if pod.Annotations != nil {
-		if val, ok := pod.Annotations[hardware.LabelGPUCount]; ok {
-			var count int64
-			if _, err := fmt.Sscanf(val, "%d", &count); err == nil && count > 0 {
-				return count
-			}
-		}
+	if pod == nil {
+		return 0
 	}
 	reqs := hardware.ParsePodHardwareReqs(pod)
+	if reqs.GPUCountReq > 0 {
+		return reqs.GPUCountReq
+	}
 	if reqs.NeedsGPU() {
 		return 1
 	}
 	return 0
+}
+
+// isPodEvictable checks whether a pod is eligible for preemption eviction.
+// DaemonSet pods, mirror pods, and terminating pods are non-evictable.
+func isPodEvictable(pod *corev1.Pod) bool {
+	if pod == nil {
+		return false
+	}
+	if pod.DeletionTimestamp != nil {
+		return false
+	}
+	if pod.Annotations != nil && pod.Annotations[corev1.MirrorPodAnnotationKey] != "" {
+		return false
+	}
+	for _, ref := range pod.OwnerReferences {
+		if ref.Kind == "DaemonSet" {
+			return false
+		}
+	}
+	return true
+}
+
+// nodePreemptionCost models the disruption cost of preemption on a candidate node.
+// Cost evaluation order:
+// 1. HighestPriority: minimize the maximum victim priority disrupted.
+// 2. SumPriorities: minimize the total sum of victim priorities disrupted.
+// 3. VictimCount: minimize the number of victims disrupted.
+// 4. NodeName: deterministic lexicographical tie-break.
+type nodePreemptionCost struct {
+	nodeName        string
+	victims         []*corev1.Pod
+	highestPriority int32
+	sumPriorities   int64
+	victimCount     int
+}
+
+func computeNodePreemptionCost(nodeName string, victims []*corev1.Pod) nodePreemptionCost {
+	var highestPriority int32 = math.MinInt32
+	var sumPriorities int64
+	for _, v := range victims {
+		p := GetPodPriority(v)
+		if p > highestPriority {
+			highestPriority = p
+		}
+		sumPriorities += int64(p)
+	}
+	if len(victims) == 0 {
+		highestPriority = 0
+	}
+	return nodePreemptionCost{
+		nodeName:        nodeName,
+		victims:         victims,
+		highestPriority: highestPriority,
+		sumPriorities:   sumPriorities,
+		victimCount:     len(victims),
+	}
+}
+
+func (c nodePreemptionCost) betterThan(other nodePreemptionCost) bool {
+	if c.highestPriority != other.highestPriority {
+		return c.highestPriority < other.highestPriority
+	}
+	if c.sumPriorities != other.sumPriorities {
+		return c.sumPriorities < other.sumPriorities
+	}
+	if c.victimCount != other.victimCount {
+		return c.victimCount < other.victimCount
+	}
+	return c.nodeName < other.nodeName
 }
 
 // PostFilter selects preemption victims on candidate nodes when a pod fails filtering.
@@ -93,15 +151,28 @@ func (p *MLWorkloadPreemption) PostFilter(
 		return nil, framework.NewStatus(framework.Unschedulable, "scheduler handle or snapshot unavailable")
 	}
 
+	// 1. Pods with PreemptionPolicy: Never must not preempt
+	if pod.Spec.PreemptionPolicy != nil && *pod.Spec.PreemptionPolicy == corev1.PreemptNever {
+		logger.V(4).Info("MLWorkloadPreemption: pod has PreemptionPolicy Never", "pod", klog.KObj(pod))
+		return nil, framework.NewStatus(framework.Unschedulable, "pod has PreemptionPolicy Never")
+	}
+
+	// 2. Preemptors requesting no GPU or VRAM do not trigger preemption on GPU grounds
+	reqs := hardware.ParsePodHardwareReqs(pod)
+	targetVRAM := reqs.GPUVRAMMinMiB
+	targetGPUs := GetPodRequestedGPUCount(pod)
+
+	if targetVRAM == 0 && targetGPUs == 0 {
+		logger.V(4).Info("MLWorkloadPreemption: pod requires no GPU/VRAM resources; skipping preemption", "pod", klog.KObj(pod))
+		return nil, framework.NewStatus(framework.Unschedulable, "pod does not require GPU resources for ML preemption")
+	}
+
 	nodeInfos, err := p.handle.SnapshotSharedLister().NodeInfos().List()
 	if err != nil || len(nodeInfos) == 0 {
 		return nil, framework.NewStatus(framework.Unschedulable, "no nodes available in snapshot")
 	}
 
 	preemptorPriority := GetPodPriority(pod)
-	reqs := hardware.ParsePodHardwareReqs(pod)
-	targetVRAM := reqs.GPUVRAMMinMiB
-	targetGPUs := GetPodRequestedGPUCount(pod)
 
 	var pdbs []*policyv1.PodDisruptionBudget
 	if p.handle != nil && p.handle.SharedInformerFactory() != nil {
@@ -116,9 +187,7 @@ func (p *MLWorkloadPreemption) PostFilter(
 		}
 	}
 
-	var bestNode string
-	minVictimCount := int(^uint(0) >> 1)
-
+	var bestCost *nodePreemptionCost
 	filterPlugin := &GPUHardwareFilter{}
 
 	for _, nodeInfo := range nodeInfos {
@@ -127,7 +196,7 @@ func (p *MLWorkloadPreemption) PostFilter(
 			continue
 		}
 
-		// 1. Check if node passes basic hardware constraints
+		// Check if node passes basic hardware constraints
 		filterStatus := filterPlugin.Filter(ctx, state, pod, nodeInfo)
 		if filterStatus != nil && filterStatus.Code() == framework.Unschedulable {
 			if isImmutableHardwareMismatch(filterStatus.Message()) {
@@ -136,14 +205,24 @@ func (p *MLWorkloadPreemption) PostFilter(
 			}
 		}
 
-		// 2. Find lower-priority victim pods on this node
+		// Find lower-priority, evictable victim candidates that free needed resources
 		var candidateVictims []*framework.PodInfo
 		for _, pInfo := range nodeInfo.Pods {
 			if pInfo == nil || pInfo.Pod == nil {
 				continue
 			}
 			victimPod := pInfo.Pod
-			if GetPodPriority(victimPod) < preemptorPriority {
+			if !isPodEvictable(victimPod) {
+				continue
+			}
+			if GetPodPriority(victimPod) >= preemptorPriority {
+				continue
+			}
+
+			vFreedVRAM := GetPodRequestedVRAM(victimPod)
+			vFreedGPUs := GetPodRequestedGPUCount(victimPod)
+			// A victim that frees none of the needed resources is never selected
+			if (targetGPUs > 0 && vFreedGPUs > 0) || (targetVRAM > 0 && vFreedVRAM > 0) {
 				candidateVictims = append(candidateVictims, pInfo)
 			}
 		}
@@ -152,7 +231,7 @@ func (p *MLWorkloadPreemption) PostFilter(
 			continue
 		}
 
-		// Sort candidate victims: lowest priority first
+		// Sort candidate victims: lowest priority first, tie-break by name for determinism
 		sort.Slice(candidateVictims, func(i, j int) bool {
 			pi := GetPodPriority(candidateVictims[i].Pod)
 			pj := GetPodPriority(candidateVictims[j].Pod)
@@ -162,7 +241,7 @@ func (p *MLWorkloadPreemption) PostFilter(
 			return candidateVictims[i].Pod.Name < candidateVictims[j].Pod.Name
 		})
 
-		// 3. Select victims required to meet GPU/VRAM demands
+		// Select victims required to meet GPU/VRAM demands
 		var selectedVictims []*corev1.Pod
 		var freedVRAM int64
 		var freedGPUs int64
@@ -175,9 +254,15 @@ func (p *MLWorkloadPreemption) PostFilter(
 				continue
 			}
 
+			vFreedVRAM := GetPodRequestedVRAM(vPod)
+			vFreedGPUs := GetPodRequestedGPUCount(vPod)
+			if (targetGPUs > 0 && vFreedGPUs == 0) && (targetVRAM > 0 && vFreedVRAM == 0) {
+				continue
+			}
+
 			selectedVictims = append(selectedVictims, vPod)
-			freedVRAM += GetPodRequestedVRAM(vPod)
-			freedGPUs += GetPodRequestedGPUCount(vPod)
+			freedVRAM += vFreedVRAM
+			freedGPUs += vFreedGPUs
 
 			if (targetVRAM == 0 || freedVRAM >= targetVRAM) && (targetGPUs == 0 || freedGPUs >= targetGPUs) {
 				break
@@ -185,20 +270,20 @@ func (p *MLWorkloadPreemption) PostFilter(
 		}
 
 		// Verify sufficient capacity freed
-		if (targetVRAM > 0 && freedVRAM < targetVRAM) || (targetGPUs > 0 && freedGPUs < targetGPUs) {
+		if (targetVRAM > 0 && freedVRAM < targetVRAM) || (targetGPUs > 0 && freedGPUs < targetGPUs) || len(selectedVictims) == 0 {
 			logger.V(4).Info("MLWorkloadPreemption: insufficient freed resources on node even after victim selection", "node", node.Name, "freedVRAM", freedVRAM, "targetVRAM", targetVRAM, "freedGPUs", freedGPUs, "targetGPUs", targetGPUs)
 			continue
 		}
 
-		if len(selectedVictims) > 0 && len(selectedVictims) < minVictimCount {
-			minVictimCount = len(selectedVictims)
-			bestNode = node.Name
+		cost := computeNodePreemptionCost(node.Name, selectedVictims)
+		if bestCost == nil || cost.betterThan(*bestCost) {
+			bestCost = &cost
 		}
 	}
 
-	if bestNode != "" {
-		logger.V(3).Info("MLWorkloadPreemption: found node for preemption", "pod", klog.KObj(pod), "nominatedNode", bestNode, "victims", minVictimCount)
-		return framework.NewPostFilterResultWithNominatedNode(bestNode), framework.NewStatus(framework.Success)
+	if bestCost != nil {
+		logger.V(3).Info("MLWorkloadPreemption: found node for preemption", "pod", klog.KObj(pod), "nominatedNode", bestCost.nodeName, "victims", bestCost.victimCount, "highestPriority", bestCost.highestPriority, "sumPriorities", bestCost.sumPriorities)
+		return framework.NewPostFilterResultWithNominatedNode(bestCost.nodeName), framework.NewStatus(framework.Success)
 	}
 
 	return nil, framework.NewStatus(framework.Unschedulable, "insufficient capacity for preemption on any node")
