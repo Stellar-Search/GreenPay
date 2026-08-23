@@ -8,6 +8,9 @@ on:
       - 'mobile/**'
       - '.github/workflows/mobile.yml'
 
+permissions:
+  contents: read
+
 jobs:
   audit:
     name: Mobile dependency audit
@@ -61,7 +64,7 @@ jobs:
             echo "configured=false" >> "$GITHUB_OUTPUT"
             echo "::warning::EXPO_TOKEN secret is not configured — skipping EAS preview build. Add an Expo access token as the EXPO_TOKEN repository secret to enable this workflow."
           fi
-      - uses: expo/expo-github-action@v8
+      - uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8
         if: steps.check-token.outputs.configured == 'true'
         with:
           eas-version: latest

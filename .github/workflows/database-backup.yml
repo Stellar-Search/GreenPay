@@ -11,6 +11,9 @@ on:
         required: false
         default: 's3'
 
+permissions:
+  contents: read
+
 jobs:
   backup-database:
     name: Backup PostgreSQL Database
@@ -45,7 +48,7 @@ jobs:
 
       - name: Configure AWS credentials
         if: github.event.inputs.storage_type != 'gcs' && steps.check-secrets.outputs.skip != 'true'
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -53,7 +56,7 @@ jobs:
 
       - name: Setup Google Cloud SDK
         if: github.event.inputs.storage_type == 'gcs' && steps.check-secrets.outputs.skip != 'true'
-        uses: google-github-actions/setup-gcloud@v1
+        uses: google-github-actions/setup-gcloud@e30db14379863a8c79331b04a9969f4c1e225e0b # v1
         with:
           service_account_key: ${{ secrets.GCS_SA_KEY }}
           project_id: ${{ secrets.GCP_PROJECT_ID }}
