@@ -31,35 +31,57 @@ const I18nContext = createContext<I18nContextValue | undefined>(undefined);
 
 export const STORAGE_KEY = "greenpay-locale";
 
-export function I18nProvider({ children }: { children: ReactNode }) {
-  const [locale, setLocaleState] = useState<Locale>("en");
-
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY) as Locale | null;
-      if (saved && LOCALES.includes(saved)) {
-        setLocaleState(saved);
-      }
-    } catch (err) {
-      console.warn("Failed to load locale from localStorage:", err);
+export function I18nProvider({
+  children,
+  initialLocale = "en",
+}: {
+  children: ReactNode;
+  initialLocale?: Locale;
+}) {
+  const [locale, setLocaleState] = useState<Locale>(() => {
+    if (initialLocale && LOCALES.includes(initialLocale)) {
+      return initialLocale;
     }
-  }, []);
+
+    if (typeof window !== "undefined") {
+      try {
+        const saved = localStorage.getItem(STORAGE_KEY) as Locale | null;
+        if (saved && LOCALES.includes(saved)) {
+          return saved;
+        }
+      } catch (err) {
+        console.warn("Failed to load locale from localStorage:", err);
+      }
+    }
+
+    return "en";
+  });
+
+  const dir = useMemo(() => getDir(locale), [locale]);
 
   // The provider computes `dir` for context consumers, but the document itself
   // also has to carry it: logical CSS properties (start/end) and the browser's
   // own bidi algorithm key off the element's dir attribute, not off React
   // context. Without this an RTL locale renders left-to-right.
   useEffect(() => {
-    document.documentElement.dir = getDir(locale);
+    if (typeof document === "undefined") return;
+    document.documentElement.dir = dir;
     document.documentElement.lang = LOCALE_TAGS[locale];
-  }, [locale]);
+  }, [dir, locale]);
 
   const setLocale = useCallback((newLocale: Locale) => {
     setLocaleState(newLocale);
+
     try {
       localStorage.setItem(STORAGE_KEY, newLocale);
     } catch (err) {
       console.warn("Failed to save locale to localStorage:", err);
+    }
+
+    if (typeof window !== "undefined") {
+      const expirationDate = new Date();
+      expirationDate.setFullYear(expirationDate.getFullYear() + 1);
+      document.cookie = `NEXT_LOCALE=${newLocale}; path=/; expires=${expirationDate.toUTCString()}; SameSite=Strict`;
     }
   }, []);
 
