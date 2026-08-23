@@ -437,28 +437,34 @@ jobs:
 
       - name: Run Trivy Vulnerability Scanner
         run: |
+          set -euo pipefail
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "${{ github.workspace }}/.trivyignore:/.trivyignore" \
+            -v "${{ github.workspace }}:/workspace" \
             aquasec/trivy:latest image \
-            --exit-code 0 \
-            --severity CRITICAL,HIGH \
+            --format json \
+            --output /workspace/trivy-results.json \
+            --severity HIGH,CRITICAL \
             --ignore-unfixed \
             --pkg-types os,library \
             --ignorefile /.trivyignore \
-            --format json \
-            ${{ matrix.image }}:local-scan | tee /tmp/trivy-${{ matrix.image }}.json
+            ${{ matrix.image }}:local-scan
 
-      - name: Check for unignored vulnerabilities
+      - name: Evaluate Trivy severity gate
         run: |
-          # Parse the JSON output to find unignored HIGH/CRITICAL vulnerabilities
-          VULN_COUNT=$(jq '[.Results[]?.Misconfigurations[]? + .Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")] | length' /tmp/trivy-${{ matrix.image }}.json || echo 0)
-          if [ "$VULN_COUNT" -gt 0 ]; then
-            echo "Found $VULN_COUNT unignored HIGH/CRITICAL vulnerabilities in ${{ matrix.image }}:"
-            jq '.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH") | {VulnerabilityID, Severity, Title}' /tmp/trivy-${{ matrix.image }}.json
+          set -euo pipefail
+          HIGH_CRIT_COUNT=$(jq '[
+            (.Results[]? | (.Vulnerabilities // [])[], (.Misconfigurations // [])[], (.Secrets // [])[])
+            | select(.Severity == "CRITICAL" or .Severity == "HIGH")
+          ] | length' trivy-results.json)
+
+          echo "Found ${HIGH_CRIT_COUNT} High/Critical security findings."
+
+          if [ "$HIGH_CRIT_COUNT" -gt 0 ]; then
+            echo "❌ Trivy security gate failed: ${HIGH_CRIT_COUNT} HIGH/CRITICAL findings detected."
             exit 1
           fi
-
       - name: Build and push image
         uses: docker/build-push-action@v5
         if: github.event_name != 'pull_request'
