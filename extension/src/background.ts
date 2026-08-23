@@ -45,29 +45,67 @@ function toProjectSummary(value: unknown): ProjectSummary | null {
   };
 }
 
+export const DEFAULT_FETCH_TIMEOUT_MS = 5000;
+export const DEFAULT_FETCH_RETRIES = 1;
+
 export async function fetchProjects(
   query?: string,
-  state: WorkerSessionState = getDefaultState()
+  state: WorkerSessionState = getDefaultState(),
+  timeoutMs = DEFAULT_FETCH_TIMEOUT_MS,
+  maxRetries = DEFAULT_FETCH_RETRIES
 ): Promise<ProjectSummary[]> {
   const params = new URLSearchParams({ limit: query ? '5' : '3' });
   if (query) params.set('search', query);
-  const response = await fetch(`${API_BASE}/api/projects?${params}`);
-  const payload = (await response.json()) as ApiEnvelope<unknown[]>;
+  const url = `${API_BASE}/api/projects?${params}`;
 
-  if (payload.success === false) {
-    throw new Error(`${payload.error.code}: ${payload.error.message}`);
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, timeoutMs);
+
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+
+      const payload = (await response.json()) as ApiEnvelope<unknown[]>;
+
+      if (payload.success === false) {
+        throw new Error(`${payload.error.code}: ${payload.error.message}`);
+      }
+
+      if (!response.ok) throw new Error(`Project request failed (${response.status})`);
+
+      const values = Array.isArray(payload.data) ? payload.data : [];
+      const projects = values
+        .map(toProjectSummary)
+        .filter((project: ProjectSummary | null): project is ProjectSummary => project !== null);
+
+      // Search results are transient. Only the default popup list is durable.
+      if (!query) await state.setProjects(projects);
+      return projects;
+    } catch (error) {
+      clearTimeout(timer);
+      const isTimeout =
+        controller.signal.aborted ||
+        (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError'));
+
+      if (isTimeout) {
+        lastError = new Error(`Project request timed out after ${timeoutMs}ms`);
+      } else {
+        lastError = error;
+      }
+
+      if (attempt < maxRetries) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+    }
   }
 
-  if (!response.ok) throw new Error(`Project request failed (${response.status})`);
-
-  const values = Array.isArray(payload.data) ? payload.data : [];
-  const projects = values
-    .map(toProjectSummary)
-    .filter((project: ProjectSummary | null): project is ProjectSummary => project !== null);
-
-  // Search results are transient. Only the default popup list is durable.
-  if (!query) await state.setProjects(projects);
-  return projects;
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 /**
@@ -152,7 +190,9 @@ export function parseBackgroundRequest(raw: unknown): BackgroundRequest | null {
 export async function handleMessage(
   rawRequest: unknown,
   sender?: chrome.runtime.MessageSender,
-  state: WorkerSessionState = getDefaultState()
+  state: WorkerSessionState = getDefaultState(),
+  fetchTimeoutMs = DEFAULT_FETCH_TIMEOUT_MS,
+  fetchRetries = DEFAULT_FETCH_RETRIES
 ): Promise<BackgroundResponse> {
   if (!isTrustedExtensionSender(sender)) {
     return { ok: false, error: 'Unauthorized sender' };
@@ -178,7 +218,7 @@ export async function handleMessage(
       case 'REFRESH_PROJECTS':
         return {
           ok: true,
-          projects: await fetchProjects(request.query, state),
+          projects: await fetchProjects(request.query, state, fetchTimeoutMs, fetchRetries),
           sequence: request.sequence,
           query: request.query,
         };
@@ -191,15 +231,31 @@ export async function handleMessage(
   }
 }
 
+export function onMessageListener(
+  request: unknown,
+  sender: chrome.runtime.MessageSender,
+  sendResponse: (response: BackgroundResponse) => void
+): boolean {
+  if (!isTrustedExtensionSender(sender) || !parseBackgroundRequest(request)) {
+    return false;
+  }
+
+  void handleMessage(request, sender)
+    .then((response) => {
+      try {
+        sendResponse(response);
+      } catch {
+        // Port may have closed if sender disconnected before response
+      }
+    })
+    .catch((error) => {
+      // Prevent unhandled promise rejection if sendResponse or handleMessage throws
+      console.warn('GreenPay service worker message error:', error);
+    });
+
+  return true;
+}
+
 if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
-  chrome.runtime.onMessage.addListener(
-    (
-      request: unknown,
-      sender: chrome.runtime.MessageSender,
-      sendResponse: (response: BackgroundResponse) => void
-    ) => {
-      void handleMessage(request, sender).then(sendResponse);
-      return true;
-    }
-  );
+  chrome.runtime.onMessage.addListener(onMessageListener);
 }
