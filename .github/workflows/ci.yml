@@ -449,6 +449,21 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Guards the .dockerignore exclusions: a developer- or CI-present env
+      # file must never be baked into a published layer. Fails the build if
+      # any .env* file survives inside the image.
+      - name: Assert no .env files are baked into the image
+        run: |
+          env_files=$(docker run --rm --entrypoint sh \
+            "${{ matrix.image }}:local-scan" \
+            -c 'find /app -name ".env*" -type f 2>/dev/null' || true)
+          if [ -n "$env_files" ]; then
+            echo "::error::env files baked into ${{ matrix.image }} image:"
+            echo "$env_files"
+            exit 1
+          fi
+          echo "No .env* files present in ${{ matrix.image }} image."
+
       - name: Run Trivy Vulnerability Scanner
         run: |
           docker run --rm \

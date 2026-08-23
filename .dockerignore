@@ -1,0 +1,15 @@
+# Root build-context guard.
+#
+# The frontend image builds with the repository root as its context
+# (`context: .` in .github/workflows/ci.yml), and Docker only reads a
+# .dockerignore from the context root — the frontend/.dockerignore is
+# therefore not applied to that build. This file is the only place that
+# can keep developer- and CI-present env files (and heavy local build
+# artifacts) out of the context-'.' image build. The per-directory
+# .dockerignore files still govern their own contexts (backend/,
+# frontend/ for local compose builds).
+**/node_modules
+**/.next
+**/.git
+**/.env
+**/.env.*
