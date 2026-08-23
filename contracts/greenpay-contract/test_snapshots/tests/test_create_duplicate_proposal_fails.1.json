@@ -252,7 +252,10 @@
                         "symbol": "votes_against"
                       },
                       "val": {
-                        "u32": 0
+                        "i128": {
+                          "hi": 0,
+                          "lo": 0
+                        }
                       }
                     },
                     {
@@ -260,7 +263,10 @@
                         "symbol": "votes_for"
                       },
                       "val": {
-                        "u32": 0
+                        "i128": {
+                          "hi": 0,
+                          "lo": 0
+                        }
                       }
                     }
                   ]
@@ -732,7 +738,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Proposal already exists for this project' from contract function 'Symbol(obj#155)'"
+                  "string": "caught panic 'Proposal already exists for this project' from contract function 'Symbol(obj#159)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
