@@ -1,11 +1,17 @@
 /**
  * src/services/push.js
  * Push notification service using Expo
+ *
+ * Update fan-out to followers runs through a dedicated pg-boss queue instead
+ * of loading every follower's device token into memory in one query: tokens
+ * are read in bounded chunks (keyset pagination) and each chunk becomes one
+ * retryable, observable job.
  */
 const { Expo } = require("expo-server-sdk");
 const PgBoss = require("pg-boss");
 const pool = require("../db/pool");
 const { env } = require("../config/env");
+const { recordNotificationFailure } = require("./notificationFailures");
 
 // Create a new Expo SDK client
 const expo = new Expo();
@@ -17,11 +23,21 @@ const RECEIPT_QUEUE = "expo-push-receipts";
 // https://docs.expo.dev/push-notifications/sending-notifications/
 const RECEIPT_CHECK_DELAY_SECONDS = 900;
 
+const UPDATE_PUSH_QUEUE = "update-push-notify";
+const UPDATE_PUSH_DEAD_LETTER_QUEUE = "update-push-notify-dlq";
+const RETRY_LIMIT = 3;
+const RETRY_DELAY = 30;
+// Expo's own chunking tops out at 100 messages per send call — chunking the
+// DB read at the same size means each queued job maps to at most one Expo
+// send call, so a retry can't re-send tokens that already went out.
+const PUSH_CHUNK_SIZE = 100;
+
 let boss = null;
 
 /**
- * Start the pg-boss scheduler and register the receipt-checking worker.
- * Must be called once before sendUpdatePushNotifications can queue receipt checks.
+ * Start the pg-boss scheduler and register the receipt-checking and
+ * update-push-notify workers. Must be called once before
+ * sendUpdatePushNotifications can queue receipt checks or push batches.
  */
 async function start() {
   const connectionString = env.databaseUrl;
@@ -33,6 +49,13 @@ async function start() {
   // pg-boss v10 requires a queue to be created before send()/work() do
   // anything with it.
   await boss.createQueue(RECEIPT_QUEUE);
+  await boss.createQueue(UPDATE_PUSH_DEAD_LETTER_QUEUE);
+  await boss.createQueue(UPDATE_PUSH_QUEUE, {
+    retryLimit: RETRY_LIMIT,
+    retryDelay: RETRY_DELAY,
+    deadLetter: UPDATE_PUSH_DEAD_LETTER_QUEUE,
+  });
+
   // pg-boss v10 always invokes a work() callback with an array of jobs (the
   // fetched batch), even when exactly one job was fetched — never a bare job.
   await boss.work(RECEIPT_QUEUE, { teamSize: 1, teamConcurrency: 1 }, async (jobs) => {
@@ -45,6 +68,24 @@ async function start() {
         console.error(`[Push] Error checking receipts for tickets [${ticketIds.join(", ")}]:`, error);
         throw error; // pg-boss will retry according to retryLimit
       }
+    }
+  });
+
+  await boss.work(UPDATE_PUSH_QUEUE, { teamSize: 2, teamConcurrency: 1 }, async (jobs) => {
+    for (const job of jobs) {
+      await sendPushToTokens(job.data);
+    }
+  });
+  await boss.work(UPDATE_PUSH_DEAD_LETTER_QUEUE, { includeMetadata: true }, async (jobs) => {
+    for (const job of jobs) {
+      const { project, update, tokens } = job.data || {};
+      await recordNotificationFailure({
+        projectId: project?.id,
+        updateId: update?.id,
+        channel: "push",
+        payload: { tokenCount: tokens?.length || 0 },
+        error: job.output,
+      });
     }
   });
 
@@ -111,78 +152,102 @@ async function pruneDeviceTokens(tokens) {
 }
 
 /**
- * Send push notification to device tokens following a project
+ * Reads device tokens following a project in bounded chunks (keyset
+ * pagination on project_follows.id — never a single unbounded SELECT) and
+ * enqueues one retryable job per chunk on the update-push-notify queue.
  * @param {Object} params - { project, update }
  */
 async function sendUpdatePushNotifications({ project, update }) {
-  try {
-    // Fetch all device tokens following this project
-    const result = await pool.query(
-      `SELECT dt.token, dt.platform 
+  if (!boss) {
+    console.error("[Push] Update-push queue not started; skipping push fan-out for project", project.id);
+    return;
+  }
+
+  let lastId = "00000000-0000-0000-0000-000000000000";
+  let queued = 0;
+  for (;;) {
+    const { rows } = await pool.query(
+      `SELECT pf.id, dt.token, dt.platform
        FROM project_follows pf
        JOIN device_tokens dt ON pf.device_token_id = dt.id
-       WHERE pf.project_id = $1`,
-      [project.id]
+       WHERE pf.project_id = $1 AND pf.id > $2
+       ORDER BY pf.id
+       LIMIT $3`,
+      [project.id, lastId, PUSH_CHUNK_SIZE],
     );
+    if (rows.length === 0) break;
 
-    if (result.rows.length === 0) {
-      console.log("[Push] No followers for project", project.id);
-      return;
+    const tokens = rows.map((r) => ({ token: r.token, platform: r.platform }));
+    await boss.send(
+      UPDATE_PUSH_QUEUE,
+      { project, update, tokens },
+      { retryLimit: RETRY_LIMIT, retryDelay: RETRY_DELAY, deadLetter: UPDATE_PUSH_DEAD_LETTER_QUEUE },
+    );
+    queued += tokens.length;
+
+    lastId = rows[rows.length - 1].id;
+    if (rows.length < PUSH_CHUNK_SIZE) break;
+  }
+
+  if (queued === 0) {
+    console.log("[Push] No followers for project", project.id);
+  }
+}
+
+/**
+ * Send push notifications to one chunk of device tokens. Called by the
+ * update-push-notify worker — throws on an Expo send failure so pg-boss
+ * retries the batch instead of silently dropping it.
+ * @param {Object} params - { project, update, tokens }
+ * @param {Array<{token:string,platform:string}>} params.tokens
+ */
+async function sendPushToTokens({ project, update, tokens }) {
+  const messages = [];
+  for (const row of tokens) {
+    if (!Expo.isExpoPushToken(row.token)) {
+      console.error(`[Push] Invalid push token: ${row.token}`);
+      continue;
     }
 
-    // Create push messages
-    const messages = [];
-    for (const row of result.rows) {
-      // Check if the token is valid
-      if (!Expo.isExpoPushToken(row.token)) {
-        console.error(`[Push] Invalid push token: ${row.token}`);
-        continue;
+    messages.push({
+      to: row.token,
+      sound: "default",
+      title: `Update: ${project.name}`,
+      body: update.title,
+      data: {
+        projectId: project.id,
+        updateId: update.id,
+        type: "project_update",
+      },
+    });
+  }
+
+  if (messages.length === 0) return;
+
+  const chunks = expo.chunkPushNotifications(messages);
+  for (const chunk of chunks) {
+    const tickets = await expo.sendPushNotificationsAsync(chunk);
+    console.log(`[Push] Sent ${tickets.length} notifications for project ${project.id}`);
+
+    // A ticket only means "accepted for delivery attempt", not delivered —
+    // queue a delayed check of the receipts Expo generates for it.
+    const receipts = [];
+    tickets.forEach((ticket, index) => {
+      if (ticket.status === "ok" && ticket.id) {
+        receipts.push({ ticketId: ticket.id, token: chunk[index].to });
       }
-
-      messages.push({
-        to: row.token,
-        sound: "default",
-        title: `Update: ${project.name}`,
-        body: update.title,
-        data: {
-          projectId: project.id,
-          updateId: update.id,
-          type: "project_update",
-        },
-      });
+    });
+    try {
+      await enqueuePushReceiptCheck(receipts);
+    } catch (error) {
+      console.error("[Push] Error queuing receipt check:", error);
     }
-
-    // Send notifications in chunks
-    const chunks = expo.chunkPushNotifications(messages);
-    for (const chunk of chunks) {
-      try {
-        const tickets = await expo.sendPushNotificationsAsync(chunk);
-        console.log(`[Push] Sent ${tickets.length} notifications for project ${project.id}`);
-
-        // A ticket only means "accepted for delivery attempt", not delivered —
-        // queue a delayed check of the receipts Expo generates for it.
-        const receipts = [];
-        tickets.forEach((ticket, index) => {
-          if (ticket.status === "ok" && ticket.id) {
-            receipts.push({ ticketId: ticket.id, token: chunk[index].to });
-          }
-        });
-        try {
-          await enqueuePushReceiptCheck(receipts);
-        } catch (error) {
-          console.error("[Push] Error queuing receipt check:", error);
-        }
-      } catch (error) {
-        console.error("[Push] Error sending chunk:", error);
-      }
-    }
-  } catch (error) {
-    console.error("[Push] Error sending push notifications:", error);
   }
 }
 
 module.exports = {
   sendUpdatePushNotifications,
+  sendPushToTokens,
   start,
   checkPushReceipts,
 };

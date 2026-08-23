@@ -1730,6 +1730,12 @@ paths:
                             type: number
                           uniqueCountries:
                             type: integer
+        '400':
+          description: Invalid project id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '404':
           description: Project not found
           content:

@@ -14,7 +14,7 @@ const { v4: uuidv4 } = require("uuid");
 const pool = require("../db/pool");
 const { createLayeredRateLimiter } = require("../middleware/rateLimiter");
 const { mapProjectUpdateRow, mapProjectRow } = require("../services/store");
-const { sendUpdateNotifications } = require("../services/email");
+const { enqueueUpdateNotifications } = require("../services/email");
 const { sendUpdatePushNotifications } = require("../services/push");
 
 const { adminRequired } = require("../middleware/auth");
@@ -87,20 +87,17 @@ router.post("/", adminRequired, updateCreationLimiter, async (req, res, next) =>
     );
     const update = mapProjectUpdateRow(insertResult.rows[0]);
 
-    // Fetch subscriber emails and send notifications (non-blocking)
-    pool.query(
-      "SELECT email FROM project_subscriptions WHERE project_id = $1",
-      [projectId],
-    ).then(({ rows }) => {
-      const emails = rows.map((r) => r.email);
-      return sendUpdateNotifications({ project, update, emails });
-    }).catch((err) => {
-      console.error("[updates] Failed to send email notifications:", err.message);
+    // Fan out email notifications (non-blocking): reads subscribers in
+    // bounded chunks and enqueues one retryable job per chunk rather than
+    // loading every subscriber into memory and sending inline.
+    enqueueUpdateNotifications({ project, update }).catch((err) => {
+      console.error("[updates] Failed to enqueue email notifications:", err.message);
     });
 
-    // Send push notifications (non-blocking)
+    // Fan out push notifications (non-blocking): same chunked-queue pattern
+    // for followers' device tokens.
     sendUpdatePushNotifications({ project, update }).catch((err) => {
-      console.error("[updates] Failed to send push notifications:", err.message);
+      console.error("[updates] Failed to enqueue push notifications:", err.message);
     });
 
     res.status(201).json(update);
