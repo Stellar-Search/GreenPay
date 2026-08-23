@@ -785,6 +785,7 @@ fn extend_persistent_ttl(env: &Env, key: &DataKey) {
 /// * Pass `env.ledger().sequence() + 1` from `extend_lock` — the extension
 ///   only takes effect from the next ledger, so a snapshot taken in the same
 ///   ledger as the extension sees the pre-extension state.
+///
 /// Adjust the incrementally-maintained total-locked accumulator by `delta`
 /// (positive on `lock_tokens`, negative on `withdraw` and when an expired lock
 /// is replaced). The accumulator can never go negative: every decrement is
