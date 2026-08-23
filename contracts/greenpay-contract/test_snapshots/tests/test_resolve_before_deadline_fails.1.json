@@ -252,7 +252,10 @@
                         "symbol": "votes_against"
                       },
                       "val": {
-                        "u32": 0
+                        "i128": {
+                          "hi": 0,
+                          "lo": 0
+                        }
                       }
                     },
                     {
@@ -260,7 +263,10 @@
                         "symbol": "votes_for"
                       },
                       "val": {
-                        "u32": 0
+                        "i128": {
+                          "hi": 0,
+                          "lo": 0
+                        }
                       }
                     }
                   ]
@@ -722,7 +728,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Voting window not yet closed' from contract function 'Symbol(obj#155)'"
+                  "string": "caught panic 'Voting window not yet closed' from contract function 'Symbol(obj#159)'"
                 },
                 {
                   "string": "proj-001"

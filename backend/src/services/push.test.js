@@ -29,9 +29,14 @@ jest.mock("expo-server-sdk", () => {
   return { Expo };
 });
 
+jest.mock("./notificationFailures", () => ({
+  recordNotificationFailure: jest.fn().mockResolvedValue(undefined),
+}));
+
 const pool = require("../db/pool");
 const PgBoss = require("pg-boss");
 const { Expo } = require("expo-server-sdk");
+const { recordNotificationFailure } = require("./notificationFailures");
 const mockExpo = Expo.__mockInstance;
 const push = require("./push");
 
@@ -44,9 +49,99 @@ function getWorkHandler(boss, queueName) {
   return call[call.length - 1];
 }
 
+const project = { id: "project-1", name: "Reef Cleanup" };
+const update = { id: "update-1", title: "New photos from the field" };
+
 describe("sendUpdatePushNotifications", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    pool.query.mockReset();
+  });
+
+  it("logs and does nothing when the update-push queue has not been started", async () => {
+    // Force `boss` back to its unstarted state by reloading the module.
+    jest.resetModules();
+    const freshPush = require("./push");
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    await freshPush.sendUpdatePushNotifications({ project, update });
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("not started"),
+      project.id,
+    );
+    errorSpy.mockRestore();
+  });
+
+  it("reads followers in bounded pages and enqueues one job per page", async () => {
+    await push.start();
+
+    pool.query
+      .mockResolvedValueOnce({
+        rows: [
+          { id: "follow-1", token: "ExponentPushToken[a]", platform: "ios" },
+          { id: "follow-2", token: "ExponentPushToken[b]", platform: "android" },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] });
+
+    await push.sendUpdatePushNotifications({ project, update });
+
+    const boss = getBossInstance();
+    expect(boss.send).toHaveBeenCalledTimes(1);
+    expect(boss.send).toHaveBeenCalledWith(
+      "update-push-notify",
+      {
+        project,
+        update,
+        tokens: [
+          { token: "ExponentPushToken[a]", platform: "ios" },
+          { token: "ExponentPushToken[b]", platform: "android" },
+        ],
+      },
+      expect.objectContaining({ retryLimit: expect.any(Number), retryDelay: expect.any(Number) }),
+    );
+  });
+
+  it("logs and queues nothing when the project has no followers", async () => {
+    await push.start();
+    pool.query.mockResolvedValueOnce({ rows: [] });
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    await push.sendUpdatePushNotifications({ project, update });
+
+    const boss = getBossInstance();
+    expect(boss.send).not.toHaveBeenCalled();
+    expect(logSpy).toHaveBeenCalledWith("[Push] No followers for project", project.id);
+    logSpy.mockRestore();
+  });
+
+  it("pages through followers past a full chunk using keyset pagination", async () => {
+    await push.start();
+
+    const fullPage = Array.from({ length: 100 }, (_, i) => ({
+      id: `follow-${String(i).padStart(3, "0")}`,
+      token: `ExponentPushToken[user${i}]`,
+      platform: "ios",
+    }));
+    pool.query
+      .mockResolvedValueOnce({ rows: fullPage })
+      .mockResolvedValueOnce({
+        rows: [{ id: "follow-100", token: "ExponentPushToken[last]", platform: "ios" }],
+      });
+
+    await push.sendUpdatePushNotifications({ project, update });
+
+    const boss = getBossInstance();
+    expect(boss.send).toHaveBeenCalledTimes(2);
+    expect(pool.query.mock.calls[1][1]).toEqual([project.id, "follow-099", 100]);
+  });
+});
+
+describe("sendPushToTokens", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    pool.query.mockReset();
     mockExpo.chunkPushNotifications.mockImplementation((messages) =>
       messages.length === 0 ? [] : [messages],
     );
@@ -54,18 +149,16 @@ describe("sendUpdatePushNotifications", () => {
     Expo.isExpoPushToken.mockReturnValue(true);
   });
 
-  const project = { id: "project-1", name: "Reef Cleanup" };
-  const update = { id: "update-1", title: "New photos from the field" };
-
-  it("sends notifications to followers and logs the ticket count", async () => {
-    pool.query.mockResolvedValueOnce({
-      rows: [{ token: "ExponentPushToken[good]", platform: "ios" }],
-    });
+  it("sends notifications to the given tokens and logs the ticket count", async () => {
     mockExpo.sendPushNotificationsAsync.mockResolvedValueOnce([
       { status: "ok", id: "ticket-1" },
     ]);
 
-    await push.sendUpdatePushNotifications({ project, update });
+    await push.sendPushToTokens({
+      project,
+      update,
+      tokens: [{ token: "ExponentPushToken[good]", platform: "ios" }],
+    });
 
     expect(mockExpo.sendPushNotificationsAsync).toHaveBeenCalledWith([
       expect.objectContaining({ to: "ExponentPushToken[good]" }),
@@ -73,28 +166,24 @@ describe("sendUpdatePushNotifications", () => {
   });
 
   it("skips tokens that Expo does not recognize as valid push tokens", async () => {
-    pool.query.mockResolvedValueOnce({
-      rows: [{ token: "not-a-real-token", platform: "ios" }],
-    });
     Expo.isExpoPushToken.mockReturnValue(false);
 
-    await push.sendUpdatePushNotifications({ project, update });
+    await push.sendPushToTokens({
+      project,
+      update,
+      tokens: [{ token: "not-a-real-token", platform: "ios" }],
+    });
 
     expect(mockExpo.sendPushNotificationsAsync).not.toHaveBeenCalled();
   });
 
-  it("does nothing when the project has no followers", async () => {
-    pool.query.mockResolvedValueOnce({ rows: [] });
-
-    await push.sendUpdatePushNotifications({ project, update });
+  it("does nothing when given no tokens", async () => {
+    await push.sendPushToTokens({ project, update, tokens: [] });
 
     expect(mockExpo.chunkPushNotifications).not.toHaveBeenCalled();
   });
 
   it("queues a delayed receipt check for each accepted ticket after sending", async () => {
-    pool.query.mockResolvedValueOnce({
-      rows: [{ token: "ExponentPushToken[good]", platform: "ios" }],
-    });
     mockExpo.sendPushNotificationsAsync.mockResolvedValueOnce([
       { status: "ok", id: "ticket-1" },
     ]);
@@ -102,7 +191,11 @@ describe("sendUpdatePushNotifications", () => {
     await push.start();
     const bossInstance = PgBoss.mock.results[0].value;
 
-    await push.sendUpdatePushNotifications({ project, update });
+    await push.sendPushToTokens({
+      project,
+      update,
+      tokens: [{ token: "ExponentPushToken[good]", platform: "ios" }],
+    });
 
     expect(bossInstance.send).toHaveBeenCalledWith(
       "expo-push-receipts",
@@ -112,9 +205,6 @@ describe("sendUpdatePushNotifications", () => {
   });
 
   it("does not queue a receipt check for tickets Expo rejected immediately", async () => {
-    pool.query.mockResolvedValueOnce({
-      rows: [{ token: "ExponentPushToken[bad]", platform: "ios" }],
-    });
     mockExpo.sendPushNotificationsAsync.mockResolvedValueOnce([
       { status: "error", message: "InvalidCredentials", details: { error: "InvalidCredentials" } },
     ]);
@@ -122,15 +212,32 @@ describe("sendUpdatePushNotifications", () => {
     await push.start();
     const bossInstance = PgBoss.mock.results[0].value;
 
-    await push.sendUpdatePushNotifications({ project, update });
+    await push.sendPushToTokens({
+      project,
+      update,
+      tokens: [{ token: "ExponentPushToken[bad]", platform: "ios" }],
+    });
 
     expect(bossInstance.send).not.toHaveBeenCalled();
+  });
+
+  it("throws when the Expo send call fails, so pg-boss retries the batch", async () => {
+    mockExpo.sendPushNotificationsAsync.mockRejectedValueOnce(new Error("Expo outage"));
+
+    await expect(
+      push.sendPushToTokens({
+        project,
+        update,
+        tokens: [{ token: "ExponentPushToken[good]", platform: "ios" }],
+      }),
+    ).rejects.toThrow("Expo outage");
   });
 });
 
 describe("start", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    pool.query.mockReset();
   });
 
   it("creates the receipt queue before registering the worker on it", async () => {
@@ -142,11 +249,90 @@ describe("start", () => {
       boss.work.mock.invocationCallOrder[0],
     );
   });
+
+  it("creates the update-push dead-letter queue before the main queue, and both before registering workers", async () => {
+    await push.start();
+    const boss = getBossInstance();
+
+    expect(boss.createQueue).toHaveBeenCalledWith("update-push-notify-dlq");
+    expect(boss.createQueue).toHaveBeenCalledWith(
+      "update-push-notify",
+      expect.objectContaining({ deadLetter: "update-push-notify-dlq" }),
+    );
+
+    const dlqOrder = boss.createQueue.mock.calls.findIndex((args) => args[0] === "update-push-notify-dlq");
+    const mainOrder = boss.createQueue.mock.calls.findIndex((args) => args[0] === "update-push-notify");
+    expect(dlqOrder).toBeLessThan(mainOrder);
+  });
+});
+
+describe("update-push-notify worker", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    pool.query.mockReset();
+    mockExpo.chunkPushNotifications.mockImplementation((messages) =>
+      messages.length === 0 ? [] : [messages],
+    );
+    Expo.isExpoPushToken.mockReturnValue(true);
+  });
+
+  it("sends push notifications for each job in the batch", async () => {
+    await push.start();
+    const boss = getBossInstance();
+    const handler = getWorkHandler(boss, "update-push-notify");
+
+    mockExpo.sendPushNotificationsAsync.mockResolvedValueOnce([{ status: "ok", id: "ticket-1" }]);
+
+    await handler([
+      {
+        id: "job-1",
+        data: { project, update, tokens: [{ token: "ExponentPushToken[good]", platform: "ios" }] },
+      },
+    ]);
+
+    expect(mockExpo.sendPushNotificationsAsync).toHaveBeenCalledWith([
+      expect.objectContaining({ to: "ExponentPushToken[good]" }),
+    ]);
+  });
+});
+
+describe("update-push-notify-dlq worker", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    pool.query.mockReset();
+  });
+
+  it("records a permanent failure once retries are exhausted", async () => {
+    await push.start();
+    const boss = getBossInstance();
+    const handler = getWorkHandler(boss, "update-push-notify-dlq");
+
+    const failedJob = {
+      id: "job-1",
+      data: {
+        project,
+        update,
+        tokens: [{ token: "ExponentPushToken[good]", platform: "ios" }],
+      },
+      output: new Error("Expo outage"),
+    };
+
+    await handler([failedJob]);
+
+    expect(recordNotificationFailure).toHaveBeenCalledWith({
+      projectId: project.id,
+      updateId: update.id,
+      channel: "push",
+      payload: { tokenCount: 1 },
+      error: failedJob.output,
+    });
+  });
 });
 
 describe("receipt-check worker (pg-boss v10 job array contract)", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    pool.query.mockReset();
     mockExpo.chunkPushNotificationReceiptIds.mockImplementation((ids) => [ids]);
   });
 
@@ -254,6 +440,7 @@ describe("receipt-check worker (pg-boss v10 job array contract)", () => {
 describe("checkPushReceipts", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    pool.query.mockReset();
     mockExpo.chunkPushNotificationReceiptIds.mockImplementation((ids) => [ids]);
   });
 

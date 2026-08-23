@@ -41,6 +41,15 @@ data:
               - name: NodeUnschedulable
               - name: VolumeBinding
               - name: GPUHardwareFilter
+          # MLWorkloadPreemption replaces DefaultPreemption (disabled below)
+          # rather than running alongside it — see k8s/scheduler/config.yaml
+          # for the full decision note. Both plugins nominating a preemption
+          # node for the same failed pod would race.
+          postFilter:
+            disabled:
+              - name: DefaultPreemption
+            enabled:
+              - name: MLWorkloadPreemption
           preScore:
             enabled:
               - name: MLWorkloadScore
@@ -63,6 +72,8 @@ data:
           - name: MLWorkloadScore
             args: {}
           - name: GPUHardwareFilter
+            args: {}
+          - name: MLWorkloadPreemption
             args: {}
 ---
 apiVersion: apps/v1

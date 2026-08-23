@@ -2,6 +2,7 @@
 
 const pool = require("../db/pool");
 const { dispatchToProjections } = require("./projections");
+const { buildStreamId } = require("./events");
 const { logger: rootLogger } = require("../utils/logger");
 
 const logger = rootLogger.child({ service: "event-store" });
@@ -183,7 +184,7 @@ class EventStoreService {
   }
 
   async getStream(aggregateType, aggregateId) {
-    const streamId = `${aggregateType}:${aggregateId}`;
+    const streamId = buildStreamId(aggregateType, aggregateId);
     const result = await this.pool.query(
       `SELECT event_id, stream_id, aggregate_type, aggregate_id, event_type,
           version, aggregate_version, payload, actor, occurred_at, created_at
@@ -196,7 +197,7 @@ class EventStoreService {
   }
 
   async getStreamVersion(aggregateType, aggregateId) {
-    const streamId = `${aggregateType}:${aggregateId}`;
+    const streamId = buildStreamId(aggregateType, aggregateId);
     const result = await this.pool.query(
       "SELECT MAX(version) AS max_version FROM event_stream WHERE stream_id = $1",
       [streamId]

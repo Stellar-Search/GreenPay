@@ -47,8 +47,9 @@ func NewGPUHardwareFilter(_ context.Context, _ runtime.Object, _ framework.Handl
 }
 
 // Filter is called once per candidate node during the filtering phase.
-// It returns framework.NewStatus(framework.Unschedulable, reason) when the
-// node does not meet the pod's hardware requirements.
+// It returns framework.NewStatus(framework.UnschedulableAndUnresolvable, reason)
+// for immutable hardware mismatches, or framework.NewStatus(framework.Unschedulable, reason)
+// when the node is temporarily out of GPU capacity.
 func (f *GPUHardwareFilter) Filter(
 	ctx context.Context,
 	state *framework.CycleState,
@@ -75,7 +76,7 @@ func (f *GPUHardwareFilter) Filter(
 				node.Name, hw.GPUVendor, reqs.GPUVendorReq,
 			)
 			logger.V(4).Info("FilterPlugin: vendor mismatch", "pod", klog.KObj(pod), "node", node.Name, "reason", reason)
-			return framework.NewStatus(framework.Unschedulable, reason)
+			return framework.NewStatus(framework.UnschedulableAndUnresolvable, reason)
 		}
 	}
 
@@ -87,7 +88,7 @@ func (f *GPUHardwareFilter) Filter(
 				node.Name, hw.GPUModel, reqs.GPUModelReq,
 			)
 			logger.V(4).Info("FilterPlugin: model mismatch", "pod", klog.KObj(pod), "node", node.Name, "reason", reason)
-			return framework.NewStatus(framework.Unschedulable, reason)
+			return framework.NewStatus(framework.UnschedulableAndUnresolvable, reason)
 		}
 	}
 
@@ -99,13 +100,13 @@ func (f *GPUHardwareFilter) Filter(
 				node.Name, hw.GPUVRAMMiB, reqs.GPUVRAMMinMiB,
 			)
 			logger.V(4).Info("FilterPlugin: VRAM too low", "pod", klog.KObj(pod), "node", node.Name, "reason", reason)
-			return framework.NewStatus(framework.Unschedulable, reason)
+			return framework.NewStatus(framework.UnschedulableAndUnresolvable, reason)
 		}
 		// Also ensure the node actually HAS a GPU when VRAM is required
 		if !hw.HasGPU() {
 			reason := fmt.Sprintf("node %s has no GPU but pod requires %d MiB VRAM", node.Name, reqs.GPUVRAMMinMiB)
 			logger.V(4).Info("FilterPlugin: no GPU on node", "pod", klog.KObj(pod), "node", node.Name)
-			return framework.NewStatus(framework.Unschedulable, reason)
+			return framework.NewStatus(framework.UnschedulableAndUnresolvable, reason)
 		}
 	}
 
@@ -117,7 +118,7 @@ func (f *GPUHardwareFilter) Filter(
 				node.Name, hw.NetworkZone, reqs.NetworkZoneReq,
 			)
 			logger.V(4).Info("FilterPlugin: zone mismatch", "pod", klog.KObj(pod), "node", node.Name, "reason", reason)
-			return framework.NewStatus(framework.Unschedulable, reason)
+			return framework.NewStatus(framework.UnschedulableAndUnresolvable, reason)
 		}
 	}
 
@@ -129,7 +130,7 @@ func (f *GPUHardwareFilter) Filter(
 				node.Name, hw.NetworkBandwidthGbps, reqs.NetworkBWMinGbps,
 			)
 			logger.V(4).Info("FilterPlugin: bandwidth too low", "pod", klog.KObj(pod), "node", node.Name, "reason", reason)
-			return framework.NewStatus(framework.Unschedulable, reason)
+			return framework.NewStatus(framework.UnschedulableAndUnresolvable, reason)
 		}
 	}
 

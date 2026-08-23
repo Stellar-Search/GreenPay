@@ -56,6 +56,7 @@ type mockHandle struct {
 	framework.Handle
 	sharedLister    framework.SharedLister
 	informerFactory informers.SharedInformerFactory
+	filterFunc      func(ctx context.Context, state *framework.CycleState, pod *corev1.Pod, info *framework.NodeInfo) *framework.Status
 }
 
 func (m *mockHandle) SnapshotSharedLister() framework.SharedLister {
@@ -66,7 +67,20 @@ func (m *mockHandle) SharedInformerFactory() informers.SharedInformerFactory {
 	return m.informerFactory
 }
 
-func newPreemptionPluginWithPDBs(t *testing.T, nodes []*framework.NodeInfo, pdbs ...*policyv1.PodDisruptionBudget) *plugins.MLWorkloadPreemption {
+func (m *mockHandle) RunFilterPluginsWithNominatedPods(ctx context.Context, state *framework.CycleState, pod *corev1.Pod, info *framework.NodeInfo) *framework.Status {
+	if m.filterFunc != nil {
+		return m.filterFunc(ctx, state, pod, info)
+	}
+	f := &plugins.GPUHardwareFilter{}
+	return f.Filter(ctx, state, pod, info)
+}
+
+func newPreemptionPluginWithFilterAndPDBs(
+	t *testing.T,
+	nodes []*framework.NodeInfo,
+	filterFunc func(ctx context.Context, state *framework.CycleState, pod *corev1.Pod, info *framework.NodeInfo) *framework.Status,
+	pdbs ...*policyv1.PodDisruptionBudget,
+) *plugins.MLWorkloadPreemption {
 	t.Helper()
 	client := fake.NewSimpleClientset()
 	informerFactory := informers.NewSharedInformerFactory(client, 0)
@@ -81,12 +95,21 @@ func newPreemptionPluginWithPDBs(t *testing.T, nodes []*framework.NodeInfo, pdbs
 			nodeLister: &mockNodeInfoLister{nodes: nodes},
 		},
 		informerFactory: informerFactory,
+		filterFunc:      filterFunc,
 	}
 	p, err := plugins.NewMLWorkloadPreemption(context.Background(), nil, h)
 	if err != nil {
 		t.Fatalf("NewMLWorkloadPreemption: %v", err)
 	}
 	return p.(*plugins.MLWorkloadPreemption)
+}
+
+func newPreemptionPluginWithPDBs(t *testing.T, nodes []*framework.NodeInfo, pdbs ...*policyv1.PodDisruptionBudget) *plugins.MLWorkloadPreemption {
+	return newPreemptionPluginWithFilterAndPDBs(t, nodes, nil, pdbs...)
+}
+
+func newPreemptionPluginWithFilter(t *testing.T, nodes []*framework.NodeInfo, filterFunc func(ctx context.Context, state *framework.CycleState, pod *corev1.Pod, info *framework.NodeInfo) *framework.Status) *plugins.MLWorkloadPreemption {
+	return newPreemptionPluginWithFilterAndPDBs(t, nodes, filterFunc)
 }
 
 func newPreemptionPlugin(t *testing.T, nodes []*framework.NodeInfo) *plugins.MLWorkloadPreemption {
@@ -437,6 +460,26 @@ func TestPreemption_VictimFreeingZeroNeededResources_NeverSelected(t *testing.T)
 	}
 	if result2 != nil {
 		t.Errorf("expected nil result when candidate frees 0 required resources, got: %v", result2.NominatedNodeName)
+	}
+
+	// Test when preemptor requests GPU count only, and candidate frees 0 GPU count: preemption should fail
+	gpuCountPreemptor := makePodWithPriority("gpu-count-preemptor", 1000, nil)
+	gpuCountPreemptor.Spec.Containers = []corev1.Container{
+		{
+			Name: "worker",
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceName("nvidia.com/gpu"): resource.MustParse("2"),
+				},
+			},
+		},
+	}
+	result3, status3 := pOnlyNonGPU.PostFilter(context.Background(), &framework.CycleState{}, gpuCountPreemptor, framework.NodeToStatusMap{})
+	if status3.Code() != framework.Unschedulable {
+		t.Errorf("expected Unschedulable when candidate frees 0 required GPUs, got: %v", status3.Code())
+	}
+	if result3 != nil {
+		t.Errorf("expected nil result when candidate frees 0 required GPUs, got: %v", result3.NominatedNodeName)
 	}
 }
 
@@ -868,4 +911,142 @@ func makePDB(namespace, name string, matchLabels map[string]string, disruptionsA
 
 func parseResourceQuantity(val string) resource.Quantity {
 	return resource.MustParse(val)
+}
+
+func TestPreemption_VendorRejected_NeverCandidate(t *testing.T) {
+	node := makeNode(map[string]string{
+		hardware.LabelGPUVendor:  "amd",
+		hardware.LabelGPUModel:   "mi250",
+		hardware.LabelGPUVRAMMiB: "65536",
+		hardware.LabelGPUCount:   "8",
+	})
+	node.Name = "amd-node"
+
+	victim := makePodWithPriority("batch-job", 100, map[string]string{
+		hardware.AnnotWorkloadType:  hardware.WorkloadMLBatch,
+		hardware.AnnotGPUVRAMMinMiB: "40960",
+	})
+
+	ni := makeNodeInfoWithPods(node, victim)
+	p := newPreemptionPlugin(t, []*framework.NodeInfo{ni})
+
+	preemptor := makePodWithPriority("nvidia-training-job", 1000, map[string]string{
+		hardware.AnnotGPUVendorReq:  hardware.GPUVendorNvidia,
+		hardware.AnnotWorkloadType:  hardware.WorkloadMLTraining,
+		hardware.AnnotGPUVRAMMinMiB: "40960",
+	})
+
+	filteredNodeStatusMap := framework.NodeToStatusMap{
+		"amd-node": framework.NewStatus(
+			framework.UnschedulableAndUnresolvable,
+			`node amd-node has GPU vendor "amd"; pod requires "nvidia"`,
+		),
+	}
+
+	result, status := p.PostFilter(context.Background(), &framework.CycleState{}, preemptor, filteredNodeStatusMap)
+	if status.Code() != framework.Unschedulable {
+		t.Errorf("expected Unschedulable when candidate is vendor-rejected, got: %v", status.Code())
+	}
+	if result != nil {
+		t.Errorf("vendor-rejected node must never be nominated as preemption candidate, got: %v", result.NominatedNodeName)
+	}
+}
+
+func TestPreemption_CapacityRejected_IsCandidate(t *testing.T) {
+	node := makeNode(map[string]string{
+		hardware.LabelGPUVendor:  "nvidia",
+		hardware.LabelGPUModel:   "a100",
+		hardware.LabelGPUVRAMMiB: "81920",
+		hardware.LabelGPUCount:   "8",
+	})
+	node.Name = "gpu-node-capacity"
+	node.Status.Allocatable[corev1.ResourceName("nvidia.com/gpu")] = resource.MustParse("8")
+
+	// Lower priority victim consuming 8 GPUs
+	victim := makePodWithPriority("batch-job", 100, map[string]string{
+		hardware.AnnotWorkloadType:  hardware.WorkloadMLBatch,
+		hardware.AnnotGPUVRAMMinMiB: "40960",
+	})
+	victim.Spec.Containers = []corev1.Container{
+		{
+			Name: "worker",
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceName("nvidia.com/gpu"): resource.MustParse("8"),
+				},
+			},
+		},
+	}
+
+	ni := makeNodeInfoWithPods(node, victim)
+	p := newPreemptionPlugin(t, []*framework.NodeInfo{ni})
+
+	// Preemptor requiring NVIDIA GPU and 40GiB VRAM
+	preemptor := makePodWithPriority("training-job", 1000, map[string]string{
+		hardware.AnnotGPUVendorReq:  hardware.GPUVendorNvidia,
+		hardware.AnnotWorkloadType:  hardware.WorkloadMLTraining,
+		hardware.AnnotGPUVRAMMinMiB: "40960",
+	})
+	preemptor.Spec.Containers = []corev1.Container{
+		{
+			Name: "trainer",
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceName("nvidia.com/gpu"): resource.MustParse("8"),
+				},
+			},
+		},
+	}
+
+	filteredNodeStatusMap := framework.NodeToStatusMap{
+		"gpu-node-capacity": framework.NewStatus(
+			framework.Unschedulable,
+			"node gpu-node-capacity has 0 of 8 GPUs free",
+		),
+	}
+
+	result, status := p.PostFilter(context.Background(), &framework.CycleState{}, preemptor, filteredNodeStatusMap)
+	if !status.IsSuccess() {
+		t.Fatalf("expected Success status for capacity-rejected candidate, got: %v", status.Message())
+	}
+	if result == nil || result.NominatedNodeName != "gpu-node-capacity" {
+		t.Errorf("expected nominated node gpu-node-capacity, got: %v", result)
+	}
+}
+
+func TestPreemption_FilterChainRevalidation_FailsIfNodeStillInvalid(t *testing.T) {
+	node := makeNode(map[string]string{
+		hardware.LabelGPUVendor:  "nvidia",
+		hardware.LabelGPUModel:   "a100",
+		hardware.LabelGPUVRAMMiB: "81920",
+		hardware.LabelGPUCount:   "8",
+	})
+	node.Name = "gpu-node-tainted"
+
+	victim := makePodWithPriority("batch-job", 100, map[string]string{
+		hardware.AnnotWorkloadType:  hardware.WorkloadMLBatch,
+		hardware.AnnotGPUVRAMMinMiB: "40960",
+	})
+
+	ni := makeNodeInfoWithPods(node, victim)
+
+	// Mock filter chain where another filter plugin (e.g. Taints/Affinity) fails re-validation
+	customFilter := func(ctx context.Context, state *framework.CycleState, pod *corev1.Pod, info *framework.NodeInfo) *framework.Status {
+		return framework.NewStatus(framework.Unschedulable, "node has untolerated taint")
+	}
+
+	p := newPreemptionPluginWithFilter(t, []*framework.NodeInfo{ni}, customFilter)
+
+	preemptor := makePodWithPriority("training-job", 1000, map[string]string{
+		hardware.AnnotWorkloadType:  hardware.WorkloadMLTraining,
+		hardware.AnnotGPUVRAMMinMiB: "40960",
+	})
+
+	result, status := p.PostFilter(context.Background(), &framework.CycleState{}, preemptor, framework.NodeToStatusMap{})
+	if status.Code() != framework.Unschedulable {
+		t.Errorf("expected Unschedulable when filter chain re-validation fails, got: %v", status.Code())
+	}
+	if result != nil {
+		t.Errorf("expected nil result when filter chain re-validation fails, got: %v", result.NominatedNodeName)
+	}
 }

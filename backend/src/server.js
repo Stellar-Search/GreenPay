@@ -163,6 +163,9 @@ async function startServer() {
   const { start: startPushReceiptQueue } = require("./services/push");
   await startPushReceiptQueue();
 
+  const { start: startEmailNotifyQueue } = require("./services/email");
+  await startEmailNotifyQueue();
+
   startIndexer(io).catch(err =>
     logger.error({ msg: "indexer startup error", error: err.message })
   );

@@ -80,13 +80,13 @@ func TestFilter_VendorMatch_Passes(t *testing.T) {
 	}
 }
 
-func TestFilter_VendorMismatch_Unschedulable(t *testing.T) {
+func TestFilter_VendorMismatch_UnschedulableAndUnresolvable(t *testing.T) {
 	f := newFilter(t)
 	pod := makePod(map[string]string{hardware.AnnotGPUVendorReq: "amd"})
 	node := makeNode(map[string]string{hardware.LabelGPUVendor: "nvidia"})
 	status := f.Filter(context.Background(), &framework.CycleState{}, pod, makeNodeInfo(node))
-	if status.Code() != framework.Unschedulable {
-		t.Errorf("vendor mismatch: expected Unschedulable, got: %v", status.Code())
+	if status.Code() != framework.UnschedulableAndUnresolvable {
+		t.Errorf("vendor mismatch: expected UnschedulableAndUnresolvable, got: %v", status.Code())
 	}
 }
 
@@ -107,7 +107,7 @@ func TestFilter_GPUModelMatch_Passes(t *testing.T) {
 	}
 }
 
-func TestFilter_GPUModelMismatch_Unschedulable(t *testing.T) {
+func TestFilter_GPUModelMismatch_UnschedulableAndUnresolvable(t *testing.T) {
 	f := newFilter(t)
 	pod := makePod(map[string]string{
 		hardware.AnnotGPUModelReq: "h100",
@@ -117,8 +117,8 @@ func TestFilter_GPUModelMismatch_Unschedulable(t *testing.T) {
 		hardware.LabelGPUModel:  "a100",
 	})
 	status := f.Filter(context.Background(), &framework.CycleState{}, pod, makeNodeInfo(node))
-	if status.Code() != framework.Unschedulable {
-		t.Errorf("model mismatch: expected Unschedulable, got: %v", status.Code())
+	if status.Code() != framework.UnschedulableAndUnresolvable {
+		t.Errorf("model mismatch: expected UnschedulableAndUnresolvable, got: %v", status.Code())
 	}
 }
 
@@ -136,7 +136,7 @@ func TestFilter_VRAMSufficient_Passes(t *testing.T) {
 	}
 }
 
-func TestFilter_VRAMInsufficient_Unschedulable(t *testing.T) {
+func TestFilter_VRAMInsufficient_UnschedulableAndUnresolvable(t *testing.T) {
 	f := newFilter(t)
 	pod := makePod(map[string]string{hardware.AnnotGPUVRAMMinMiB: "81920"})
 	node := makeNode(map[string]string{
@@ -145,12 +145,12 @@ func TestFilter_VRAMInsufficient_Unschedulable(t *testing.T) {
 		hardware.LabelGPUVRAMMiB: "16384", // 16 GiB T4 — not enough for 80 GiB requirement
 	})
 	status := f.Filter(context.Background(), &framework.CycleState{}, pod, makeNodeInfo(node))
-	if status.Code() != framework.Unschedulable {
-		t.Errorf("VRAM insufficient: expected Unschedulable, got: %v", status.Code())
+	if status.Code() != framework.UnschedulableAndUnresolvable {
+		t.Errorf("VRAM insufficient: expected UnschedulableAndUnresolvable, got: %v", status.Code())
 	}
 }
 
-func TestFilter_VRAMRequired_NoGPUNode_Unschedulable(t *testing.T) {
+func TestFilter_VRAMRequired_NoGPUNode_UnschedulableAndUnresolvable(t *testing.T) {
 	f := newFilter(t)
 	pod := makePod(map[string]string{hardware.AnnotGPUVRAMMinMiB: "40960"})
 	node := makeNode(map[string]string{
@@ -158,8 +158,8 @@ func TestFilter_VRAMRequired_NoGPUNode_Unschedulable(t *testing.T) {
 		hardware.LabelGPUCount:  "0",
 	})
 	status := f.Filter(context.Background(), &framework.CycleState{}, pod, makeNodeInfo(node))
-	if status.Code() != framework.Unschedulable {
-		t.Errorf("VRAM req but no GPU: expected Unschedulable, got: %v", status.Code())
+	if status.Code() != framework.UnschedulableAndUnresolvable {
+		t.Errorf("VRAM req but no GPU: expected UnschedulableAndUnresolvable, got: %v", status.Code())
 	}
 }
 
@@ -173,13 +173,13 @@ func TestFilter_NetworkZoneMatch_Passes(t *testing.T) {
 	}
 }
 
-func TestFilter_NetworkZoneMismatch_Unschedulable(t *testing.T) {
+func TestFilter_NetworkZoneMismatch_UnschedulableAndUnresolvable(t *testing.T) {
 	f := newFilter(t)
 	pod := makePod(map[string]string{hardware.AnnotNetworkZoneReq: "zone-a"})
 	node := makeNode(map[string]string{hardware.LabelNetworkZone: "zone-b"})
 	status := f.Filter(context.Background(), &framework.CycleState{}, pod, makeNodeInfo(node))
-	if status.Code() != framework.Unschedulable {
-		t.Errorf("zone mismatch: expected Unschedulable, got: %v", status.Code())
+	if status.Code() != framework.UnschedulableAndUnresolvable {
+		t.Errorf("zone mismatch: expected UnschedulableAndUnresolvable, got: %v", status.Code())
 	}
 }
 
@@ -193,13 +193,13 @@ func TestFilter_BandwidthSufficient_Passes(t *testing.T) {
 	}
 }
 
-func TestFilter_BandwidthInsufficient_Unschedulable(t *testing.T) {
+func TestFilter_BandwidthInsufficient_UnschedulableAndUnresolvable(t *testing.T) {
 	f := newFilter(t)
 	pod := makePod(map[string]string{hardware.AnnotNetworkBWMinGbps: "100"})
 	node := makeNode(map[string]string{hardware.LabelNetworkBandwidthGbps: "10"})
 	status := f.Filter(context.Background(), &framework.CycleState{}, pod, makeNodeInfo(node))
-	if status.Code() != framework.Unschedulable {
-		t.Errorf("bw insufficient: expected Unschedulable, got: %v", status.Code())
+	if status.Code() != framework.UnschedulableAndUnresolvable {
+		t.Errorf("bw insufficient: expected UnschedulableAndUnresolvable, got: %v", status.Code())
 	}
 }
 

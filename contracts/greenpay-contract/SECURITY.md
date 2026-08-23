@@ -283,9 +283,9 @@ both `require_auth` checks. Out of scope for this audit pass.
 | `donate` | `donor.require_auth` | n/a (open) | OK |
 | `mint_impact_nft` | `donor.require_auth` | tier == current badge | Logic bug (M-02) |
 | `transfer` | `from.require_auth` | `from == meta.owner`; token exists | OK (Issue #114) |
-| `create_proposal` | `admin.require_auth` | `stored_admin == admin` | OK |
-| `vote_verify_project` | `voter.require_auth` | badge ≥ Seedling, no double-vote, deadline alive | OK |
-| `resolve_proposal` | none | deadline passed, not yet resolved | OK (idempotent) |
+| `create_proposal` | `admin.require_auth` | `stored_admin == admin`; refuses when a DAO contract is registered | OK (legacy, gated — Issue #317) |
+| `vote_verify_project` | `voter.require_auth` | badge ≥ Seedling, no double-vote, deadline alive; refuses when a DAO contract is registered | OK (legacy, gated — Issue #317) |
+| `resolve_proposal` | none | deadline passed, not yet resolved | OK (idempotent; stays callable across the DAO cutover to settle in-flight legacy proposals — Issue #317) |
 | getter functions | none | n/a | OK |
 
 ## Badge boundary edge cases

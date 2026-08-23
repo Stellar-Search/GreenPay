@@ -176,6 +176,22 @@ const schema = {
       "Redis connection string for distributed rate-limiting; falls back to in-memory store when unset",
   },
 
+  CACHE_MAX_ENTRIES: {
+    required: false,
+    type: "number",
+    default: "500",
+    description:
+      "Maximum entries kept in the process-local response cache before LRU eviction kicks in",
+  },
+
+  CACHE_SWEEP_INTERVAL_MS: {
+    required: false,
+    type: "number",
+    default: "60000",
+    description:
+      "How often (ms) the process-local response cache sweeps expired entries",
+  },
+
   // ── Email & Notifications ────────────────────────────────────────────────
 
   RESEND_API_KEY: {
@@ -445,6 +461,8 @@ function buildConfig(isTestMode) {
 
     // Redis & Caching
     redisUrl: get("REDIS_URL"),
+    cacheMaxEntries: Number(get("CACHE_MAX_ENTRIES")),
+    cacheSweepIntervalMs: Number(get("CACHE_SWEEP_INTERVAL_MS")),
 
     // Email & Notifications
     resendApiKey: get("RESEND_API_KEY"),

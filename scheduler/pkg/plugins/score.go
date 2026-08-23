@@ -79,6 +79,13 @@ func (s *clusterBandwidthState) Clone() framework.StateData {
 
 const bandwidthStateKey framework.StateKey = "greenpay/bandwidthState"
 
+// defaultFragThreshold is applied both by NewMLWorkloadScore (for callers,
+// such as tests, that construct MLWorkloadScoreArgs directly and bypass the
+// scheme's defaulting) and by SetDefaults_MLWorkloadScoreArgs (for the
+// scheduler's own config-loading path, registered against the plugin arg
+// conversion scheme in scheme.go).
+const defaultFragThreshold = 0.85
+
 // MLWorkloadScoreArgs holds configuration parameters for the MLWorkloadScore plugin.
 type MLWorkloadScoreArgs struct {
 	metav1.TypeMeta `json:",inline"`
@@ -91,8 +98,19 @@ func (args *MLWorkloadScoreArgs) DeepCopyObject() runtime.Object {
 		return nil
 	}
 	out := new(MLWorkloadScoreArgs)
+	out.TypeMeta = args.TypeMeta
 	out.FragThreshold = args.FragThreshold
 	return out
+}
+
+// SetDefaults_MLWorkloadScoreArgs applies the plugin's default fragmentation
+// threshold when a profile enables MLWorkloadScore without an explicit
+// pluginConfig entry, or with one that omits fragThreshold. Registered with
+// the scheduler's plugin arg conversion scheme in scheme.go.
+func SetDefaults_MLWorkloadScoreArgs(obj *MLWorkloadScoreArgs) {
+	if obj.FragThreshold <= 0 {
+		obj.FragThreshold = defaultFragThreshold
+	}
 }
 
 // MLWorkloadScore implements framework.ScorePlugin and framework.PreScorePlugin.
@@ -123,7 +141,7 @@ func (s *MLWorkloadScore) Name() string { return MLWorkloadScoreName }
 
 // NewMLWorkloadScore is the plugin factory.
 func NewMLWorkloadScore(_ context.Context, obj runtime.Object, handle framework.Handle) (framework.Plugin, error) {
-	threshold := 0.85
+	threshold := defaultFragThreshold
 	if args, ok := obj.(*MLWorkloadScoreArgs); ok && args != nil && args.FragThreshold > 0 {
 		threshold = args.FragThreshold
 	}
