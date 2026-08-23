@@ -111,6 +111,14 @@ const seedJobs = [
   },
 ];
 
+/**
+ * Badge thresholds in descending order of minimum XLM.
+ * Single source of truth for all backend services, projections, and aggregates.
+ *
+ * Parity with the Soroban smart contract constants in
+ * `contracts/greenpay-contract/src/lib.rs` (BADGE_THRESHOLD_*_XLM) is
+ * cross-validated by automated tests in `src/services/badgeCrossValidation.test.js`.
+ */
 const BADGE_THRESHOLDS = [
   { tier: "earth", min: 2000 },
   { tier: "forest", min: 500 },
@@ -118,6 +126,12 @@ const BADGE_THRESHOLDS = [
   { tier: "seedling", min: 10 },
 ];
 
+/**
+ * Compute badge tiers for a donor based on cumulative donated XLM.
+ *
+ * @param {number} totalXLM - Total donated XLM for the donor.
+ * @returns {Array<{tier:string,earnedAt:string}>} Array of earned badge objects (may be empty).
+ */
 function computeBadges(totalXLM) {
   const earned = [];
   for (const badge of BADGE_THRESHOLDS) {
@@ -128,14 +142,6 @@ function computeBadges(totalXLM) {
   }
   return earned;
 }
-
-/**
- * Compute badge tiers for a donor based on cumulative donated XLM.
- *
- * @param {number} totalXLM - Total donated XLM for the donor.
- * @returns {Array<{tier:string,earnedAt:string}>} Array of earned badge objects (may be empty).
- */
-// exported as `computeBadges`
 
 /**
  * Convert a value (date-like) to an ISO timestamp string or null.

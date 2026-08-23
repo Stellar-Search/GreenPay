@@ -2,7 +2,7 @@
 
 const { DonationRecordedEvent, MatchAppliedEvent, MatchCreatedEvent, ProjectStatusChangedEvent, MilestoneReachedEvent, JobReleasedEvent, ProjectCreatedEvent, ProfileCreatedEvent } = require("./events");
 const { RecordDonationCommand, ApplyMatchCommand, ChangeProjectStatusCommand, ReachMilestoneCommand, ReleaseEscrowCommand, CreateMatchOfferCommand } = require("./commands");
-const { BADGE_THRESHOLDS } = require("../services/store");
+const { computeBadges } = require("../services/store");
 
 const VALID_PROJECT_STATUSES = new Set(["active", "completed", "paused", "rejected"]);
 
@@ -414,23 +414,6 @@ function createStreamId(aggregateType, id) {
 
 function round7(n) {
   return Math.round(n * 1e7) / 1e7;
-}
-
-function computeBadges(totalXLM) {
-  const BADGE_THRESHOLDS = [
-    { tier: "earth", min: 2000 },
-    { tier: "forest", min: 500 },
-    { tier: "tree", min: 100 },
-    { tier: "seedling", min: 10 },
-  ];
-  const earned = [];
-  for (const badge of BADGE_THRESHOLDS) {
-    if (totalXLM >= badge.min) {
-      earned.push({ tier: badge.tier, earnedAt: new Date().toISOString() });
-      break;
-    }
-  }
-  return earned;
 }
 
 module.exports = {

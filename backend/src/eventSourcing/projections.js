@@ -1,6 +1,7 @@
 "use strict";
 
 const { xlmToStroops, stroopsToXlm } = require("../utils/xlm");
+const { computeBadges } = require("../services/store");
 
 const PROJECTION_BATCH_SIZE = 500;
 
@@ -96,23 +97,6 @@ async function applyProjectProjection(client, event) {
 projectProjection.apply = async (client, event) => {
   await applyProjectProjection(client, event);
 };
-
-function computeBadges(totalXLM) {
-  const BADGE_THRESHOLDS = [
-    { tier: "earth", min: 2000 },
-    { tier: "forest", min: 500 },
-    { tier: "tree", min: 100 },
-    { tier: "seedling", min: 10 },
-  ];
-  const earned = [];
-  for (const badge of BADGE_THRESHOLDS) {
-    if (totalXLM >= badge.min) {
-      earned.push({ tier: badge.tier, earnedAt: new Date().toISOString() });
-      break;
-    }
-  }
-  return earned;
-}
 
 async function getExistingDonorStats(client, donorAddress) {
   const result = await client.query(

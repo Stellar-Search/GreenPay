@@ -166,6 +166,15 @@ pub const MAX_CO2_PER_XLM: u32 = STROOP as u32;
 /// Largest single donation exercised in property tests (1 billion XLM).
 pub const MAX_REALISTIC_DONATION_STROOPS: i128 = 1_000_000_000 * STROOP;
 
+// ─── Badge threshold constants (XLM) ──────────────────────────────────────────
+// These constants define the minimum cumulative XLM required to earn each badge tier.
+// Parity with the backend (`backend/src/services/store.js`'s `BADGE_THRESHOLDS`) is
+// cross-checked by automated tests (`backend/src/services/badgeCrossValidation.test.js`).
+pub const BADGE_THRESHOLD_SEEDLING_XLM: i128 = 10;
+pub const BADGE_THRESHOLD_TREE_XLM: i128 = 100;
+pub const BADGE_THRESHOLD_FOREST_XLM: i128 = 500;
+pub const BADGE_THRESHOLD_EARTH_GUARDIAN_XLM: i128 = 2000;
+
 /// Minimum `total_donated` (in stroops) required to participate in
 /// project-verification voting.
 ///
@@ -188,7 +197,7 @@ pub const MAX_REALISTIC_DONATION_STROOPS: i128 = 1_000_000_000 * STROOP;
 /// than 20 funded addresses, costing more than 2 000 XLM — identical to simply
 /// being a large donor, eliminating the asymmetric advantage of Sybil
 /// identities.
-pub const VOTE_ELIGIBILITY_STROOP: i128 = 100 * STROOP; // 100 XLM (Tree tier)
+pub const VOTE_ELIGIBILITY_STROOP: i128 = BADGE_THRESHOLD_TREE_XLM * STROOP; // 100 XLM (Tree tier)
 
 // 7 days × 24 h × 3600 s ÷ 5 s per ledger ≈ 120_960 ledgers — used as the
 // default when `create_proposal` is called without an explicit duration.
@@ -214,13 +223,13 @@ const PERSISTENT_TTL_EXTEND: u32 = 2_102_400;
 
 fn calculate_badge(total_stroops: i128) -> BadgeTier {
     let xlm = total_stroops / STROOP;
-    if xlm >= 2000 {
+    if xlm >= BADGE_THRESHOLD_EARTH_GUARDIAN_XLM {
         BadgeTier::EarthGuardian
-    } else if xlm >= 500 {
+    } else if xlm >= BADGE_THRESHOLD_FOREST_XLM {
         BadgeTier::Forest
-    } else if xlm >= 100 {
+    } else if xlm >= BADGE_THRESHOLD_TREE_XLM {
         BadgeTier::Tree
-    } else if xlm >= 10 {
+    } else if xlm >= BADGE_THRESHOLD_SEEDLING_XLM {
         BadgeTier::Seedling
     } else {
         BadgeTier::None
