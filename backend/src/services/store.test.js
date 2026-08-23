@@ -13,15 +13,32 @@ const {
 
 describe("store utility functions", () => {
   test("computeBadges returns no badge below 10 XLM", () => {
+    expect(computeBadges(0)).toEqual([]);
     expect(computeBadges(9)).toEqual([]);
+    expect(computeBadges(9.99)).toEqual([]);
   });
 
-  test("computeBadges returns seedling badge at 10 XLM", () => {
+  test("computeBadges returns seedling badge between 10 and 99 XLM", () => {
     expect(computeBadges(10)[0]).toMatchObject({ tier: "seedling" });
+    expect(computeBadges(50)[0]).toMatchObject({ tier: "seedling" });
+    expect(computeBadges(99.99)[0]).toMatchObject({ tier: "seedling" });
   });
 
-  test("computeBadges returns highest earned badge", () => {
+  test("computeBadges returns tree badge between 100 and 499 XLM", () => {
+    expect(computeBadges(100)[0]).toMatchObject({ tier: "tree" });
+    expect(computeBadges(250)[0]).toMatchObject({ tier: "tree" });
+    expect(computeBadges(499.99)[0]).toMatchObject({ tier: "tree" });
+  });
+
+  test("computeBadges returns forest badge between 500 and 1999 XLM", () => {
+    expect(computeBadges(500)[0]).toMatchObject({ tier: "forest" });
+    expect(computeBadges(1000)[0]).toMatchObject({ tier: "forest" });
+    expect(computeBadges(1999.99)[0]).toMatchObject({ tier: "forest" });
+  });
+
+  test("computeBadges returns earth badge at 2000 XLM and above", () => {
     expect(computeBadges(2000)[0]).toMatchObject({ tier: "earth" });
+    expect(computeBadges(5000)[0]).toMatchObject({ tier: "earth" });
   });
 
   test("mapProjectRow maps database project fields to API fields", () => {

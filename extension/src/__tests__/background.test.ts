@@ -1,7 +1,9 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
+  fetchProjects,
   handleMessage,
   isTrustedExtensionSender,
+  onMessageListener,
   parseBackgroundRequest,
 } from '../background';
 import {
@@ -394,6 +396,192 @@ describe('Background Sender Validation & Runtime Parsing', () => {
         expect(response.error).toContain('Invalid Stellar public key');
       }
       expect(sessionStorage.values[STORAGE_KEYS.session]).toBeUndefined();
+    });
+  });
+
+  describe('fetchProjects Timeout, AbortController, and Retries', () => {
+    let originalFetch: typeof globalThis.fetch;
+    let sessionStorage: MemoryStorage;
+    let localStorage: MemoryStorage;
+    let workerState: WorkerSessionState;
+
+    beforeEach(() => {
+      originalFetch = globalThis.fetch;
+      sessionStorage = new MemoryStorage();
+      localStorage = new MemoryStorage();
+      workerState = new WorkerSessionState(
+        sessionStorage,
+        localStorage,
+        () => 10_000,
+        'test-worker'
+      );
+    });
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
+    it('aborts and surfaces a structured timeout error when fetch never resolves', async () => {
+      // Simulate a hung / never-resolving network request
+      globalThis.fetch = vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
+        return new Promise((_resolve, reject) => {
+          if (init?.signal) {
+            init.signal.addEventListener('abort', () => {
+              const abortError = new Error('The operation was aborted');
+              abortError.name = 'AbortError';
+              reject(abortError);
+            });
+          }
+        });
+      });
+
+      // Bounded timeout of 50ms with 0 retries
+      await expect(fetchProjects('solar', workerState, 50, 0)).rejects.toThrow(
+        'Project request timed out after 50ms'
+      );
+    });
+
+    it('surfaces structured timeout error through handleMessage REFRESH_PROJECTS', async () => {
+      globalThis.fetch = vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
+        return new Promise((_resolve, reject) => {
+          if (init?.signal) {
+            init.signal.addEventListener('abort', () => {
+              const abortError = new Error('The operation was aborted');
+              abortError.name = 'AbortError';
+              reject(abortError);
+            });
+          }
+        });
+      });
+
+      const trustedSender: chrome.runtime.MessageSender = { id: EXTENSION_ID };
+      const response = await handleMessage(
+        { type: 'REFRESH_PROJECTS', query: 'solar', sequence: 1 },
+        trustedSender,
+        workerState,
+        50,
+        0
+      );
+
+      expect(response.ok).toBe(false);
+      if (!response.ok) {
+        expect(response.error).toContain('timed out');
+      }
+    });
+
+    it('retries bounded number of times and succeeds if second attempt resolves', async () => {
+      let attempts = 0;
+      globalThis.fetch = vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
+        attempts++;
+        if (attempts === 1) {
+          return new Promise((_resolve, reject) => {
+            if (init?.signal) {
+              init.signal.addEventListener('abort', () => {
+                const abortError = new Error('The operation was aborted');
+                abortError.name = 'AbortError';
+                reject(abortError);
+              });
+            }
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            success: true,
+            data: [
+              {
+                id: 'proj-1',
+                name: 'Solar Power',
+                description: 'Clean energy',
+                category: 'Energy',
+                walletAddress: VALID_PUBLIC_KEY,
+              },
+            ],
+          }),
+        } as unknown as Response);
+      });
+
+      const projects = await fetchProjects('solar', workerState, 30, 1);
+      expect(attempts).toBe(2);
+      expect(projects).toHaveLength(1);
+      expect(projects[0].name).toBe('Solar Power');
+    });
+  });
+
+  describe('onMessageListener Port & Error Boundary Handling', () => {
+    let sessionStorage: MemoryStorage;
+    let localStorage: MemoryStorage;
+    let workerState: WorkerSessionState;
+
+    beforeEach(() => {
+      sessionStorage = new MemoryStorage();
+      localStorage = new MemoryStorage();
+      workerState = new WorkerSessionState(
+        sessionStorage,
+        localStorage,
+        () => 10_000,
+        'test-worker'
+      );
+    });
+
+    it('returns false for unhandled / unrecognized request types to prevent holding ports open', () => {
+      const trustedSender: chrome.runtime.MessageSender = { id: EXTENSION_ID };
+      const sendResponse = vi.fn();
+
+      const result = onMessageListener({ type: 'UNRECOGNIZED_ACTION' }, trustedSender, sendResponse);
+      expect(result).toBe(false);
+      expect(sendResponse).not.toHaveBeenCalled();
+    });
+
+    it('returns false for untrusted sender origins', () => {
+      const contentScriptSender: chrome.runtime.MessageSender = {
+        id: EXTENSION_ID,
+        tab: { id: 1 } as chrome.tabs.Tab,
+      };
+      const sendResponse = vi.fn();
+
+      const result = onMessageListener(
+        { type: 'CLEAR_WALLET_SESSION' },
+        contentScriptSender,
+        sendResponse
+      );
+      expect(result).toBe(false);
+      expect(sendResponse).not.toHaveBeenCalled();
+    });
+
+    it('returns true for handled request types from trusted sender', () => {
+      const trustedSender: chrome.runtime.MessageSender = { id: EXTENSION_ID };
+      const sendResponse = vi.fn();
+
+      const result = onMessageListener(
+        { type: 'CLEAR_WALLET_SESSION' },
+        trustedSender,
+        sendResponse
+      );
+      expect(result).toBe(true);
+    });
+
+    it('safely catches errors when sendResponse throws because the popup closed mid-flight', async () => {
+      const trustedSender: chrome.runtime.MessageSender = { id: EXTENSION_ID };
+      const throwingSendResponse = vi.fn().mockImplementation(() => {
+        throw new Error('Could not establish connection. Receiving end does not exist.');
+      });
+
+      // Spy on console.warn
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const result = onMessageListener(
+        { type: 'CLEAR_WALLET_SESSION' },
+        trustedSender,
+        throwingSendResponse
+      );
+
+      expect(result).toBe(true);
+      // Allow async chain to execute
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(throwingSendResponse).toHaveBeenCalled();
+      warnSpy.mockRestore();
     });
   });
 });

@@ -33,7 +33,6 @@ package plugins
 import (
 	"context"
 	"math"
-	"sync"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -63,18 +62,22 @@ var defaultWeights = scoreWeights{
 	Bandwidth:     0.15,
 }
 
-// clusterBandwidthState is a CycleState key for storing the max observed
+// clusterBandwidthState is a CycleState value storing the max observed
 // bandwidth across the candidate node set (used for normalisation).
+// It is constructed once in PreScore and treated as immutable across
+// parallel Score goroutines.
 type clusterBandwidthState struct {
-	mu      sync.Mutex
 	maxGbps int64
 }
 
 func (s *clusterBandwidthState) Clone() framework.StateData {
+	if s == nil {
+		return nil
+	}
 	return &clusterBandwidthState{maxGbps: s.maxGbps}
 }
 
-const bandwidthStateKey = "greenpay/bandwidthState"
+const bandwidthStateKey framework.StateKey = "greenpay/bandwidthState"
 
 // MLWorkloadScoreArgs holds configuration parameters for the MLWorkloadScore plugin.
 type MLWorkloadScoreArgs struct {
@@ -142,7 +145,7 @@ func (s *MLWorkloadScore) PreScore(
 	pod *corev1.Pod,
 	nodes []*framework.NodeInfo,
 ) *framework.Status {
-	bwState := &clusterBandwidthState{}
+	var maxGbps int64
 
 	for _, nodeInfo := range nodes {
 		node := nodeInfo.Node()
@@ -150,17 +153,15 @@ func (s *MLWorkloadScore) PreScore(
 			continue
 		}
 		hw := hardware.ParseNodeHardware(node)
-		bwState.mu.Lock()
-		if hw.NetworkBandwidthGbps > bwState.maxGbps {
-			bwState.maxGbps = hw.NetworkBandwidthGbps
+		if hw.NetworkBandwidthGbps > maxGbps {
+			maxGbps = hw.NetworkBandwidthGbps
 		}
-		bwState.mu.Unlock()
 	}
 
-	state.Write(bandwidthStateKey, bwState)
+	state.Write(bandwidthStateKey, &clusterBandwidthState{maxGbps: maxGbps})
 
 	klog.FromContext(ctx).V(5).Info("PreScore: cluster max bandwidth",
-		"maxGbps", bwState.maxGbps,
+		"maxGbps", maxGbps,
 		"pod", klog.KObj(pod),
 	)
 	return framework.NewStatus(framework.Success)
@@ -177,13 +178,19 @@ func (s *MLWorkloadScore) Score(
 	nodeName string,
 ) (int64, *framework.Status) {
 	// Retrieve the pre-computed cluster bandwidth state.
-	raw, err := state.Read(bandwidthStateKey)
-	if err != nil {
+	var bwState *clusterBandwidthState
+	if raw, err := state.Read(bandwidthStateKey); err == nil && raw != nil {
+		var ok bool
+		bwState, ok = raw.(*clusterBandwidthState)
+		if !ok {
+			// Graceful degradation: foreign/unexpected type stored under key.
+			bwState = &clusterBandwidthState{}
+		}
+	} else {
 		// Graceful degradation: missing state means PreScore didn't run.
-		// Fall back to a zero max (bandwidth sub-score will be 0).
-		raw = &clusterBandwidthState{}
+		// Fall back to a zero max (bandwidth sub-score will be neutral).
+		bwState = &clusterBandwidthState{}
 	}
-	bwState := raw.(*clusterBandwidthState)
 
 	// Resolve the candidate node through the framework handle's snapshot.  The
 	// neutral fallback below is reserved for a node that genuinely cannot be
@@ -482,13 +489,9 @@ func (s *MLWorkloadScore) bandwidthScore(hw hardware.NodeHardware, bwState *clus
 		return 50.0 // no label — neutral
 	}
 
-	bwState.mu.Lock()
-	maxGbps := bwState.maxGbps
-	bwState.mu.Unlock()
-
-	if maxGbps == 0 {
+	if bwState == nil || bwState.maxGbps == 0 {
 		return 50.0
 	}
 
-	return float64(hw.NetworkBandwidthGbps) / float64(maxGbps) * 100.0
+	return float64(hw.NetworkBandwidthGbps) / float64(bwState.maxGbps) * 100.0
 }

@@ -5,10 +5,13 @@
 import { Account, Keypair, Networks } from '@stellar/stellar-sdk';
 import {
   assertStellarNetworkConfigConsistency,
+  displayNameForLabel,
   getExpectedNetworkDisplayName,
   getExpectedNetworkLabel,
   getExpectedNetworkPassphrase,
   inferNetworkLabelFromHorizonUrl,
+  passphraseForLabel,
+  resolveNetworkLabel,
 } from '../utils/stellarNetwork';
 import { buildDonationPaymentTransaction } from '../utils/donationTransaction';
 
@@ -30,14 +33,23 @@ describe('stellarNetwork', () => {
     expect(getExpectedNetworkDisplayName()).toBe('testnet');
   });
 
-  it('returns the public passphrase for mainnet / public builds', () => {
-    process.env.EXPO_PUBLIC_STELLAR_NETWORK = 'mainnet';
-    expect(getExpectedNetworkLabel()).toBe('public');
-    expect(getExpectedNetworkPassphrase()).toBe(Networks.PUBLIC);
-    expect(getExpectedNetworkDisplayName()).toBe('mainnet');
+  // babel-preset-expo inlines EXPO_PUBLIC_* at transform time, so assigning to
+  // process.env here cannot change what the getters see. The rule itself is
+  // exercised through its pure form.
+  it('resolves mainnet / public spellings to the public network', () => {
+    for (const raw of ['mainnet', 'public', 'MAINNET', '  Public  ']) {
+      expect(resolveNetworkLabel(raw)).toBe('public');
+      expect(passphraseForLabel(resolveNetworkLabel(raw))).toBe(Networks.PUBLIC);
+      expect(displayNameForLabel(resolveNetworkLabel(raw))).toBe('mainnet');
+    }
+  });
 
-    process.env.EXPO_PUBLIC_STELLAR_NETWORK = 'public';
-    expect(getExpectedNetworkPassphrase()).toBe(Networks.PUBLIC);
+  it('resolves anything else, including unset, to testnet', () => {
+    for (const raw of [undefined, null, '', '   ', 'testnet', 'futurenet', 'nonsense']) {
+      expect(resolveNetworkLabel(raw)).toBe('testnet');
+      expect(passphraseForLabel(resolveNetworkLabel(raw))).toBe(Networks.TESTNET);
+      expect(displayNameForLabel(resolveNetworkLabel(raw))).toBe('testnet');
+    }
   });
 
   it('infers network from well-known Horizon hosts', () => {
@@ -46,25 +58,22 @@ describe('stellarNetwork', () => {
     expect(inferNetworkLabelFromHorizonUrl('http://127.0.0.1:8000')).toBeNull();
   });
 
-  it('throws when Horizon URL and STELLAR_NETWORK disagree', () => {
-    process.env.EXPO_PUBLIC_STELLAR_NETWORK = 'mainnet';
+  it('throws when Horizon URL and the expected network disagree', () => {
     expect(() =>
-      assertStellarNetworkConfigConsistency('https://horizon-testnet.stellar.org'),
+      assertStellarNetworkConfigConsistency('https://horizon-testnet.stellar.org', 'public'),
     ).toThrow(/mismatch/i);
 
-    process.env.EXPO_PUBLIC_STELLAR_NETWORK = 'testnet';
     expect(() =>
-      assertStellarNetworkConfigConsistency('https://horizon.stellar.org'),
+      assertStellarNetworkConfigConsistency('https://horizon.stellar.org', 'testnet'),
     ).toThrow(/mismatch/i);
   });
 
   it('allows matching and ambiguous Horizon URLs', () => {
-    process.env.EXPO_PUBLIC_STELLAR_NETWORK = 'mainnet';
     expect(() =>
-      assertStellarNetworkConfigConsistency('https://horizon.stellar.org'),
+      assertStellarNetworkConfigConsistency('https://horizon.stellar.org', 'public'),
     ).not.toThrow();
     expect(() =>
-      assertStellarNetworkConfigConsistency('http://localhost:8000'),
+      assertStellarNetworkConfigConsistency('http://localhost:8000', 'public'),
     ).not.toThrow();
   });
 });
@@ -78,8 +87,6 @@ describe('buildDonationPaymentTransaction', () => {
   });
 
   it('signs against the public network passphrase for a mainnet-configured build', () => {
-    process.env.EXPO_PUBLIC_STELLAR_NETWORK = 'mainnet';
-
     const source = Keypair.random();
     const destination = Keypair.random().publicKey();
     const account = new Account(source.publicKey(), '1');
@@ -89,6 +96,7 @@ describe('buildDonationPaymentTransaction', () => {
       destination,
       amount: '1.5',
       projectId: 'proj-mainnet-1',
+      networkPassphrase: passphraseForLabel('public'),
     });
 
     expect(tx.networkPassphrase).toBe(Networks.PUBLIC);

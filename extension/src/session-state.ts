@@ -1,4 +1,4 @@
-import { getActiveManifest } from '../../config/networks';
+import { activeManifest } from './network-config';
 
 export const SESSION_SCHEMA_VERSION = 1;
 export const WALLET_SESSION_TTL_MS = 15 * 60 * 1000;
@@ -11,7 +11,7 @@ export const STORAGE_KEYS = {
 } as const;
 
 // Load manifest once at module init
-const manifest = getActiveManifest();
+const manifest = activeManifest;
 
 export interface WalletSession {
   publicKey: string;

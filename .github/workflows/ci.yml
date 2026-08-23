@@ -25,6 +25,20 @@ jobs:
       # docs/getting-started.md §7 still exists. No toolchains needed — this only
       # checks that the commands the doc names are still declared.
       - run: node scripts/check-documented-commands.js
+      # Guards against source files committed in a non-UTF-8 encoding, which
+      # silently breaks parsers while still looking like text in a diff.
+      - run: node scripts/check-source-encoding.js
+      # Asserts backend/.env.example documents every variable the env schema
+      # declares. The script existed but no workflow ran it.
+      - run: node scripts/check-env-example.js
+      # docs/database.md states this runs on every push. It did not. It guards
+      # the function-ordering regression that broke nightly backups for months,
+      # which `bash -n` cannot catch, and needs no database.
+      - run: bash scripts/tests/test-backup-restore.sh
+      # Cluster-free consistency checks over k8s/: kustomization coverage,
+      # Ingress backends resolving to real Services, PDB selectors matching a
+      # workload, and default-deny paired with allow rules.
+      - run: python3 scripts/check-k8s-manifests.py
 
   frontend:
     name: Frontend (Next.js)

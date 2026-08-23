@@ -25,8 +25,8 @@ import {
   getConfiguredHorizonUrl,
   getExpectedNetworkDisplayName,
 } from '../../utils/stellarNetwork';
-import { useWallet } from '../../hooks/useWallet';
-import { WalletConnect } from '../../components/WalletConnect';
+import { useWallet } from '../../src/hooks/useWallet';
+import { WalletConnect } from '../../src/components/WalletConnect';
 import {
   createRecurringDonation,
   completeRecurringCycle,
@@ -257,20 +257,16 @@ export default function DonateScreen() {
       const server = new StellarServer(HORIZON_URL);
       const sourceAccount = await server.loadAccount(publicKey);
 
-      const transaction = new TransactionBuilder(sourceAccount, {
-        fee: '100',
-        networkPassphrase: NETWORK_PASSPHRASE,
-      })
-        .addOperation(
-          Operation.payment({
-            destination: selectedProject.walletAddress,
-            asset: Asset.native(),
-            amount: formattedAmount,
-          })
-        )
-        .addMemo(Memo.text(`GreenPay:${selectedProject.id.slice(0, 16)}`))
-        .setTimeout(60)
-        .build();
+      // Built by utils/donationTransaction so the network passphrase comes from
+      // one place. The previous inline builder referenced TransactionBuilder,
+      // Operation, Asset, Memo and NETWORK_PASSPHRASE, none of which are imported
+      // in this module, so every submission threw a ReferenceError.
+      const transaction = buildDonationPaymentTransaction({
+        sourceAccount,
+        destination: selectedProject.walletAddress,
+        amount: formattedAmount,
+        projectId: selectedProject.id,
+      });
 
       transaction.sign(keypair);
 
@@ -397,7 +393,7 @@ export default function DonateScreen() {
     <ScrollView style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>Donate to {selectedProject?.name || 'a project'}</Text>
-        <Text style={styles.subtitle}>Choose a project and donate XLM on {manifest.network}.</Text>
+        <Text style={styles.subtitle}>Choose a project and donate XLM on {getExpectedNetworkDisplayName()}.</Text>
       </View>
 
       <View style={styles.selectorCard}>
