@@ -401,7 +401,6 @@ impl DaoGovernanceContract {
         let snap_key = DataKey::Snapshot(proposal_id, voter.clone());
         if env.storage().persistent().has(&snap_key) {
             let snap: Snapshot = env.storage().persistent().get(&snap_key).unwrap();
-            extend_persistent_ttl(&env, &snap_key);
             snap.voting_power
         } else {
             0
@@ -640,7 +639,12 @@ impl DaoGovernanceContract {
             voting_power: power,
         };
         env.storage().persistent().set(&snap_key, &snapshot);
-        extend_persistent_ttl(&env, &snap_key);
+        // Only extend Snapshot TTL during active voting. Once the proposal transitions to
+        // Executed or Defeated, Snapshots should not have their TTLs extended indefinitely.
+        // The TTL is bounded by the voting window (MIN_VOTING_WINDOW) to MAX_LOCK_LEDGERS.
+        if proposal.stage == ProposalStage::SnapshotVote {
+            extend_persistent_ttl(&env, &snap_key);
+        }
 
         if approve {
             proposal.votes_for = proposal
@@ -2431,5 +2435,140 @@ mod tests {
         let mut new_cfg = cfg.clone();
         new_cfg.timelock_ledgers = 0;
         client.set_config(&new_cfg);
+    }
+
+    // ─── Issue #116: TTL Extension Fix ────────────────────────────────────
+
+    #[test]
+    fn test_first_vote_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_cid, cfg, client) = deploy(&env);
+        let voter = Address::generate(&env);
+        let sac = StellarAssetClient::new(&env, &cfg.gp_token);
+        sac.mint(&voter, &500_000i128);
+        client.lock_tokens(&voter, &500_000i128, &MAX_LOCK_LEDGERS);
+        let pid = mk_proposal(&env, &client, &voter);
+        snapshot(&client, &voter, pid);
+
+        vote(&client, &voter, pid, true);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_double_vote_prevention_rejection() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_cid, cfg, client) = deploy(&env);
+        let voter = Address::generate(&env);
+        let sac = StellarAssetClient::new(&env, &cfg.gp_token);
+        sac.mint(&voter, &500_000i128);
+        client.lock_tokens(&voter, &500_000i128, &MAX_LOCK_LEDGERS);
+        let pid = mk_proposal(&env, &client, &voter);
+        snapshot(&client, &voter, pid);
+
+        vote(&client, &voter, pid, true);
+        vote(&client, &voter, pid, false);
+    }
+
+    #[test]
+    fn test_snapshot_ttl_not_extended_after_finalization() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_cid, cfg, client) = deploy(&env);
+        let proposer = Address::generate(&env);
+        let voter1 = Address::generate(&env);
+        let voter2 = Address::generate(&env);
+        let sac = StellarAssetClient::new(&env, &cfg.gp_token);
+
+        sac.mint(&proposer, &500_000i128);
+        sac.mint(&voter1, &500_000i128);
+        sac.mint(&voter2, &500_000i128);
+        client.lock_tokens(&proposer, &500_000i128, &MAX_LOCK_LEDGERS);
+        client.lock_tokens(&voter1, &500_000i128, &MAX_LOCK_LEDGERS);
+        client.lock_tokens(&voter2, &500_000i128, &MAX_LOCK_LEDGERS);
+
+        let pid = mk_proposal(&env, &client, &proposer);
+        snapshot(&client, &proposer, pid);
+
+        vote(&client, &voter1, pid, true);
+        vote(&client, &voter2, pid, true);
+
+        let snap1 = client.get_snapshot_power(&voter1, &pid);
+        let snap2 = client.get_snapshot_power(&voter2, &pid);
+        assert!(snap1 > 0, "voter1 should have snapshot power");
+        assert!(snap2 > 0, "voter2 should have snapshot power");
+
+        let current = env.ledger().sequence();
+        env.ledger().set_sequence_number(current + VOTING_PERIOD + 1);
+        finalise(&client, pid);
+
+        let snap1_after = client.get_snapshot_power(&voter1, &pid);
+        let snap2_after = client.get_snapshot_power(&voter2, &pid);
+        assert_eq!(snap1, snap1_after, "snapshot power should remain unchanged");
+        assert_eq!(snap2, snap2_after, "snapshot power should remain unchanged");
+
+        let proposal = client.get_proposal(&pid);
+        assert_eq!(proposal.stage, ProposalStage::Execution);
+    }
+
+    #[test]
+    fn test_snapshot_power_read_only() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_cid, cfg, client) = deploy(&env);
+        let voter = Address::generate(&env);
+        let sac = StellarAssetClient::new(&env, &cfg.gp_token);
+        sac.mint(&voter, &500_000i128);
+        client.lock_tokens(&voter, &500_000i128, &MAX_LOCK_LEDGERS);
+
+        let pid = mk_proposal(&env, &client, &voter);
+        snapshot(&client, &voter, pid);
+        vote(&client, &voter, pid, true);
+
+        let snap_power_1 = client.get_snapshot_power(&voter, &pid);
+        let snap_power_2 = client.get_snapshot_power(&voter, &pid);
+        assert_eq!(snap_power_1, snap_power_2, "snapshot power should not change on repeated reads");
+    }
+
+    #[test]
+    fn test_defeated_proposal_snapshot_behavior() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_cid, cfg, client) = deploy(&env);
+        let proposer = Address::generate(&env);
+        let voter_for = Address::generate(&env);
+        let voter_against = Address::generate(&env);
+        let sac = StellarAssetClient::new(&env, &cfg.gp_token);
+
+        sac.mint(&proposer, &500_000i128);
+        sac.mint(&voter_for, &500_000i128);
+        sac.mint(&voter_against, &1_000_000i128);
+        client.lock_tokens(&proposer, &500_000i128, &MAX_LOCK_LEDGERS);
+        client.lock_tokens(&voter_for, &500_000i128, &MAX_LOCK_LEDGERS);
+        client.lock_tokens(&voter_against, &1_000_000i128, &MAX_LOCK_LEDGERS);
+
+        let pid = mk_proposal(&env, &client, &proposer);
+        snapshot(&client, &proposer, pid);
+
+        vote(&client, &voter_for, pid, true);
+        vote(&client, &voter_against, pid, false);
+
+        let snap_for = client.get_snapshot_power(&voter_for, &pid);
+        let snap_against = client.get_snapshot_power(&voter_against, &pid);
+        assert!(snap_for > 0);
+        assert!(snap_against > 0);
+
+        let current = env.ledger().sequence();
+        env.ledger().set_sequence_number(current + VOTING_PERIOD + 1);
+        finalise(&client, pid);
+
+        let proposal = client.get_proposal(&pid);
+        assert_eq!(proposal.stage, ProposalStage::Defeated);
+
+        let snap_for_after = client.get_snapshot_power(&voter_for, &pid);
+        let snap_against_after = client.get_snapshot_power(&voter_against, &pid);
+        assert_eq!(snap_for, snap_for_after);
+        assert_eq!(snap_against, snap_against_after);
     }
 }
