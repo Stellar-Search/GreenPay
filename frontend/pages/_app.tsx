@@ -4,9 +4,19 @@ import Head from "next/head";
 import { Toaster } from "sonner";
 import Navbar from "@/components/Navbar";
 import { PriceProvider } from "@/lib/priceContext";
-import { I18nProvider } from "@/lib/i18n";
+import { I18nProvider, type Locale } from "@/lib/i18n";
 import { connectWallet, getConnectedPublicKey } from "@/lib/wallet";
 import "@/styles/globals.css";
+
+function parseCookie(cookieString: string | undefined, name: string): string | undefined {
+  if (!cookieString) return undefined;
+  const cookies = cookieString.split(";").map(c => c.trim());
+  for (const cookie of cookies) {
+    const [key, value] = cookie.split("=");
+    if (key === name) return decodeURIComponent(value);
+  }
+  return undefined;
+}
 
 // Custom getInitialProps opts every page out of Automatic Static
 // Optimization, forcing per-request server rendering. This is required so
@@ -15,11 +25,29 @@ import "@/styles/globals.css";
 // <Head> and <NextScript> — a statically-generated page bakes a stale
 // getInitialProps result at build time with no request, so its script tags
 // end up nonce-less and get blocked by the strict-dynamic CSP at runtime.
-App.getInitialProps = async (appContext: AppContext): Promise<AppInitialProps> => {
-  return NextApp.getInitialProps(appContext);
+App.getInitialProps = async (appContext: AppContext): Promise<AppInitialProps & { userLocale?: Locale }> => {
+  const initialProps = await NextApp.getInitialProps(appContext);
+  
+  let userLocale: Locale = "en";
+  if (appContext.ctx.req) {
+    const cookieHeader = appContext.ctx.req.headers.cookie;
+    const localeFromCookie = parseCookie(cookieHeader, "NEXT_LOCALE");
+    if (localeFromCookie === "en" || localeFromCookie === "es" || localeFromCookie === "ar") {
+      userLocale = localeFromCookie;
+    }
+  }
+  
+  return {
+    ...initialProps,
+    userLocale,
+  };
 };
 
-export default function App({ Component, pageProps }: AppProps) {
+interface AppPropsWithLocale extends AppProps {
+  userLocale?: Locale;
+}
+
+export default function App({ Component, pageProps, userLocale }: AppPropsWithLocale) {
   const [publicKey, setPublicKey] = useState<string | null>(null);
 
   useEffect(() => {
@@ -42,7 +70,7 @@ export default function App({ Component, pageProps }: AppProps) {
   };
 
   return (
-    <I18nProvider>
+    <I18nProvider initialLocale={userLocale}>
       <Head>
         <title>Stellar GreenPay — Climate Donations on Stellar</title>
         <meta name="description" content="Donate XLM directly to verified climate projects. Every transaction tracked on-chain via Soroban smart contracts." />

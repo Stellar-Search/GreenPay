@@ -114,7 +114,7 @@ describe("useDonationSocket", () => {
     });
 
     // Trigger reconnect
-    socket.emit("connect");
+    socket.emit("connect", {});
 
     // Wait for async backfill to complete
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -150,7 +150,7 @@ describe("useDonationSocket", () => {
     // Simulate failed fetch
     (global.fetch as jest.Mock).mockRejectedValue(new Error("Network error"));
 
-    socket.emit("connect");
+    socket.emit("connect", {});
 
     await new Promise(resolve => setTimeout(resolve, 100));
 
@@ -172,7 +172,7 @@ describe("useDonationSocket", () => {
     renderHook(() => useDonationSocket("project-1", onDonation));
 
     // Trigger reconnect without any prior donations
-    socket.emit("connect");
+    socket.emit("connect", {});
 
     await new Promise(resolve => setTimeout(resolve, 100));
 
