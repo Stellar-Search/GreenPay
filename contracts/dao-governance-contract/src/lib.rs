@@ -51,6 +51,11 @@ pub struct Proposal {
     pub vote_end_ledger: u32,
     pub votes_for: i128,
     pub votes_against: i128,
+    /// Absolute vote total required for approval, computed as
+    /// `quorum_bps` × total locked tokens at `advance_to_snapshot` time and
+    /// frozen on the proposal so a mid-vote change in locked supply cannot
+    /// move the goalposts. Zero when no tokens are locked at the snapshot.
+    pub quorum_requirement: i128,
     pub executable_from_ledger: u32,
     pub created_ledger: u32,
 }
@@ -59,7 +64,12 @@ pub struct Proposal {
 #[derive(Clone, Debug)]
 pub struct Config {
     pub gp_token: Address,
-    pub quorum: i128,
+    /// Quorum expressed in basis points (1/10000) of the total locked GP
+    /// supply at the proposal's snapshot — e.g. 500 means a proposal needs
+    /// votes totalling at least 5% of locked tokens to pass. Replaces the
+    /// original absolute vote count, which drifted out of calibration as the
+    /// DAO's locked supply grew or shrank.
+    pub quorum_bps: i128,
     pub voting_period_ledgers: u32,
     pub timelock_ledgers: u32,
     pub dao_admin: Address,
@@ -114,6 +124,10 @@ pub enum DataKey {
     LockCheckpointCount(Address),
     /// The n-th checkpoint for a voter (0-indexed).
     LockCheckpoint(Address, u32),
+    /// Incrementally-maintained sum of all locked token amounts (updated on
+    /// `lock_tokens` and `withdraw`). Used as the denominator for the
+    /// proportional quorum so it never requires iterating over lockers.
+    TotalLocked,
 }
 
 // ─── Contract ────────────────────────────────────────────────────────────────
@@ -128,7 +142,7 @@ impl DaoGovernanceContract {
     pub fn initialize(
         env: Env,
         gp_token: Address,
-        quorum: i128,
+        quorum_bps: i128,
         voting_period_ledgers: u32,
         timelock_ledgers: u32,
         dao_admin: Address,
@@ -136,7 +150,7 @@ impl DaoGovernanceContract {
         if env.storage().instance().has(&DataKey::Config) {
             panic!("already initialized");
         }
-        if quorum <= 0 {
+        if quorum_bps <= 0 {
             panic!("quorum must be positive");
         }
         if voting_period_ledgers < MIN_VOTING_WINDOW {
@@ -147,13 +161,14 @@ impl DaoGovernanceContract {
         }
         let config = Config {
             gp_token,
-            quorum,
+            quorum_bps,
             voting_period_ledgers,
             timelock_ledgers,
             dao_admin,
         };
         env.storage().instance().set(&DataKey::Config, &config);
         env.storage().instance().set(&DataKey::ProposalCount, &0u64);
+        env.storage().instance().set(&DataKey::TotalLocked, &0i128);
         env.storage()
             .instance()
             .extend_ttl(MIN_VOTING_WINDOW, MAX_LOCK_LEDGERS);
@@ -187,6 +202,9 @@ impl DaoGovernanceContract {
             if existing.unlock_ledger > env.ledger().sequence() {
                 panic!("existing lock must be extended or expired");
             }
+            // Replacing an expired lock: drop its amount from the running total
+            // so the accumulator only reflects currently-locked tokens.
+            adjust_total_locked(&env, -existing.amount);
         }
 
         let current_ledger = env.ledger().sequence();
@@ -205,6 +223,9 @@ impl DaoGovernanceContract {
         // Record an immutable checkpoint so historical voting-power queries
         // are not affected by future extend_lock calls.
         write_lock_checkpoint(&env, &voter, &lock, current_ledger);
+
+        // Maintain the total-locked accumulator incrementally.
+        adjust_total_locked(&env, amount);
 
         let config: Config = env
             .storage()
@@ -297,6 +318,10 @@ impl DaoGovernanceContract {
         let amount = lock.amount;
         env.storage().persistent().remove(&lock_key);
 
+        // The withdrawn tokens are no longer locked — keep the accumulator in
+        // sync so the quorum denominator tracks the outstanding supply.
+        adjust_total_locked(&env, -amount);
+
         let config: Config = env
             .storage()
             .instance()
@@ -381,6 +406,17 @@ impl DaoGovernanceContract {
         } else {
             0
         }
+    }
+
+    /// Returns the total number of GP tokens currently locked in the contract,
+    /// maintained incrementally on every `lock_tokens` / `withdraw` — never
+    /// recomputed by iterating lockers. This is the denominator the
+    /// proportional quorum is measured against.
+    pub fn get_total_locked(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::TotalLocked)
+            .unwrap_or(0)
     }
 
     // ─── Execution Target Allowlist ─────────────────────────────────────────
@@ -484,6 +520,7 @@ impl DaoGovernanceContract {
             vote_end_ledger: 0,
             votes_for: 0,
             votes_against: 0,
+            quorum_requirement: 0, // set when the proposal advances to snapshot
             executable_from_ledger: 0,
             created_ledger: current,
         };
@@ -553,6 +590,20 @@ impl DaoGovernanceContract {
             .expect("vote end overflow");
         proposal.votes_for = 0;
         proposal.votes_against = 0;
+
+        // Freeze the quorum threshold at the snapshot: a proportion of the
+        // total locked supply as it stands NOW, so locked tokens added or
+        // withdrawn mid-vote cannot move the goalposts.
+        let total_locked: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalLocked)
+            .unwrap_or(0);
+        proposal.quorum_requirement = (total_locked
+            .checked_mul(config.quorum_bps)
+            .expect("quorum requirement overflow"))
+            / 10000;
+
         env.storage().persistent().set(&key, &proposal);
         extend_persistent_ttl(&env, &key);
         env.events().publish(
@@ -636,7 +687,10 @@ impl DaoGovernanceContract {
             .checked_add(proposal.votes_against)
             .expect("total votes overflow");
 
-        let approved = total_votes >= config.quorum && proposal.votes_for > proposal.votes_against;
+        // Quorum is the proportion of the total locked supply frozen on the
+        // proposal at its snapshot, not a fixed absolute count.
+        let approved = total_votes >= proposal.quorum_requirement
+            && proposal.votes_for > proposal.votes_against;
 
         if approved {
             let current = env.ledger().sequence();
@@ -731,6 +785,26 @@ fn extend_persistent_ttl(env: &Env, key: &DataKey) {
 /// * Pass `env.ledger().sequence() + 1` from `extend_lock` — the extension
 ///   only takes effect from the next ledger, so a snapshot taken in the same
 ///   ledger as the extension sees the pre-extension state.
+///
+/// Adjust the incrementally-maintained total-locked accumulator by `delta`
+/// (positive on `lock_tokens`, negative on `withdraw` and when an expired lock
+/// is replaced). The accumulator can never go negative: every decrement is
+/// paired with a lock that was previously added.
+fn adjust_total_locked(env: &Env, delta: i128) {
+    let current: i128 = env
+        .storage()
+        .instance()
+        .get(&DataKey::TotalLocked)
+        .unwrap_or(0);
+    let updated = current.checked_add(delta).expect("total locked overflow");
+    env.storage()
+        .instance()
+        .set(&DataKey::TotalLocked, &updated);
+    env.storage()
+        .instance()
+        .extend_ttl(MIN_VOTING_WINDOW, MAX_LOCK_LEDGERS);
+}
+
 fn write_lock_checkpoint(env: &Env, voter: &Address, lock: &Lock, effective_from_ledger: u32) {
     // Read and increment the per-voter checkpoint counter.
     let count_key = DataKey::LockCheckpointCount(voter.clone());
@@ -763,7 +837,8 @@ mod tests {
         Address, Env,
     };
 
-    const QUORUM: i128 = 1000;
+    /// Quorum in basis points: 1000 bps = 10% of the total locked supply.
+    const QUORUM_BPS: i128 = 1000;
     const VOTING_PERIOD: u32 = 121_000;
     const TIMELOCK: u32 = 10_000;
 
@@ -794,10 +869,10 @@ mod tests {
         });
         let cid = env.register_contract(None, DaoGovernanceContract);
         let client = DaoGovernanceContractClient::new(env, &cid);
-        client.initialize(&token, &QUORUM, &VOTING_PERIOD, &TIMELOCK, &admin);
+        client.initialize(&token, &QUORUM_BPS, &VOTING_PERIOD, &TIMELOCK, &admin);
         let config = Config {
             gp_token: token,
-            quorum: QUORUM,
+            quorum_bps: QUORUM_BPS,
             voting_period_ledgers: VOTING_PERIOD,
             timelock_ledgers: TIMELOCK,
             dao_admin: admin,
@@ -854,11 +929,12 @@ mod tests {
         let (_cid, cfg, client) = deploy(&env);
         let c = client.get_config();
         assert_eq!(c.gp_token, cfg.gp_token);
-        assert_eq!(c.quorum, QUORUM);
+        assert_eq!(c.quorum_bps, QUORUM_BPS);
         assert_eq!(c.voting_period_ledgers, VOTING_PERIOD);
         assert_eq!(c.timelock_ledgers, TIMELOCK);
         assert_eq!(c.dao_admin, cfg.dao_admin);
         assert_eq!(client.get_proposal_count(), 0);
+        assert_eq!(client.get_total_locked(), 0);
     }
 
     #[test]
@@ -871,8 +947,8 @@ mod tests {
         let t = env.register_stellar_asset_contract_v2(ta).address();
         let cid = env.register_contract(None, DaoGovernanceContract);
         let cl = DaoGovernanceContractClient::new(&env, &cid);
-        cl.initialize(&t, &QUORUM, &VOTING_PERIOD, &TIMELOCK, &a);
-        cl.initialize(&t, &QUORUM, &VOTING_PERIOD, &TIMELOCK, &a);
+        cl.initialize(&t, &QUORUM_BPS, &VOTING_PERIOD, &TIMELOCK, &a);
+        cl.initialize(&t, &QUORUM_BPS, &VOTING_PERIOD, &TIMELOCK, &a);
     }
 
     #[test]
@@ -898,7 +974,7 @@ mod tests {
         let t = env.register_stellar_asset_contract_v2(ta).address();
         let cid = env.register_contract(None, DaoGovernanceContract);
         let cl = DaoGovernanceContractClient::new(&env, &cid);
-        cl.initialize(&t, &QUORUM, &(MIN_VOTING_WINDOW - 1), &TIMELOCK, &a);
+        cl.initialize(&t, &QUORUM_BPS, &(MIN_VOTING_WINDOW - 1), &TIMELOCK, &a);
     }
 
     #[test]
@@ -911,7 +987,7 @@ mod tests {
         let t = env.register_stellar_asset_contract_v2(ta).address();
         let cid = env.register_contract(None, DaoGovernanceContract);
         let cl = DaoGovernanceContractClient::new(&env, &cid);
-        cl.initialize(&t, &QUORUM, &VOTING_PERIOD, &0u32, &a);
+        cl.initialize(&t, &QUORUM_BPS, &VOTING_PERIOD, &0u32, &a);
     }
 
     // ─── R2: GP Token Locking ─────────────────────────────────────────────
@@ -1406,6 +1482,140 @@ mod tests {
         assert_eq!(client.get_snapshot_power(&v, &pid), snap_power);
     }
 
+    // ─── R9: Proportional quorum ─────────────────────────────────────────
+
+    #[test]
+    fn test_quorum_scales_with_locked_supply() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_cid, cfg, client) = deploy(&env);
+        let sac = StellarAssetClient::new(&env, &cfg.gp_token);
+
+        let a = Address::generate(&env);
+        sac.mint(&a, &500_000i128);
+        client.lock_tokens(&a, &500_000i128, &MAX_LOCK_LEDGERS);
+
+        // 500k locked → 10% quorum is 50_000 votes.
+        let pid1 = mk_proposal(&env, &client, &a);
+        snapshot(&client, &a, pid1);
+        let q1 = client.get_proposal(&pid1).quorum_requirement;
+        assert_eq!(q1, 50_000);
+
+        // Doubling the locked supply doubles the threshold: the same fraction
+        // of a bigger pool demands more votes. An absolute quorum would have
+        // stayed flat at 1000, which is exactly the drift this replaces.
+        let b = Address::generate(&env);
+        sac.mint(&b, &500_000i128);
+        client.lock_tokens(&b, &500_000i128, &MAX_LOCK_LEDGERS);
+
+        let pid2 = mk_proposal(&env, &client, &a);
+        snapshot(&client, &a, pid2);
+        let q2 = client.get_proposal(&pid2).quorum_requirement;
+        assert_eq!(q2, 100_000);
+        assert_eq!(q2, 2 * q1);
+    }
+
+    #[test]
+    fn test_quorum_shrinks_when_supply_withdrawn() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_cid, cfg, client) = deploy(&env);
+        let sac = StellarAssetClient::new(&env, &cfg.gp_token);
+
+        let a = Address::generate(&env);
+        sac.mint(&a, &10_000i128);
+        client.lock_tokens(&a, &10_000i128, &MIN_LOCK_LEDGERS);
+        let pid1 = mk_proposal(&env, &client, &a);
+        snapshot(&client, &a, pid1);
+        assert_eq!(client.get_proposal(&pid1).quorum_requirement, 1_000);
+
+        // The whole supply is withdrawn; a smaller pool is locked afterwards.
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + MIN_LOCK_LEDGERS + 1);
+        client.withdraw(&a);
+        assert_eq!(client.get_total_locked(), 0);
+
+        let b = Address::generate(&env);
+        sac.mint(&b, &5_000i128);
+        client.lock_tokens(&b, &5_000i128, &MAX_LOCK_LEDGERS);
+        let pid2 = mk_proposal(&env, &client, &b);
+        snapshot(&client, &b, pid2);
+        let q2 = client.get_proposal(&pid2).quorum_requirement;
+        assert_eq!(q2, 500);
+        assert!(q2 < client.get_proposal(&pid1).quorum_requirement);
+    }
+
+    #[test]
+    fn test_quorum_frozen_at_snapshot() {
+        // A mid-vote change in locked supply must not move the goalposts: the
+        // threshold is snapshotted when the proposal advances to vote.
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_cid, cfg, client) = deploy(&env);
+        let sac = StellarAssetClient::new(&env, &cfg.gp_token);
+
+        let a = Address::generate(&env);
+        let b = Address::generate(&env);
+        sac.mint(&a, &5_000i128);
+        sac.mint(&b, &5_000i128);
+        client.lock_tokens(&a, &5_000i128, &MAX_LOCK_LEDGERS);
+        client.lock_tokens(&b, &5_000i128, &MAX_LOCK_LEDGERS);
+
+        let pid = mk_proposal(&env, &client, &a);
+        snapshot(&client, &a, pid);
+        let frozen = client.get_proposal(&pid).quorum_requirement;
+        assert_eq!(frozen, 1_000); // 10% of 10_000 locked at the snapshot
+
+        // A whale locks mid-vote, quintupling the pool to 500k. Recomputing
+        // quorum live would demand 50_000 votes and this proposal would fail;
+        // the snapshotted threshold keeps it at 1_000.
+        let whale = Address::generate(&env);
+        sac.mint(&whale, &490_000i128);
+        client.lock_tokens(&whale, &490_000i128, &MAX_LOCK_LEDGERS);
+
+        let end = env.ledger().sequence() + VOTING_PERIOD;
+        vote(&client, &a, pid, true);
+        vote(&client, &b, pid, true);
+        env.ledger().set_sequence_number(end + 1);
+        finalise(&client, pid);
+
+        let p = client.get_proposal(&pid);
+        assert_eq!(p.quorum_requirement, frozen);
+        assert_eq!(p.stage, ProposalStage::Execution);
+    }
+
+    #[test]
+    fn test_total_locked_tracks_locks_and_withdrawals() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_cid, cfg, client) = deploy(&env);
+        let sac = StellarAssetClient::new(&env, &cfg.gp_token);
+
+        assert_eq!(client.get_total_locked(), 0);
+
+        let a = Address::generate(&env);
+        sac.mint(&a, &10_000i128);
+        client.lock_tokens(&a, &5_000i128, &MIN_LOCK_LEDGERS);
+        assert_eq!(client.get_total_locked(), 5_000);
+
+        let b = Address::generate(&env);
+        sac.mint(&b, &10_000i128);
+        client.lock_tokens(&b, &3_000i128, &MIN_LOCK_LEDGERS);
+        assert_eq!(client.get_total_locked(), 8_000);
+
+        // Replacing an expired lock drops the old amount before adding the new.
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + MIN_LOCK_LEDGERS + 1);
+        client.lock_tokens(&a, &4_000i128, &MIN_LOCK_LEDGERS);
+        assert_eq!(client.get_total_locked(), 7_000);
+
+        // Withdrawing removes the lock's amount from the total.
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + MIN_LOCK_LEDGERS + 1);
+        client.withdraw(&a);
+        assert_eq!(client.get_total_locked(), 3_000);
+    }
+
     // ─── R9: Snapshot → Execution / Defeated ──────────────────────────────
 
     #[test]
@@ -1436,15 +1646,23 @@ mod tests {
 
     #[test]
     fn test_finalise_defeated_no_quorum() {
+        // Quorum is 10% of the total locked supply. Most of the supply is held
+        // by a voter who does not participate, so the votes cast fall short of
+        // the proportional threshold even though they are a huge absolute count.
         let env = Env::default();
         env.mock_all_auths();
         let (_cid, cfg, client) = deploy(&env);
         let a = Address::generate(&env);
+        let b = Address::generate(&env);
         let sac = StellarAssetClient::new(&env, &cfg.gp_token);
         sac.mint(&a, &500i128);
+        sac.mint(&b, &500_000i128);
         client.lock_tokens(&a, &500i128, &MAX_LOCK_LEDGERS);
+        client.lock_tokens(&b, &500_000i128, &MAX_LOCK_LEDGERS);
         let pid = mk_proposal(&env, &client, &a);
         snapshot(&client, &a, pid);
+        // 10% of 500_500 = 50_050; a alone votes ~500.
+        assert_eq!(client.get_proposal(&pid).quorum_requirement, 50_050);
         let end = env.ledger().sequence() + VOTING_PERIOD;
         vote(&client, &a, pid, true);
         env.ledger().set_sequence_number(end + 1);
