@@ -426,7 +426,7 @@ async function repairBogusProjectStatusEvents() {
 
       for (const stream of badStreams) {
         const projRes = await client.query("SELECT status FROM projects WHERE id = $1", [stream.aggregate_id]);
-        const actualStatus = projRes.rows[0]?.status || 'active';
+        const actualStatus = projRes.rows[0]?.status || "active";
         
         events.push(
           new ProjectStatusChangedEvent({
