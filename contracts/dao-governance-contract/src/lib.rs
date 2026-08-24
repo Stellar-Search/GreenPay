@@ -767,6 +767,40 @@ impl DaoGovernanceContract {
         env.events()
             .publish((Symbol::new(&env, "upgraded"), caller), new_wasm_hash);
     }
+
+    // ─── Requirement 12: DAO-Governed Config Update ───────────────────────────
+
+    /// Updates the DAO configuration parameters (quorum, voting period, timelock, etc.).
+    ///
+    /// # Authorization
+    /// Must be authorized by the DAO contract itself (`env.current_contract_address().require_auth()`),
+    /// ensuring configuration updates can only be executed via a successful, passed DAO proposal.
+    ///
+    /// # Bounds checks
+    /// * `quorum_bps`: must be > 0 and <= 10_000 (100%).
+    /// * `voting_period_ledgers`: must be >= `MIN_VOTING_WINDOW` (120_960 ledgers).
+    /// * `timelock_ledgers`: must be > 0.
+    pub fn set_config(env: Env, new_config: Config) {
+        env.current_contract_address().require_auth();
+        if new_config.quorum_bps <= 0 {
+            panic!("quorum must be positive");
+        }
+        if new_config.quorum_bps > 10_000 {
+            panic!("quorum too high");
+        }
+        if new_config.voting_period_ledgers < MIN_VOTING_WINDOW {
+            panic!("voting period too short");
+        }
+        if new_config.timelock_ledgers == 0 {
+            panic!("timelock must be positive");
+        }
+        env.storage().instance().set(&DataKey::Config, &new_config);
+        env.storage()
+            .instance()
+            .extend_ttl(MIN_VOTING_WINDOW, MAX_LOCK_LEDGERS);
+        env.events()
+            .publish((Symbol::new(&env, "set_cfg"),), new_config);
+    }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -2304,5 +2338,98 @@ mod tests {
         let p = client.get_proposal(&pid);
         env.ledger().set_sequence_number(p.executable_from_ledger);
         client.execute_proposal(&pid);
+    }
+
+    // ─── R16: DAO-Governed Config Updates ─────────────────────────────────
+
+    #[test]
+    fn test_set_config_ok() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (cid, cfg, client) = deploy(&env);
+
+        let new_admin = Address::generate(&env);
+        let new_cfg = Config {
+            gp_token: cfg.gp_token.clone(),
+            quorum_bps: 1500,
+            voting_period_ledgers: VOTING_PERIOD + 10_000,
+            timelock_ledgers: TIMELOCK + 5_000,
+            dao_admin: new_admin.clone(),
+        };
+
+        // When called with contract's own authorization (e.g. via mock_all_auths or internal invocation)
+        client.set_config(&new_cfg);
+
+        let updated = client.get_config();
+        assert_eq!(updated.gp_token, cfg.gp_token);
+        assert_eq!(updated.quorum_bps, 1500);
+        assert_eq!(updated.voting_period_ledgers, VOTING_PERIOD + 10_000);
+        assert_eq!(updated.timelock_ledgers, TIMELOCK + 5_000);
+        assert_eq!(updated.dao_admin, new_admin);
+
+        // Verify event was emitted
+        let events = env.events().all();
+        let last_event = events.last().unwrap();
+        assert_eq!(last_event.0, cid);
+    }
+
+    #[test]
+    #[should_panic(expected = "quorum must be positive")]
+    fn test_set_config_zero_quorum_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_cid, cfg, client) = deploy(&env);
+
+        let mut new_cfg = cfg.clone();
+        new_cfg.quorum_bps = 0;
+        client.set_config(&new_cfg);
+    }
+
+    #[test]
+    #[should_panic(expected = "quorum must be positive")]
+    fn test_set_config_negative_quorum_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_cid, cfg, client) = deploy(&env);
+
+        let mut new_cfg = cfg.clone();
+        new_cfg.quorum_bps = -500;
+        client.set_config(&new_cfg);
+    }
+
+    #[test]
+    #[should_panic(expected = "quorum too high")]
+    fn test_set_config_excessive_quorum_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_cid, cfg, client) = deploy(&env);
+
+        let mut new_cfg = cfg.clone();
+        new_cfg.quorum_bps = 10_001;
+        client.set_config(&new_cfg);
+    }
+
+    #[test]
+    #[should_panic(expected = "voting period too short")]
+    fn test_set_config_short_voting_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_cid, cfg, client) = deploy(&env);
+
+        let mut new_cfg = cfg.clone();
+        new_cfg.voting_period_ledgers = MIN_VOTING_WINDOW - 1;
+        client.set_config(&new_cfg);
+    }
+
+    #[test]
+    #[should_panic(expected = "timelock must be positive")]
+    fn test_set_config_zero_timelock_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_cid, cfg, client) = deploy(&env);
+
+        let mut new_cfg = cfg.clone();
+        new_cfg.timelock_ledgers = 0;
+        client.set_config(&new_cfg);
     }
 }
