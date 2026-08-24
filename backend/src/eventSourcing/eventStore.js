@@ -271,7 +271,9 @@ class EventStoreService {
       if (inTransaction && client) {
         try {
           await client.query("ROLLBACK");
-        } catch (_) {}
+        } catch (rollbackErr) {
+          logger.error({ msg: "failed to rollback dead-letter transaction", eventId: row.event_id, error: rollbackErr.message });
+        }
       }
       logger.error({ msg: "failed to record dead-letter event", eventId: row.event_id, error: dbErr.message });
       try {
@@ -281,7 +283,9 @@ class EventStoreService {
            WHERE event_id = $1`,
           [row.event_id, attempts, errorMsg]
         );
-      } catch (_) {}
+      } catch (fallbackErr) {
+        logger.error({ msg: "failed to mark event dead-lettered after DB error", eventId: row.event_id, error: fallbackErr.message });
+      }
     } finally {
       if (client && typeof client.release === "function") client.release();
     }
