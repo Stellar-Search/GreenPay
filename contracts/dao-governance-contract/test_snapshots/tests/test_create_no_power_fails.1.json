@@ -259,7 +259,7 @@
                             },
                             {
                               "key": {
-                                "symbol": "quorum"
+                                "symbol": "quorum_bps"
                               },
                               "val": {
                                 "i128": {
@@ -297,6 +297,21 @@
                         },
                         "val": {
                           "u64": 0
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "TotalLocked"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "i128": {
+                            "hi": 0,
+                            "lo": 0
+                          }
                         }
                       }
                     ]
@@ -642,7 +657,7 @@
                 },
                 {
                   "key": {
-                    "symbol": "quorum"
+                    "symbol": "quorum_bps"
                   },
                   "val": {
                     "i128": {
@@ -754,7 +769,7 @@
                 },
                 {
                   "key": {
-                    "symbol": "quorum"
+                    "symbol": "quorum_bps"
                   },
                   "val": {
                     "i128": {
@@ -930,7 +945,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'insufficient voting power to propose' from contract function 'Symbol(obj#209)'"
+                  "string": "caught panic 'insufficient voting power to propose' from contract function 'Symbol(obj#231)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
