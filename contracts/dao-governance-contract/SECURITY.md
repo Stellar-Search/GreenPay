@@ -133,6 +133,70 @@ operation after the first lock).
 
 ---
 
+### H-02 — Quorum was an absolute vote count, not a proportion of locked supply  *(Fixed)*
+
+**Severity:** High.
+**Location (pre-fix):** `Config.quorum`, `finalise_vote` (~line 535).
+
+#### Root cause
+
+`finalise_vote` compared `votes_for + votes_against` against
+`config.quorum`, a fixed absolute `i128` chosen at `initialize`. Voting power
+is time-decayed lock weight (`get_voting_power`), and the locked supply moves
+constantly as voters lock, extend and withdraw, so the threshold an absolute
+number should be measured against drifts with it: a quorum sized for a small
+ecosystem becomes trivial once more tokens are locked, and one sized for
+maturity becomes unreachable during early participation. Because `Config` is
+immutable, nothing on-chain could recalibrate it.
+
+#### Fix
+
+Quorum is now a **proportion**, expressed in basis points
+(`Config.quorum_bps`, 1/10000 of the total locked GP supply), and is
+snapshotted onto each proposal when it advances to vote:
+
+```rust
+proposal.quorum_requirement = (total_locked * config.quorum_bps) / 10000;
+```
+
+The denominator — `DataKey::TotalLocked` — is maintained **incrementally** on
+every `lock_tokens` (adding the new amount and dropping any replaced expired
+lock) and `withdraw` (removing the withdrawn amount), so it is never
+recomputed by iterating lockers. `finalise_vote` uses the frozen
+`proposal.quorum_requirement`, so tokens locked or withdrawn **during** a vote
+cannot move the goalposts.
+
+#### Migration note (absolute → proportional quorum)
+
+No deployment is currently live (all contract IDs are `TODO` in
+`contracts/deployment-config.json`), so there is no on-chain state to
+migrate. For any future deployment that ran the pre-fix code:
+
+1. The `initialize` signature is unchanged in shape — the third argument is
+   still an `i128` — but its meaning changes from an **absolute vote count**
+   to **basis points of total locked supply**. A deployment that initialized
+   with `quorum = 1000` must re-initialize with `quorum_bps = 1000` (10%)
+   and will now require 10% of whatever is locked, rather than 1000 votes.
+2. In-flight proposals created before the upgrade keep their old
+   `quorum_requirement` field default of `0` and should be finalised before
+   the upgrade, or withdrawn, to avoid the `0` threshold being treated as
+   quorum met. After the upgrade all new proposals carry a real threshold.
+3. Because the semantics change, the cleanest cutover is a fresh deploy of
+   the upgraded WASM rather than an in-place upgrade of a live contract; the
+   two are incompatible on the meaning of the stored config value.
+
+#### Regression tests
+
+| Test | What it asserts |
+| --- | --- |
+| `test_quorum_scales_with_locked_supply` | Doubling the locked supply doubles `quorum_requirement` for a new proposal (50_000 → 100_000 at 10%). |
+| `test_quorum_shrinks_when_supply_withdrawn` | After all supply is withdrawn and a smaller pool is locked, a new proposal's threshold shrinks (1_000 → 500). |
+| `test_quorum_frozen_at_snapshot` | A whale locking mid-vote does not move the goalposts: the proposal keeps its snapshotted threshold and passes on the pre-whale votes. |
+| `test_total_locked_tracks_locks_and_withdrawals` | `get_total_locked` reflects locks, expired-lock replacement, and withdrawals (0 → 5000 → 8000 → 7000 → 3000). |
+| `test_finalise_defeated_no_quorum` | Most of the supply held by a non-voter defeats a proposal whose votes fall below the proportional threshold. |
+
+---
+
 ## Access control audit
 
 | Function | Auth required | Role check | Notes |
@@ -159,7 +223,9 @@ operation after the first lock).
 cargo test --lib
 ```
 
-All 61 pre-existing tests pass unchanged. 2 snapshot-integrity regression
-tests added (H-01 fix: `test_snapshot_immutable_after_extend` corrected,
-`test_extend_lock_after_snapshot_does_not_inflate_vote` added).
-Total: **63 tests, 0 failures**.
+All 63 pre-existing tests pass unchanged (H-01 fix included). The H-02
+proportional-quorum fix adds 5 regression tests
+(`test_quorum_scales_with_locked_supply`, `test_quorum_shrinks_when_supply_withdrawn`,
+`test_quorum_frozen_at_snapshot`, `test_total_locked_tracks_locks_and_withdrawals`,
+and the reworked `test_finalise_defeated_no_quorum`).
+Total: **67 tests, 0 failures**.
