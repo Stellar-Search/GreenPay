@@ -1,3 +1,13 @@
+# Local/dev testnet manifests. helm/greenpay is the authoritative path for
+# real environments (testnet and Mainnet, see docs/deployment-mainnet.md) —
+# this kustomization is for local/dev clusters, and additionally carries the
+# ML-workload and custom-scheduler pieces that have no Helm templates yet.
+#
+# k8s/scheduler/ is a separate, independent Kustomization for the optional
+# ML-aware scheduler — it ships its own Namespace and RBAC, so it isn't a
+# Kustomize `component` (those compose partial patches into a base; this is
+# a full standalone base). Apply it on its own, after this one:
+#   kubectl apply -k k8s/scheduler/
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
@@ -19,12 +29,8 @@ resources:
   - ml-workloads/ml-inference.yaml
   - ml-workloads/ml-training.yaml
   - network-policy.yaml
-  # PodDisruptionBudgets. Selectors verified against the Rollout pod labels in
-  # backend.yaml, frontend.yaml and ml-workloads/. Present in the tree but
-  # never referenced here, so kustomize never created them.
+  # PodDisruptionBudgets. Selectors verified (in CI, against the actual
+  # `kustomize build` output — see scripts/check-k8s-manifests.py) to match
+  # the Rollout/Deployment pod labels in backend.yaml, frontend.yaml and
+  # ml-workloads/.
   - pdb.yaml
-
-components:
-  # Deploy the custom scheduler infrastructure.
-  # Apply separately with: kubectl apply -k k8s/scheduler/
-  # Listed here for documentation; exclude from base apply if not yet deployed.

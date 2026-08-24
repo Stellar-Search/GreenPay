@@ -271,7 +271,7 @@ The Mainnet overlay turns TLS on and wires cert-manager so the certificate is is
 | `certManager.acme.email` | empty | Let's Encrypt account contact — set at deploy time |
 | `certManager.acme.server` | `https://acme-v02.api.letsencrypt.org/directory` | Production ACME. Use the staging directory first (below). |
 
-`k8s/ingress.yaml` is the local/dev manifest (`greenpay.local` + a `tls` block pointing at `greenpay-tls`). It is not applied to Mainnet; populate that Secret with mkcert or a self-signed cert if you need HTTPS on a local cluster.
+The local/dev Ingresses (`greenpay.local`, defined inline in `k8s/backend.yaml` and `k8s/frontend.yaml`) carry no `tls` block and are not applied to Mainnet — HTTPS there is a Helm-only concern, provisioned as described above.
 
 #### Provision the certificate
 
