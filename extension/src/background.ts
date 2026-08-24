@@ -1,6 +1,7 @@
 import type { BackgroundRequest, BackgroundResponse } from './messages';
 import {
   WorkerSessionState,
+  isValidStellarAddress,
   type ProjectSummary,
   type StorageArea,
 } from './session-state';
@@ -35,13 +36,18 @@ function toProjectSummary(value: unknown): ProjectSummary | null {
   const project = value as Record<string, unknown>;
   if (typeof project.id !== 'string' || typeof project.name !== 'string') return null;
 
+  // walletAddress is the payment destination — validate the full StrKey
+  // checksum at ingestion time.  A project whose walletAddress is absent,
+  // non-string, or fails the checksum is dropped entirely so it never
+  // reaches the project cache or the Operation.payment() call.
+  if (!isValidStellarAddress(project.walletAddress)) return null;
+
   return {
     id: project.id,
     name: project.name,
     description: typeof project.description === 'string' ? project.description : '',
     category: typeof project.category === 'string' ? project.category : 'Other',
-    walletAddress:
-      typeof project.walletAddress === 'string' ? project.walletAddress : '',
+    walletAddress: project.walletAddress,
   };
 }
 
