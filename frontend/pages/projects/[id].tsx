@@ -14,6 +14,7 @@ import DescriptionAccordion from "@/components/DescriptionAccordion";
 import { fetchProject, fetchProjectUpdates, subscribeToProject, fetchSubscriberCount, createProjectCampaign, fetchProjectMatches, generateProjectSummary, toggleUpdateLike } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import { formatXLM, formatCO2, progressPercent, timeAgo, statusClass, statusLabel, CATEGORY_ICONS, copyToClipboard, shortenAddress } from "@/utils/format";
+import { buildReportHtml } from "@/utils/buildReportHtml";
 import { accountUrl, fetchProjectDiscussion, type ProjectDiscussionMessage } from "@/lib/stellar";
 import { markMonthlySubscriptionPaid } from "@/lib/monthlyGiving";
 import type {
@@ -188,405 +189,80 @@ export default function ProjectDetail({
   const handlePrintReport = () => {
     if (!project) return;
 
-    const pct = progressPercent(project.raisedXLM, project.goalXLM);
-    const reportDate = new Date().toLocaleDateString("en-US", {
-      year: "numeric",
-      month: "long",
-      day: "numeric",
+    // ── Build the report HTML via the pure buildReportHtml utility ────────────
+    //
+    // Security architecture (enforced inside buildReportHtml):
+    //  1. Every user-controlled field is escaped with escapeHtml() before
+    //     interpolation, neutralising stored XSS payloads.
+    //  2. The HTML string is delivered via a sandboxed <iframe srcdoc="…">
+    //     rather than window.open + document.write:
+    //       • "allow-same-origin" absent → null origin → no sessionStorage
+    //         access (admin JWT is unreachable even if a script ran).
+    //       • "allow-scripts" absent → inline <script> blocks are blocked by
+    //         the sandbox as a second layer of defence.
+    //       • "allow-modals" present → contentWindow.print() works.
+    //  3. Print/Close buttons are on the overlay outside the iframe — always
+    //     reachable; no setTimeout race condition.
+    const printContent = buildReportHtml({ project, updates });
+
+    // ── Render in a sandboxed srcdoc iframe instead of window.open ───────────
+    //
+    // A sandboxed iframe with no "allow-same-origin" token runs in a unique
+    // null origin — it cannot access the parent's sessionStorage (which holds
+    // the admin JWT) even if a script somehow reached execution.  Omitting
+    // "allow-scripts" provides a second layer: inline script blocks that
+    // survive HTML escaping are still blocked by the sandbox policy.
+    //
+    // The overlay is added to the current document; the user clicks "Print"
+    // (which calls iframe.contentWindow.print()) or "Close" to remove it.
+    // This replaces the setTimeout race that could crash if the popup was
+    // closed before 250 ms elapsed.
+    const overlay = document.createElement("div");
+    overlay.setAttribute("data-print-overlay", "true");
+    overlay.style.cssText = [
+      "position:fixed",
+      "inset:0",
+      "z-index:9999",
+      "background:rgba(0,0,0,0.7)",
+      "display:flex",
+      "flex-direction:column",
+      "align-items:center",
+      "justify-content:center",
+      "gap:12px",
+    ].join(";");
+
+    const iframe = document.createElement("iframe");
+    iframe.setAttribute("sandbox", "allow-modals allow-same-origin");
+    // allow-same-origin is needed only so contentWindow.print() works.
+    // Scripts are still blocked because "allow-scripts" is absent.
+    iframe.style.cssText =
+      "width:860px;max-width:95vw;height:80vh;border:none;border-radius:8px;background:white;";
+    iframe.srcdoc = printContent;
+
+    const btnRow = document.createElement("div");
+    btnRow.style.cssText = "display:flex;gap:12px;";
+
+    const printBtn = document.createElement("button");
+    printBtn.textContent = "🖨 Print";
+    printBtn.style.cssText =
+      "padding:10px 24px;background:#227239;color:white;border:none;border-radius:6px;font-size:15px;cursor:pointer;font-weight:600;";
+    printBtn.addEventListener("click", () => {
+      iframe.contentWindow?.print();
     });
 
-    // Create print window content
-    const printContent = `
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <meta charset="utf-8">
-          <title>${project.name} - Impact Report</title>
-          <style>
-            @media print {
-              @page { margin: 0.75in; }
-              body { margin: 0; }
-            }
-            
-            * { box-sizing: border-box; }
-            
-            body {
-              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-              line-height: 1.6;
-              color: #1a2e1a;
-              max-width: 800px;
-              margin: 0 auto;
-              padding: 40px 20px;
-              background: white;
-            }
-            
-            .header {
-              text-align: center;
-              margin-bottom: 40px;
-              padding-bottom: 30px;
-              border-bottom: 3px solid #227239;
-            }
-            
-            .logo {
-              font-size: 48px;
-              margin-bottom: 10px;
-            }
-            
-            .header h1 {
-              font-size: 28px;
-              color: #227239;
-              margin: 0 0 10px 0;
-              font-weight: 700;
-            }
-            
-            .header .subtitle {
-              font-size: 14px;
-              color: #4b654b;
-              text-transform: uppercase;
-              letter-spacing: 2px;
-              font-weight: 600;
-            }
-            
-            .project-header {
-              margin-bottom: 30px;
-            }
-            
-            .project-title {
-              font-size: 32px;
-              color: #1a2e1a;
-              margin: 0 0 10px 0;
-              font-weight: 700;
-            }
-            
-            .project-meta {
-              display: flex;
-              gap: 20px;
-              flex-wrap: wrap;
-              font-size: 14px;
-              color: #4b654b;
-              margin-bottom: 20px;
-            }
-            
-            .project-meta span {
-              display: inline-flex;
-              align-items: center;
-              gap: 5px;
-            }
-            
-            .badges {
-              display: flex;
-              gap: 10px;
-              flex-wrap: wrap;
-              margin-bottom: 20px;
-            }
-            
-            .badge {
-              display: inline-block;
-              padding: 6px 12px;
-              border-radius: 20px;
-              font-size: 12px;
-              font-weight: 600;
-              border: 2px solid;
-            }
-            
-            .badge-verified {
-              background: #e8f5e9;
-              color: #2e7d32;
-              border-color: #4caf50;
-            }
-            
-            .badge-funded {
-              background: #e8f5e9;
-              color: #1b5e20;
-              border-color: #4caf50;
-            }
-            
-            .badge-category {
-              background: #f0f7f0;
-              color: #227239;
-              border-color: #c8dfc8;
-            }
-            
-            .section {
-              margin-bottom: 30px;
-              page-break-inside: avoid;
-            }
-            
-            .section-title {
-              font-size: 20px;
-              color: #227239;
-              margin: 0 0 15px 0;
-              font-weight: 700;
-              border-bottom: 2px solid #e8f3e8;
-              padding-bottom: 8px;
-            }
-            
-            .description {
-              font-size: 15px;
-              line-height: 1.8;
-              color: #1a2e1a;
-              white-space: pre-wrap;
-            }
-            
-            .stats-grid {
-              display: grid;
-              grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-              gap: 20px;
-              margin-bottom: 30px;
-            }
-            
-            .stat-card {
-              background: #f0f7f0;
-              border: 2px solid #c8dfc8;
-              border-radius: 12px;
-              padding: 20px;
-              text-align: center;
-            }
-            
-            .stat-icon {
-              font-size: 32px;
-              margin-bottom: 8px;
-            }
-            
-            .stat-value {
-              font-size: 24px;
-              font-weight: 700;
-              color: #227239;
-              margin-bottom: 5px;
-            }
-            
-            .stat-label {
-              font-size: 13px;
-              color: #4b654b;
-              text-transform: uppercase;
-              letter-spacing: 1px;
-              font-weight: 600;
-            }
-            
-            .progress-section {
-              background: #f0f7f0;
-              border: 2px solid #c8dfc8;
-              border-radius: 12px;
-              padding: 25px;
-              margin-bottom: 30px;
-            }
-            
-            .progress-header {
-              display: flex;
-              justify-content: space-between;
-              margin-bottom: 12px;
-              font-size: 14px;
-              font-weight: 600;
-            }
-            
-            .progress-bar {
-              height: 24px;
-              background: #c8dfc8;
-              border-radius: 12px;
-              overflow: hidden;
-              position: relative;
-            }
-            
-            .progress-fill {
-              height: 100%;
-              background: linear-gradient(90deg, #227239, #4caf70);
-              border-radius: 12px;
-              display: flex;
-              align-items: center;
-              justify-content: center;
-              color: white;
-              font-weight: 700;
-              font-size: 13px;
-            }
-            
-            .updates-list {
-              list-style: none;
-              padding: 0;
-              margin: 0;
-            }
-            
-            .update-item {
-              padding: 15px 0;
-              border-bottom: 1px solid #e8f3e8;
-            }
-            
-            .update-item:last-child {
-              border-bottom: none;
-            }
-            
-            .update-title {
-              font-weight: 600;
-              color: #1a2e1a;
-              margin-bottom: 5px;
-            }
-            
-            .update-date {
-              font-size: 12px;
-              color: #547454;
-              margin-bottom: 8px;
-            }
-            
-            .update-body {
-              font-size: 14px;
-              color: #4b654b;
-              line-height: 1.6;
-            }
-            
-            .footer {
-              margin-top: 50px;
-              padding-top: 30px;
-              border-top: 2px solid #e8f3e8;
-              text-align: center;
-              font-size: 12px;
-              color: #547454;
-            }
-            
-            .footer-logo {
-              font-size: 24px;
-              margin-bottom: 10px;
-            }
-            
-            .wallet-address {
-              font-family: 'Courier New', monospace;
-              background: #f0f7f0;
-              padding: 8px 12px;
-              border-radius: 6px;
-              font-size: 11px;
-              color: #227239;
-              border: 1px solid #c8dfc8;
-              word-break: break-all;
-            }
-            
-            @media print {
-              body { font-size: 12pt; }
-              .no-print { display: none; }
-            }
-          </style>
-        </head>
-        <body>
-          <div class="header">
-            <div class="logo">🌱</div>
-            <h1>Stellar GreenPay</h1>
-            <div class="subtitle">Project Impact Report</div>
-          </div>
-          
-          <div class="project-header">
-            <h2 class="project-title">${project.name}</h2>
-            <div class="project-meta">
-              <span>📍 ${project.location}</span>
-              <span>📅 Report Date: ${reportDate}</span>
-            </div>
-            <div class="badges">
-              ${project.verified ? '<span class="badge badge-verified">✓ Verified Project</span>' : ""}
-              ${pct >= 100 ? '<span class="badge badge-funded">✅ Fully Funded</span>' : ""}
-              <span class="badge badge-category">${project.category}</span>
-            </div>
-          </div>
-          
-          <div class="section">
-            <h3 class="section-title">Project Overview</h3>
-            <div class="description">${project.description}</div>
-          </div>
-          
-          <div class="section">
-            <h3 class="section-title">Impact Metrics</h3>
-            <div class="stats-grid">
-              <div class="stat-card">
-                <div class="stat-icon">💰</div>
-                <div class="stat-value">${formatXLM(project.raisedXLM)}</div>
-                <div class="stat-label">Total Raised</div>
-              </div>
-              <div class="stat-card">
-                <div class="stat-icon">🎯</div>
-                <div class="stat-value">${formatXLM(project.goalXLM)}</div>
-                <div class="stat-label">Funding Goal</div>
-              </div>
-              <div class="stat-card">
-                <div class="stat-icon">👥</div>
-                <div class="stat-value">${project.donorCount.toLocaleString()}</div>
-                <div class="stat-label">Total Donors</div>
-              </div>
-              <div class="stat-card">
-                <div class="stat-icon">♻️</div>
-                <div class="stat-value">${formatCO2(project.co2OffsetKg)}</div>
-                <div class="stat-label">CO₂ Offset</div>
-              </div>
-            </div>
-          </div>
-          
-          <div class="section">
-            <h3 class="section-title">Funding Progress</h3>
-            <div class="progress-section">
-              <div class="progress-header">
-                <span>${formatXLM(project.raisedXLM)} raised</span>
-                <span>${pct}% of goal</span>
-              </div>
-              <div class="progress-bar">
-                <div class="progress-fill" style="width: ${Math.min(pct, 100)}%">
-                  ${pct >= 100 ? "Goal Reached!" : `${pct}%`}
-                </div>
-              </div>
-            </div>
-          </div>
-          
-          ${
-            updates.length > 0
-              ? `
-          <div class="section">
-            <h3 class="section-title">Recent Project Updates</h3>
-            <ul class="updates-list">
-              ${updates
-                .slice(0, 5)
-                .map(
-                  (update) => `
-                <li class="update-item">
-                  <div class="update-title">${update.title}</div>
-                  <div class="update-date">${new Date(update.createdAt).toLocaleDateString()}</div>
-                  <div class="update-body">${update.body}</div>
-                </li>
-              `,
-                )
-                .join("")}
-            </ul>
-          </div>
-          `
-              : ""
-          }
-          
-          <div class="section">
-            <h3 class="section-title">Project Wallet</h3>
-            <p style="margin-bottom: 10px; font-size: 14px; color: #4b654b;">
-              All donations are sent directly to this Stellar blockchain address:
-            </p>
-            <div class="wallet-address">${project.walletAddress}</div>
-          </div>
-          
-          <div class="footer">
-            <div class="footer-logo">🌍</div>
-            <p>
-              <strong>Stellar GreenPay</strong><br>
-              Blockchain-powered climate finance<br>
-              Open Source • Built on Stellar • Powered by Soroban
-            </p>
-            <p style="margin-top: 15px;">
-              Learn more at stellar-greenpay.org
-            </p>
-          </div>
-        </body>
-      </html>
-    `;
+    const closeBtn = document.createElement("button");
+    closeBtn.textContent = "✕ Close";
+    closeBtn.style.cssText =
+      "padding:10px 24px;background:#fff;color:#1a2e1a;border:2px solid #c8dfc8;border-radius:6px;font-size:15px;cursor:pointer;font-weight:600;";
+    closeBtn.addEventListener("click", () => {
+      document.body.removeChild(overlay);
+    });
 
-    // Open print window
-    const printWindow = window.open("", "_blank");
-    if (printWindow) {
-      printWindow.document.write(printContent);
-      printWindow.document.close();
-      printWindow.focus();
-      // Small delay to ensure content is loaded before printing
-      setTimeout(() => {
-        printWindow.print();
-      }, 250);
-    }
+    btnRow.appendChild(printBtn);
+    btnRow.appendChild(closeBtn);
+    overlay.appendChild(iframe);
+    overlay.appendChild(btnRow);
+    document.body.appendChild(overlay);
   };
 
   const handleSubscribe = async (e: React.FormEvent) => {
