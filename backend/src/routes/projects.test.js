@@ -3,6 +3,7 @@ const express = require("express");
 const request = require("supertest");
 const jwt = require("jsonwebtoken");
 const { signToken } = require("../middleware/auth");
+const { apiEnvelope, errorHandler } = require("../middleware/apiEnvelope");
 
 process.env.ADMIN_USERNAME = "admin";
 process.env.ADMIN_PASSWORD = "testpass";
@@ -52,7 +53,9 @@ const { logAdminAction } = require("../services/audit");
 function buildApp() {
   const app = express();
   app.use(express.json());
+  app.use(apiEnvelope);
   app.use("/api/projects", require("./projects"));
+  app.use(errorHandler);
   return app;
 }
 

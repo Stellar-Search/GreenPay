@@ -3,10 +3,47 @@ name: Mobile Preview Build
 on:
   push:
     branches: [main]
+  pull_request:
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/mobile.yml'
+
+permissions:
+  contents: read
 
 jobs:
+  audit:
+    name: Mobile dependency audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node-install
+        with:
+          working-directory: mobile
+      - name: npm audit (fail on high/critical)
+        run: npx --yes audit-ci@7.1.0 --high --package-manager npm --config .audit-ci.json
+
+  test:
+    name: Mobile Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node-install
+        with:
+          working-directory: mobile
+      # Nothing ran these before, which is how a corrupt test file, three
+      # unrunnable suites and four failing tests went unnoticed.
+      - run: npm test
+
   build:
     name: EAS Preview Build
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -27,7 +64,7 @@ jobs:
             echo "configured=false" >> "$GITHUB_OUTPUT"
             echo "::warning::EXPO_TOKEN secret is not configured — skipping EAS preview build. Add an Expo access token as the EXPO_TOKEN repository secret to enable this workflow."
           fi
-      - uses: expo/expo-github-action@v8
+      - uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8
         if: steps.check-token.outputs.configured == 'true'
         with:
           eas-version: latest

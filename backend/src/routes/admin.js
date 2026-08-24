@@ -3,44 +3,66 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../db/pool");
 const { signToken, adminRequired } = require("../middleware/auth");
-const { createRateLimiter } = require("../middleware/rateLimiter");
+const { createRateLimiter, createLayeredRateLimiter } = require("../middleware/rateLimiter");
+const { createProgressiveDelay } = require("../middleware/progressiveDelay");
 const { validate } = require("../middleware/validate");
+const { createApiError } = require("../middleware/apiEnvelope");
 const { AdminLoginSchema, AdminRefreshSchema, AdminAuditQuerySchema } = require("../schemas/admin");
 const { logAdminAction } = require("../services/audit");
 const { enqueueAISummary } = require("../services/summaryQueue");
+const { env } = require("../config/env");
 
+// Per-IP floor on login attempts (10 per 15 minutes per address). The real
+// anti-brute-force barrier is the per-account progressive delay below, which
+// follows the attempted username across any number of source addresses.
 const loginLimiter = createRateLimiter(10, 15, "admin-login");
+
+// Progressive delay keyed on the account being attempted: delays kick in after
+// a handful of failures and grow exponentially, so a distributed attack that
+// rotates IPs is still throttled per account, and a successful login resets
+// the counter.
+const loginAccountDelay = createProgressiveDelay();
+
+// Bounds every authenticated admin operation per subject (not per IP) so the
+// same admin session is constrained regardless of its source address.
+const adminSubjectLimiter = createRateLimiter(120, 1, "admin-subject", { keyBy: "subject" });
+
+// Replaying a permanently-failed AI summary job enqueues a paid Claude call,
+// so beyond the subject cap this endpoint also carries a global cap that no
+// number of distinct clients can exceed.
+const summaryRetryLimiter = createLayeredRateLimiter({
+  name: "admin-summary-retry",
+  windowMinutes: 1,
+  ip: 30,
+  subject: 10,
+  global: 10,
+});
 
 const TOKEN_EXPIRY = "1h";
 const REFRESH_EXPIRY = "24h";
 
-router.post("/login", loginLimiter, validate(AdminLoginSchema), (req, res) => {
+router.post("/login", loginLimiter, loginAccountDelay, validate(AdminLoginSchema), (req, res) => {
   const { username, password } = req.body || {};
-  const adminUser = process.env.ADMIN_USERNAME || "admin";
-  const adminPass = process.env.ADMIN_PASSWORD;
 
-  if (!adminPass) {
-    return res.status(503).json({ error: "Admin authentication not configured on this server" });
+  if (!env.adminPassword) {
+    throw createApiError(503, "ADMIN_AUTH_NOT_CONFIGURED", "Admin authentication not configured on this server");
   }
 
-  if (username !== adminUser || password !== adminPass) {
-    return res.status(401).json({ error: "Invalid credentials" });
+  if (username !== env.adminUsername || password !== env.adminPassword) {
+    throw createApiError(401, "INVALID_CREDENTIALS", "Invalid credentials");
   }
 
-  const token = signToken({ role: "admin", sub: adminUser }, TOKEN_EXPIRY);
-  const refreshToken = signToken({ role: "admin", sub: adminUser, type: "refresh" }, REFRESH_EXPIRY);
+  const token = signToken({ role: "admin", sub: env.adminUsername }, TOKEN_EXPIRY);
+  const refreshToken = signToken({ role: "admin", sub: env.adminUsername, type: "refresh" }, REFRESH_EXPIRY);
 
   res.json({
-    success: true,
-    data: {
-      token,
-      refreshToken,
-      expiresIn: 3600,
-    },
+    token,
+    refreshToken,
+    expiresIn: 3600,
   });
 });
 
-router.get("/audit", adminRequired, validate(AdminAuditQuerySchema, { source: "query" }), async (req, res, next) => {
+router.get("/audit", adminRequired, adminSubjectLimiter, validate(AdminAuditQuerySchema, { source: "query" }), async (req, res, next) => {
   try {
     const { actor, action, limit = 50, offset = 0 } = req.query;
     const where = [];
@@ -83,15 +105,14 @@ router.get("/audit", adminRequired, validate(AdminAuditQuerySchema, { source: "q
       createdAt: new Date(row.created_at).toISOString(),
     }));
 
-    res.json({
-      success: true,
-      data: rows,
+    res.apiMeta({
       pagination: {
         total: parseInt(countResult.rows[0].total, 10),
         limit: Number.parseInt(limit, 10) || 50,
         offset: Number.parseInt(offset, 10) || 0,
       },
     });
+    res.json(rows);
   } catch (e) {
     next(e);
   }
@@ -105,7 +126,7 @@ router.get("/audit", adminRequired, validate(AdminAuditQuerySchema, { source: "q
  * this a permanently-failed job is only visible by querying pg-boss's own
  * tables directly.
  */
-router.get("/ai-summary-failures", adminRequired, async (req, res, next) => {
+router.get("/ai-summary-failures", adminRequired, adminSubjectLimiter, async (req, res, next) => {
   try {
     const limit = Math.min(Number.parseInt(req.query.limit, 10) || 50, 200);
     const offset = Math.max(Number.parseInt(req.query.offset, 10) || 0, 0);
@@ -133,15 +154,14 @@ router.get("/ai-summary-failures", adminRequired, async (req, res, next) => {
       resolvedAt: row.resolved_at ? new Date(row.resolved_at).toISOString() : null,
     }));
 
-    res.json({
-      success: true,
-      data: rows,
+    res.apiMeta({
       pagination: {
         total: parseInt(countResult.rows[0].total, 10),
         limit,
         offset,
       },
     });
+    res.json(rows);
   } catch (e) {
     next(e);
   }
@@ -153,7 +173,7 @@ router.get("/ai-summary-failures", adminRequired, async (req, res, next) => {
  * Re-enqueues a permanently-failed summary job from its recorded payload and
  * marks the failure retried, so the same record cannot be replayed twice.
  */
-router.post("/ai-summary-failures/:id/retry", adminRequired, async (req, res, next) => {
+router.post("/ai-summary-failures/:id/retry", adminRequired, summaryRetryLimiter, async (req, res, next) => {
   try {
     const failureResult = await pool.query(
       "SELECT id, project_id, payload, status FROM ai_summary_job_failures WHERE id = $1",
@@ -161,10 +181,10 @@ router.post("/ai-summary-failures/:id/retry", adminRequired, async (req, res, ne
     );
     const failure = failureResult.rows[0];
     if (!failure) {
-      return res.status(404).json({ error: "Failure record not found" });
+      throw createApiError(404, "AI_SUMMARY_FAILURE_NOT_FOUND", "Failure record not found");
     }
     if (failure.status === "retried") {
-      return res.status(409).json({ error: "Failure has already been retried" });
+      throw createApiError(409, "AI_SUMMARY_FAILURE_ALREADY_RETRIED", "Failure has already been retried");
     }
 
     await enqueueAISummary(failure.project_id, failure.payload || {});
@@ -186,7 +206,7 @@ router.post("/ai-summary-failures/:id/retry", adminRequired, async (req, res, ne
       ipAddress: req.ip,
     });
 
-    res.json({ success: true, data: { status: "retried" } });
+    res.json({ status: "retried" });
   } catch (e) {
     next(e);
   }
@@ -195,31 +215,25 @@ router.post("/ai-summary-failures/:id/retry", adminRequired, async (req, res, ne
 router.post("/refresh", validate(AdminRefreshSchema), (req, res) => {
   const { refreshToken } = req.body || {};
   if (!refreshToken) {
-    return res.status(400).json({ error: "refreshToken is required" });
+    throw createApiError(400, "REFRESH_TOKEN_REQUIRED", "refreshToken is required");
   }
 
   try {
     const decoded = require("../middleware/auth").verifyToken(refreshToken);
     if (decoded.type !== "refresh") {
-      return res.status(401).json({ error: "Invalid refresh token" });
+      throw createApiError(401, "INVALID_REFRESH_TOKEN", "Invalid refresh token");
     }
     const token = signToken({ role: "admin", sub: decoded.sub }, TOKEN_EXPIRY);
-    res.json({
-      success: true,
-      data: { token, expiresIn: 3600 },
-    });
+    res.json({ token, expiresIn: 3600 });
   } catch {
-    return res.status(401).json({ error: "Invalid or expired refresh token" });
+    throw createApiError(401, "INVALID_REFRESH_TOKEN", "Invalid or expired refresh token");
   }
 });
 
-router.get("/me", adminRequired, (req, res) => {
+router.get("/me", adminRequired, adminSubjectLimiter, (req, res) => {
   res.json({
-    success: true,
-    data: {
-      username: req.admin.sub,
-      role: req.admin.role,
-    },
+    username: req.admin.sub,
+    role: req.admin.role,
   });
 });
 

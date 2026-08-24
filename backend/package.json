@@ -8,7 +8,8 @@
     "start": "node src/server.js",
     "lint": "eslint src",
     "docs": "typedoc --options typedoc.json",
-    "test": "jest --runInBand"
+    "test": "jest --runInBand",
+    "test:local-chain": "RUN_LOCAL_CHAIN_TESTS=true jest src/services/localChainDonation.integration.test.js --runInBand"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.91.1",

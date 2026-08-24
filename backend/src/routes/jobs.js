@@ -7,12 +7,11 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../db/pool");
 const { mapJobRow } = require("../services/store");
+const { createApiError } = require("../middleware/apiEnvelope");
 
 function validateTxHash(h) {
   if (!h || !/^[a-fA-F0-9]{64}$/.test(h)) {
-    const e = new Error("Invalid transaction hash");
-    e.status = 400;
-    throw e;
+    throw createApiError(400, "INVALID_TRANSACTION_HASH", "Invalid transaction hash");
   }
 }
 
@@ -21,7 +20,7 @@ router.get("/", async (req, res, next) => {
     const result = await pool.query(
       "SELECT * FROM jobs ORDER BY created_at DESC LIMIT 50",
     );
-    res.json({ success: true, data: result.rows.map(mapJobRow) });
+    res.json(result.rows.map(mapJobRow));
   } catch (e) {
     next(e);
   }
@@ -36,14 +35,10 @@ router.patch("/:id/release", async (req, res, next) => {
       req.params.id,
     ]);
     if (!found.rows[0]) {
-      const e = new Error("Job not found");
-      e.status = 404;
-      throw e;
+      throw createApiError(404, "JOB_NOT_FOUND", "Job not found");
     }
     if (found.rows[0].status !== "in_escrow") {
-      const e = new Error("Job is not awaiting release");
-      e.status = 400;
-      throw e;
+      throw createApiError(400, "JOB_NOT_AWAITING_RELEASE", "Job is not awaiting release");
     }
 
     const updated = await pool.query(
@@ -56,7 +51,7 @@ router.patch("/:id/release", async (req, res, next) => {
       [releaseTransactionHash, req.params.id],
     );
 
-    res.json({ success: true, data: mapJobRow(updated.rows[0]) });
+    res.json(mapJobRow(updated.rows[0]));
   } catch (e) {
     next(e);
   }
@@ -68,9 +63,9 @@ router.get("/:id", async (req, res, next) => {
       req.params.id,
     ]);
     if (!result.rows[0]) {
-      return res.status(404).json({ error: "Job not found" });
+      throw createApiError(404, "JOB_NOT_FOUND", "Job not found");
     }
-    res.json({ success: true, data: mapJobRow(result.rows[0]) });
+    res.json(mapJobRow(result.rows[0]));
   } catch (e) {
     next(e);
   }

@@ -64,7 +64,7 @@ function createShutdownHandler({
       await closeServer(server);
       logger.log("[Shutdown] HTTP server closed");
 
-      if (stopIndexer) stopIndexer();
+      if (stopIndexer) await stopIndexer();
 
       await shutdownEventSourcing();
       await pool.end();

@@ -61,17 +61,14 @@ router.get("/graph", async (req, res, next) => {
     }
 
     res.json({
-      success: true,
-      data: {
-        nodes: Array.from(nodes.values()),
-        edges: edges.map((e) => ({
-          source: e.source,
-          target: e.target,
-          amount: parseFloat(e.amount) || 0,
-          type: e.type,
-          txHash: e.txHash,
-        })),
-      },
+      nodes: Array.from(nodes.values()),
+      edges: edges.map((e) => ({
+        source: e.source,
+        target: e.target,
+        amount: parseFloat(e.amount) || 0,
+        type: e.type,
+        txHash: e.txHash,
+      })),
     });
   } catch (e) {
     next(e);

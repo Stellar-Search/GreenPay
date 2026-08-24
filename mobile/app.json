@@ -3,6 +3,9 @@
     "name": "Stellar GreenPay",
     "slug": "stellar-greenpay",
     "version": "1.0.0",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -17,7 +20,12 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.stellargreenpay.app",
-      "associatedDomains": ["applinks:greenpay.app"]
+      "buildNumber": "1",
+      "associatedDomains": ["applinks:greenpay.app"],
+      "infoPlist": {
+        "NSCameraUsageDescription": "Allow GreenPay to access your camera to scan QR codes.",
+        "NSFaceIDUsageDescription": "Allow GreenPay to use Face ID or Touch ID to securely authenticate."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -25,6 +33,12 @@
         "backgroundColor": "#227239"
       },
       "package": "com.stellargreenpay.app",
+      "versionCode": 1,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.POST_NOTIFICATIONS"
+      ],
       "intentFilters": [
         {
           "action": "VIEW",

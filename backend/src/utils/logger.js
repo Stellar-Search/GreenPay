@@ -28,6 +28,7 @@
 "use strict";
 
 const { AsyncLocalStorage } = require("async_hooks");
+const { env } = require("../config/env");
 
 // ── Shared storage ──────────────────────────────────────────────────────────
 // One singleton per process; the correlation-ID middleware calls
@@ -90,7 +91,7 @@ function redactFields(obj) {
 
 // ── Core emit ────────────────────────────────────────────────────────────────
 
-const SERVICE = process.env.SERVICE_NAME || "greenpay-backend";
+const SERVICE = env.serviceName;
 
 /**
  * Serialise and emit one log record.

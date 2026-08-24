@@ -6,11 +6,11 @@
 #
 # ── Design decisions ───────────────────────────────────────────────────────
 #
-# backend / frontend / summary-worker (2 replicas each)
+# backend / frontend / summary-worker (2 replicas each; backend/frontend HPA
+# minReplicas: 2, see k8s/hpa.yaml)
 #   maxUnavailable: 1 — one replica may be evicted at a time; the other stays
 #   up to serve traffic. Using maxUnavailable rather than minAvailable: 1 is
-#   equivalent at replica count 2 and remains valid if replicas are later
-#   increased without touching this file.
+#   equivalent at replica count 2 and remains valid when the HPA scales up.
 #
 # ml-inference (2 replicas, HPA minReplicas: 1)
 #   maxUnavailable: 1 — must NOT use minAvailable: 1 here. When the HPA

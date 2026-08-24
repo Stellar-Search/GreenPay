@@ -14,9 +14,18 @@ on:
     tags:
       - 'v*'
 
+# Default token to read-only; the build job below overrides to contents:write
+# since "Create Release" (tag pushes only) needs it.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    # "Create Release" below (tag pushes only) needs contents:write to
+    # create the GitHub release and upload assets.
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -25,6 +34,10 @@ jobs:
         uses: ./.github/actions/setup-node-install
         with:
           working-directory: extension
+
+      - name: npm audit (fail on high/critical)
+        working-directory: extension
+        run: npx --yes audit-ci@7.1.0 --high --package-manager npm
 
       - name: Simulate service-worker termination and test recovery
         working-directory: extension
@@ -48,7 +61,7 @@ jobs:
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
         with:
           files: extension/greenpay-extension.zip
           draft: false

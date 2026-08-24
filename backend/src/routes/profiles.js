@@ -6,20 +6,32 @@ const express = require("express");
 const router  = express.Router();
 const pool = require("../db/pool");
 const { mapProfileRow } = require("../services/store");
-const { createRateLimiter } = require("../middleware/rateLimiter");
+const { createLayeredRateLimiter } = require("../middleware/rateLimiter");
+const { createApiError } = require("../middleware/apiEnvelope");
 
 function validateKey(k) {
-  if (!k || !/^G[A-Z0-9]{55}$/.test(k)) { const e = new Error("Invalid public key"); e.status = 400; throw e; }
+  if (!k || !/^G[A-Z0-9]{55}$/.test(k)) {
+    throw createApiError(400, "INVALID_PUBLIC_KEY", "Invalid public key");
+  }
 }
 
-const profilePostLimiter = createRateLimiter(20, 1, "profile-post");
+// Layered: per-IP floor (shared egresses don't starve each other) + per-wallet
+// cap so profile writes are bounded per identity, not per address.
+const profilePostLimiter = createLayeredRateLimiter({
+  name: "profile-post",
+  windowMinutes: 1,
+  ip: 60,
+  wallet: 20,
+});
 
 router.get("/:publicKey", async (req, res, next) => {
   try {
     validateKey(req.params.publicKey);
     const result = await pool.query("SELECT * FROM profiles WHERE public_key = $1", [req.params.publicKey]);
-    if (!result.rows[0]) { const e = new Error("Profile not found"); e.status = 404; throw e; }
-    res.json({ success: true, data: mapProfileRow(result.rows[0]) });
+    if (!result.rows[0]) {
+      throw createApiError(404, "PROFILE_NOT_FOUND", "Profile not found");
+    }
+    res.json(mapProfileRow(result.rows[0]));
   } catch (e) { next(e); }
 });
 
@@ -43,7 +55,7 @@ router.post("/", profilePostLimiter, async (req, res, next) => {
       [publicKey, trimmedDisplayName, trimmedBio],
     );
 
-    res.json({ success: true, data: mapProfileRow(result.rows[0]) });
+    res.json(mapProfileRow(result.rows[0]));
   } catch (e) { next(e); }
 });
 

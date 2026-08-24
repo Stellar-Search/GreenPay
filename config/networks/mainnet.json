@@ -1,0 +1,13 @@
+{
+  "manifestVersion": "1.0.0",
+  "network": "mainnet",
+  "networkPassphrase": "Public Global Stellar Network ; September 2015",
+  "horizonUrl": "https://horizon.stellar.org",
+  "sorobanRpcUrl": "https://soroban.stellar.org",
+  "contracts": {
+    "greenPay": "",
+    "escrow": "",
+    "daoGovernance": ""
+  },
+  "generatedAt": "GENERATED_BY_DEPLOY_WORKFLOW"
+}

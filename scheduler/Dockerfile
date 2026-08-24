@@ -1,45 +1,31 @@
-# Multi-stage Dockerfile for the GreenPay custom Kubernetes scheduler.
-#
-# Stage 1 (builder): compiles the Go binary with CGO disabled for a fully
-#   static binary that works in a scratch container.
-#
-# Stage 2 (runner): minimal distroless image — no shell, no package manager,
-#   no attack surface.  The binary is the only thing in the image.
+# Build Stage
+FROM golang:1.25-alpine AS builder
 
-# ── Stage 1: Build ────────────────────────────────────────────────────────────
-FROM golang:1.22-alpine AS builder
+WORKDIR /app
 
-WORKDIR /build
-
-# Install build dependencies.
+# Install build dependencies
 RUN apk add --no-cache git ca-certificates
 
-# Copy source and build.
+# 1. Separate cached layer for dependencies
+COPY go.mod go.sum ./
+RUN go mod download
+
+# 2. Copy source code after dependencies are cached
 COPY . .
 
-# Generate go.sum and resolve dependencies for imported packages
-RUN go mod tidy
+# 3. Build binary using -mod=readonly to prevent silent lockfile mutations
+RUN CGO_ENABLED=0 GOOS=linux go build -mod=readonly -a -installsuffix cgo -o scheduler ./cmd/scheduler
 
-# Build a fully static binary (no libc, no CGO).
-# -trimpath removes local file paths from the binary for reproducibility.
-# -ldflags "-s -w" strips debug symbols to reduce image size.
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build \
-      -trimpath \
-      -ldflags="-s -w -extldflags '-static'" \
-      -o /greenpay-scheduler \
-      ./cmd/scheduler
+# Final Runtime Stage (non-root UID 65534 - nobody)
+FROM gcr.io/distroless/static-debian12:nonroot
 
-# ── Stage 2: Runtime ──────────────────────────────────────────────────────────
-FROM gcr.io/distroless/static-debian12:nonroot AS runner
+WORKDIR /
 
-# Copy the CA bundle so the scheduler can verify TLS to the API server.
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+# Copy compiled binary from builder
+COPY --from=builder /app/scheduler /scheduler
 
-# Copy the compiled binary.
-COPY --from=builder /greenpay-scheduler /greenpay-scheduler
+# 4. Consistent UID across Dockerfile comment, Dockerfile USER, and k8s runAsUser (65534)
+# 65534 is nobody:nobody in distroless
+USER 65534:65534
 
-# Run as the nonroot user (uid 65534) provided by distroless:nonroot.
-USER nonroot:nonroot
-
-ENTRYPOINT ["/greenpay-scheduler"]
+ENTRYPOINT ["/scheduler"]

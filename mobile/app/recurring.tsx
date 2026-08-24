@@ -13,8 +13,8 @@ import {
   Alert,
   ActivityIndicator,
 } from 'react-native';
-import { useEffect, useState, useCallback } from 'react';
-import { useFocusEffect } from 'expo-router';
+import { useState, useCallback } from 'react';
+import { useFocusEffect, useRouter } from 'expo-router';
 import {
   loadRecurringDonations,
   cancelRecurringDonation,
@@ -84,6 +84,7 @@ function DonationCard({
 }
 
 export default function RecurringScreen() {
+  const router = useRouter();
   const [donations, setDonations] = useState<RecurringDonation[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -133,8 +134,16 @@ export default function RecurringScreen() {
           <Text style={styles.emptyIcon}>🌱</Text>
           <Text style={styles.emptyTitle}>No active recurring donations</Text>
           <Text style={styles.emptyText}>
-            Set up a monthly donation from any project page to support ongoing impact.
+            Set up a monthly donation from any project or donate screen. When a cycle is due we
+            send a push reminder — you tap to sign; we never auto-pay.
           </Text>
+          <TouchableOpacity
+            style={styles.emptyCta}
+            onPress={() => router.push('/projects')}
+            accessibilityLabel="Browse projects to set up monthly giving"
+          >
+            <Text style={styles.emptyCtaText}>Browse projects</Text>
+          </TouchableOpacity>
         </View>
       ) : (
         donations.map((donation) => (
@@ -192,6 +201,18 @@ const styles = StyleSheet.create({
     color: '#5a7a5a',
     textAlign: 'center',
     lineHeight: 20,
+  },
+  emptyCta: {
+    marginTop: 20,
+    backgroundColor: '#227239',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 8,
+  },
+  emptyCtaText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 14,
   },
   card: {
     backgroundColor: '#fff',

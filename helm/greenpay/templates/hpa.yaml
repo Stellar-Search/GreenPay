@@ -1,0 +1,132 @@
+{{/*
+HorizontalPodAutoscalers for the backend and frontend Argo Rollouts.
+
+Mirrors k8s/hpa.yaml. CPU uses metrics-server; latency / queue-depth / RPS
+use prometheus-adapter — the same custom-metrics stack ml-inference-hpa
+already depends on. Disabled with *.hpa.enabled: false.
+*/}}
+
+{{- if .Values.backend.hpa.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend-hpa
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: backend
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: greenpay
+spec:
+  scaleTargetRef:
+    apiVersion: argoproj.io/v1alpha1
+    kind: Rollout
+    name: backend
+  minReplicas: {{ .Values.backend.hpa.minReplicas }}
+  maxReplicas: {{ .Values.backend.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.backend.hpa.cpuUtilization }}
+    {{- if .Values.backend.hpa.latency.enabled }}
+    - type: Object
+      object:
+        metric:
+          name: {{ .Values.backend.hpa.latency.metric }}
+        describedObject:
+          apiVersion: v1
+          kind: Service
+          name: backend-stable
+        target:
+          type: Value
+          value: {{ .Values.backend.hpa.latency.targetValue | quote }}
+    {{- end }}
+    {{- if .Values.backend.hpa.queueDepth.enabled }}
+    - type: Object
+      object:
+        metric:
+          name: {{ .Values.backend.hpa.queueDepth.metric }}
+        describedObject:
+          apiVersion: v1
+          kind: Service
+          name: backend-stable
+        target:
+          type: Value
+          value: {{ .Values.backend.hpa.queueDepth.targetValue | quote }}
+    {{- end }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: {{ .Values.backend.hpa.behavior.scaleUp.stabilizationWindowSeconds }}
+      selectPolicy: Max
+      policies:
+        - type: Pods
+          value: {{ .Values.backend.hpa.behavior.scaleUp.pods }}
+          periodSeconds: {{ .Values.backend.hpa.behavior.scaleUp.periodSeconds }}
+        - type: Percent
+          value: {{ .Values.backend.hpa.behavior.scaleUp.percent }}
+          periodSeconds: {{ .Values.backend.hpa.behavior.scaleUp.periodSeconds }}
+    scaleDown:
+      stabilizationWindowSeconds: {{ .Values.backend.hpa.behavior.scaleDown.stabilizationWindowSeconds }}
+      selectPolicy: Min
+      policies:
+        - type: Percent
+          value: {{ .Values.backend.hpa.behavior.scaleDown.percent }}
+          periodSeconds: {{ .Values.backend.hpa.behavior.scaleDown.periodSeconds }}
+{{- end }}
+
+{{- if .Values.frontend.hpa.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: frontend-hpa
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: frontend
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: greenpay
+spec:
+  scaleTargetRef:
+    apiVersion: argoproj.io/v1alpha1
+    kind: Rollout
+    name: frontend
+  minReplicas: {{ .Values.frontend.hpa.minReplicas }}
+  maxReplicas: {{ .Values.frontend.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.frontend.hpa.cpuUtilization }}
+    {{- if .Values.frontend.hpa.rps.enabled }}
+    - type: Pods
+      pods:
+        metric:
+          name: {{ .Values.frontend.hpa.rps.metric }}
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.frontend.hpa.rps.targetAverageValue | quote }}
+    {{- end }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: {{ .Values.frontend.hpa.behavior.scaleUp.stabilizationWindowSeconds }}
+      selectPolicy: Max
+      policies:
+        - type: Pods
+          value: {{ .Values.frontend.hpa.behavior.scaleUp.pods }}
+          periodSeconds: {{ .Values.frontend.hpa.behavior.scaleUp.periodSeconds }}
+        - type: Percent
+          value: {{ .Values.frontend.hpa.behavior.scaleUp.percent }}
+          periodSeconds: {{ .Values.frontend.hpa.behavior.scaleUp.periodSeconds }}
+    scaleDown:
+      stabilizationWindowSeconds: {{ .Values.frontend.hpa.behavior.scaleDown.stabilizationWindowSeconds }}
+      selectPolicy: Min
+      policies:
+        - type: Percent
+          value: {{ .Values.frontend.hpa.behavior.scaleDown.percent }}
+          periodSeconds: {{ .Values.frontend.hpa.behavior.scaleDown.periodSeconds }}
+{{- end }}

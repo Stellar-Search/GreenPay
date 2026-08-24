@@ -2,6 +2,21 @@
 
 const { v4: uuid } = require("uuid");
 const { getCorrelationId } = require("../utils/logger");
+const { xlmToStroops, stroopsToXlm } = require("../utils/xlm");
+
+/**
+ * The single place that builds an event stream id from an aggregate type and
+ * aggregate id. Every reader (EventStoreService.getStream/getStreamVersion,
+ * commandBus.loadAggregateStream) must build the id it queries with through
+ * this same helper — and every writer must pass `aggregateId` UNPREFIXED
+ * (e.g. a bare transaction hash or UUID, never "Donation:<hash>") so this is
+ * the only place the "<type>:<id>" prefix is ever added. Prefixing aggregateId
+ * itself before it reaches a DomainEvent double-prefixes the stored stream_id
+ * and silently breaks every stream read.
+ */
+function buildStreamId(aggregateType, aggregateId) {
+  return `${aggregateType}:${aggregateId}`;
+}
 
 class DomainEvent {
   static AGGREGATE_TYPE = null;
@@ -26,7 +41,7 @@ class DomainEvent {
   }
 
   getStreamId() {
-    return `${this.aggregateType}:${this.aggregateId}`;
+    return buildStreamId(this.aggregateType, this.aggregateId);
   }
 
   toRow() {
@@ -65,12 +80,16 @@ class DonationRecordedEvent extends DomainEvent {
   static AGGREGATE_TYPE = "Donation";
   static EVENT_TYPE = "DonationRecorded";
 
-  constructor({ aggregateId, version, actor, projectId, donorAddress, amountXlm, currency = "XLM", message, transactionHash }) {
+  constructor({ aggregateId, version, actor, projectId, donorAddress, amountXlm, amountStroops, currency = "XLM", message, transactionHash }) {
     super({ aggregateId, version, actor });
+    const normalizedStroops = currency === "XLM"
+      ? BigInt(amountStroops ?? xlmToStroops(amountXlm)).toString()
+      : null;
     this.data = {
       projectId,
       donorAddress,
-      amountXlm: Number.parseFloat(amountXlm),
+      amountXlm: normalizedStroops === null ? Number.parseFloat(amountXlm) : stroopsToXlm(normalizedStroops),
+      amountStroops: normalizedStroops,
       currency,
       message: message ? message.trim().slice(0, 100) : null,
       transactionHash,
@@ -288,6 +307,7 @@ function fromPayload(payload) {
       projectId: data.projectId,
       donorAddress: data.donorAddress,
       amountXlm: data.amountXlm,
+      amountStroops: data.amountStroops,
       currency: data.currency,
       message: data.message,
       transactionHash: data.transactionHash,
@@ -409,4 +429,5 @@ module.exports = {
   ProfileCreatedEvent,
   MigratedDonationEvent,
   fromPayload,
+  buildStreamId,
 };

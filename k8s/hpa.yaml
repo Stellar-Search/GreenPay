@@ -1,0 +1,137 @@
+# HorizontalPodAutoscalers for the public-facing Rollouts.
+#
+# ml-inference already ships an autoscaling/v2 HPA (GPU + queue depth). Backend
+# and frontend were a fixed 2-pod fleet, which cannot hold the p95 < 500 ms /
+# ≥100 req/s SLOs in docs/performance.md under a donation spike.
+#
+# Both targets are Argo Rollouts (not Deployments) so the HPA adjusts
+# Rollout.spec.replicas — the same field the canary strategy uses.
+#
+# Prerequisites: metrics-server (CPU) and prometheus-adapter (custom metrics),
+# the same stack ml-inference-hpa already requires.
+#
+# Scale-up is aggressive (no stabilization window, double or +4 pods / 15s)
+# so p95 is protected before it crosses 500 ms. Scale-down waits 5 minutes
+# to avoid flapping. maxReplicas is 10/8 so backend topologySpreadConstraints
+# (maxSkew: 1, DoNotSchedule) still place on a 2- or 3-node cluster.
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend-hpa
+  namespace: greenpay
+  labels:
+    app: backend
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: greenpay
+spec:
+  scaleTargetRef:
+    apiVersion: argoproj.io/v1alpha1
+    kind: Rollout
+    name: backend
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    # Primary: CPU. 60% of request (250m in k8s/backend.yaml) leaves headroom
+    # before the 1000m limit saturates and p95 climbs.
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+    # p95 latency in milliseconds, exposed by prometheus-adapter. Target sits
+    # 100 ms under the SLO so we scale before scripts/load-test.js would fail.
+    - type: Object
+      object:
+        metric:
+          name: greenpay_backend_request_latency_p95_ms
+        describedObject:
+          apiVersion: v1
+          kind: Service
+          name: backend-stable
+        target:
+          type: Value
+          value: "400"
+    # In-flight / queued donation requests (same Object pattern as
+    # greenpay_inference_queue_depth on ml-inference-hpa).
+    - type: Object
+      object:
+        metric:
+          name: greenpay_backend_queue_depth
+        describedObject:
+          apiVersion: v1
+          kind: Service
+          name: backend-stable
+        target:
+          type: Value
+          value: "25"
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      selectPolicy: Max
+      policies:
+        - type: Pods
+          value: 4
+          periodSeconds: 15
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      selectPolicy: Min
+      policies:
+        - type: Percent
+          value: 25
+          periodSeconds: 60
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: frontend-hpa
+  namespace: greenpay
+  labels:
+    app: frontend
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: greenpay
+spec:
+  scaleTargetRef:
+    apiVersion: argoproj.io/v1alpha1
+    kind: Rollout
+    name: frontend
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    # Per-pod request rate via prometheus-adapter. 40 req/s average across
+    # pods covers the ≥100 req/s SLO once 3 replicas are up.
+    - type: Pods
+      pods:
+        metric:
+          name: http_requests_per_second
+        target:
+          type: AverageValue
+          averageValue: "40"
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      selectPolicy: Max
+      policies:
+        - type: Pods
+          value: 4
+          periodSeconds: 15
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      selectPolicy: Min
+      policies:
+        - type: Percent
+          value: 25
+          periodSeconds: 60

@@ -8,8 +8,8 @@
 #     -f helm/greenpay/values-mainnet.yaml \
 #     --set config.contractId=<deployed mainnet contract id>
 #
-# This file contains NO secrets. Production credentials come from the
-# pre-existing Kubernetes Secret named in secrets.existingSecret below.
+# This file contains NO secrets. Production credentials come from AWS Secrets
+# Manager (or Vault) via External Secrets Operator (secrets.provider: external).
 #
 # Run the guard before deploying — it renders these merged values and fails on
 # any mainnet/testnet mismatch:
@@ -36,10 +36,19 @@ config:
   emailFrom: ""
 
 secrets:
-  # All production credentials live in this pre-existing Secret; nothing
-  # sensitive is committed here. Create it out-of-band (or via an external
-  # secrets operator) with the keys listed in values.yaml before deploying.
-  existingSecret: greenpay-secrets-mainnet
+  # External Secrets Operator pulls credentials from AWS Secrets Manager (or
+  # Vault). Nothing sensitive is committed here. The remote JSON secret at
+  # secrets.external.remoteKey must supply POSTGRES_USER, POSTGRES_PASSWORD,
+  # POSTGRES_DB, DATABASE_URL, RESEND_API_KEY and ADMIN_API_KEY (AWS_* optional).
+  #
+  # Override the remote key / region at deploy time:
+  #   --set secrets.external.remoteKey=greenpay/mainnet
+  #   --set secrets.external.aws.region=eu-west-1
+  provider: external
+  existingSecret: ""
+  external:
+    backend: aws
+    remoteKey: greenpay/mainnet
 
 ingress:
   # REQUIRED at deploy time: --set ingress.host=app.greenpay.example
@@ -51,9 +60,24 @@ ingress:
   tls:
     enabled: true
     secretName: greenpay-tls
+    clusterIssuer: letsencrypt-prod
+
+# Renders helm/greenpay/templates/cluster-issuer.yaml and is referenced by
+# the Ingress cert-manager.io/cluster-issuer annotation above. Install
+# cert-manager in the cluster before the first mainnet helm upgrade.
+# REQUIRED at deploy time: --set certManager.acme.email=ops@your-real-domain
+certManager:
+  enabled: true
+  clusterIssuerName: letsencrypt-prod
 
 backend:
   replicas: 3
+  hpa:
+    minReplicas: 2
+    maxReplicas: 12
 
 frontend:
   replicas: 3
+  hpa:
+    minReplicas: 2
+    maxReplicas: 10

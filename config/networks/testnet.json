@@ -1,0 +1,13 @@
+{
+  "manifestVersion": "1.0.0",
+  "network": "testnet",
+  "networkPassphrase": "Test SDF Network ; September 2015",
+  "horizonUrl": "https://horizon-testnet.stellar.org",
+  "sorobanRpcUrl": "https://soroban-testnet.stellar.org",
+  "contracts": {
+    "greenPay": "",
+    "escrow": "",
+    "daoGovernance": ""
+  },
+  "generatedAt": "GENERATED_BY_DEPLOY_WORKFLOW"
+}

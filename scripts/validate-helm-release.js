@@ -6,7 +6,7 @@
  *
  * A GreenPay release is a network mismatch away from a fund-losing bug: a
  * `helm upgrade` that renders `STELLAR_NETWORK: mainnet` alongside a leftover
- * testnet Horizon URL, a testnet contract id, or the `changeme` development
+ * testnet Horizon URL, a testnet contract id, or an inline development
  * password will start, pass its health check, and quietly transact against the
  * wrong chain.
  *
@@ -298,8 +298,8 @@ function validateManifest(manifest, { expectNetwork = null } = {}) {
       errors.push(`stellarNetwork is mainnet but NEXT_PUBLIC_USDC_ISSUER=${usdcIssuer} is not a well-formed Stellar account id`);
     }
 
-    // Credentials. When secrets.existingSecret is set the chart renders no
-    // Secret at all and the cluster supplies it — nothing to check here.
+    // Credentials. When secrets.provider is external (or existingSecret is
+    // set) the chart renders no inline Secret — nothing to check here.
     if (secret) {
       const pw = secret.POSTGRES_PASSWORD || "";
       if (isDefaultPassword(pw)) {

@@ -12,20 +12,32 @@ const express = require("express");
 const router  = express.Router();
 const { v4: uuidv4 } = require("uuid");
 const pool = require("../db/pool");
-const { createRateLimiter } = require("../middleware/rateLimiter");
+const { createLayeredRateLimiter } = require("../middleware/rateLimiter");
 const { mapProjectUpdateRow, mapProjectRow } = require("../services/store");
-const { sendUpdateNotifications } = require("../services/email");
+const { enqueueUpdateNotifications } = require("../services/email");
 const { sendUpdatePushNotifications } = require("../services/push");
 
 const { adminRequired } = require("../middleware/auth");
+const { createApiError } = require("../middleware/apiEnvelope");
 
-// Rate limiter for admin update creation
-// Prevents admin update spam: 5 updates per admin per hour
-const updateCreationLimiter = createRateLimiter(5, 60, "update-create");
+// Rate limiter for admin update creation: an IP floor plus the real cap on the
+// authenticated subject, so the same admin account is bounded regardless of
+// which address it logs in from. 5 updates per admin per hour.
+const updateCreationLimiter = createLayeredRateLimiter({
+  name: "update-create",
+  windowMinutes: 60,
+  ip: 30,
+  subject: 5,
+});
 
-// Rate limiter for like operations per donor
-// Prevents like enumeration/spam: 20 likes per donor per hour
-const likeLimiter = createRateLimiter(20, 1, "update-like");
+// Rate limiter for like operations: coarse per-IP floor plus the real
+// per-wallet cap. Prevents like enumeration/spam: 20 likes per donor per hour.
+const likeLimiter = createLayeredRateLimiter({
+  name: "update-like",
+  windowMinutes: 1,
+  ip: 60,
+  wallet: 20,
+});
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -36,7 +48,7 @@ router.get("/:projectId", async (req, res, next) => {
       "SELECT * FROM project_updates WHERE project_id = $1 ORDER BY created_at DESC",
       [req.params.projectId],
     );
-    res.json({ success: true, data: result.rows.map(mapProjectUpdateRow) });
+    res.json(result.rows.map(mapProjectUpdateRow));
   } catch (e) {
     next(e);
   }
@@ -49,18 +61,20 @@ router.post("/", adminRequired, updateCreationLimiter, async (req, res, next) =>
     const { projectId, title, body } = req.body;
 
     if (!projectId || typeof projectId !== "string") {
-      return res.status(400).json({ error: "projectId is required" });
+      throw createApiError(400, "PROJECT_ID_REQUIRED", "projectId is required");
     }
     if (!title || typeof title !== "string" || !title.trim()) {
-      return res.status(400).json({ error: "title is required" });
+      throw createApiError(400, "TITLE_REQUIRED", "title is required");
     }
     if (!body || typeof body !== "string" || !body.trim()) {
-      return res.status(400).json({ error: "body is required" });
+      throw createApiError(400, "BODY_REQUIRED", "body is required");
     }
 
     // Verify project exists
     const projResult = await pool.query("SELECT * FROM projects WHERE id = $1", [projectId]);
-    if (!projResult.rows[0]) return res.status(404).json({ error: "Project not found" });
+    if (!projResult.rows[0]) {
+      throw createApiError(404, "PROJECT_NOT_FOUND", "Project not found");
+    }
     const project = mapProjectRow(projResult.rows[0]);
 
     // Insert update
@@ -73,23 +87,20 @@ router.post("/", adminRequired, updateCreationLimiter, async (req, res, next) =>
     );
     const update = mapProjectUpdateRow(insertResult.rows[0]);
 
-    // Fetch subscriber emails and send notifications (non-blocking)
-    pool.query(
-      "SELECT email FROM project_subscriptions WHERE project_id = $1",
-      [projectId],
-    ).then(({ rows }) => {
-      const emails = rows.map((r) => r.email);
-      return sendUpdateNotifications({ project, update, emails });
-    }).catch((err) => {
-      console.error("[updates] Failed to send email notifications:", err.message);
+    // Fan out email notifications (non-blocking): reads subscribers in
+    // bounded chunks and enqueues one retryable job per chunk rather than
+    // loading every subscriber into memory and sending inline.
+    enqueueUpdateNotifications({ project, update }).catch((err) => {
+      console.error("[updates] Failed to enqueue email notifications:", err.message);
     });
 
-    // Send push notifications (non-blocking)
+    // Fan out push notifications (non-blocking): same chunked-queue pattern
+    // for followers' device tokens.
     sendUpdatePushNotifications({ project, update }).catch((err) => {
-      console.error("[updates] Failed to send push notifications:", err.message);
+      console.error("[updates] Failed to enqueue push notifications:", err.message);
     });
 
-    res.status(201).json({ success: true, data: update });
+    res.status(201).json(update);
   } catch (e) {
     next(e);
   }
@@ -102,7 +113,7 @@ router.get("/:projectId", async (req, res, next) => {
       "SELECT * FROM project_updates WHERE project_id = $1 ORDER BY created_at DESC",
       [req.params.projectId],
     );
-    res.json({ success: true, data: result.rows.map(mapProjectUpdateRow) });
+    res.json(result.rows.map(mapProjectUpdateRow));
   } catch (e) {
     next(e);
   }
@@ -114,7 +125,7 @@ router.post("/:updateId/like", likeLimiter, async (req, res, next) => {
   try {
     const { donorAddress } = req.body || {};
     if (!donorAddress || typeof donorAddress !== "string") {
-      return res.status(400).json({ error: "donorAddress is required" });
+      throw createApiError(400, "DONOR_ADDRESS_REQUIRED", "donorAddress is required");
     }
 
     const updateResult = await pool.query(
@@ -122,7 +133,7 @@ router.post("/:updateId/like", likeLimiter, async (req, res, next) => {
       [req.params.updateId],
     );
     if (!updateResult.rows[0]) {
-      return res.status(404).json({ error: "Update not found" });
+      throw createApiError(404, "UPDATE_NOT_FOUND", "Update not found");
     }
 
     // Check if already liked
@@ -152,11 +163,8 @@ router.post("/:updateId/like", likeLimiter, async (req, res, next) => {
     );
 
     res.json({
-      success: true,
-      data: {
-        liked: !existing.rows[0],
-        likeCount: parseInt(countResult.rows[0].count),
-      },
+      liked: !existing.rows[0],
+      likeCount: parseInt(countResult.rows[0].count),
     });
   } catch (e) {
     next(e);
@@ -180,11 +188,8 @@ router.get("/:updateId/likes", async (req, res, next) => {
       liked = !!existing.rows[0];
     }
     res.json({
-      success: true,
-      data: {
-        likeCount: parseInt(countResult.rows[0].count),
-        liked,
-      },
+      likeCount: parseInt(countResult.rows[0].count),
+      liked,
     });
   } catch (e) {
     next(e);

@@ -105,8 +105,10 @@ metadata:
   namespace: {{ .Values.namespace }}
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /
+    {{- include "greenpay.ingress.tlsAnnotations" . | nindent 4 }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}
+  {{- include "greenpay.ingress.tls" . | nindent 2 }}
   rules:
     - host: {{ .Values.ingress.host }}
       http:
@@ -128,8 +130,10 @@ metadata:
     nginx.ingress.kubernetes.io/rewrite-target: /
     nginx.ingress.kubernetes.io/canary: "true"
     nginx.ingress.kubernetes.io/canary-weight: "100"
+    {{- include "greenpay.ingress.tlsAnnotations" . | nindent 4 }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}
+  {{- include "greenpay.ingress.tls" . | nindent 2 }}
   rules:
     - host: {{ .Values.ingress.host }}
       http:

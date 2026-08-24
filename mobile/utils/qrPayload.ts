@@ -31,7 +31,7 @@ export type GreenPayLinkResult =
   | { ok: false; reason: string };
 
 export type GreenPayDeepLinkResult =
-  | { ok: true; segment: 'donate' | 'project'; projectId: string }
+  | { ok: true; segment: 'donate' | 'project' | 'recurring'; projectId: string }
   | { ok: false; reason: string };
 
 function containsControlOrNullChars(value: string): boolean {
@@ -159,12 +159,12 @@ export function parseGreenPayDonationLink(raw: unknown): GreenPayLinkResult {
 }
 
 /**
- * Parses an OS deep link (`greenpay://donate/<id>` or
- * `greenpay://project/<id>`) through the exact same allowlist/charset rules
- * as the QR format — this is the only parser `hooks/useDeepLink.ts` may use,
- * so the two paths can never enforce different trust levels. Anything else
- * (wrong scheme, case-mutated scheme, extra segments, query strings,
- * oversized or control-character ids) is rejected. Never throws.
+ * Parses an OS deep link (`greenpay://donate/<id>`, `greenpay://project/<id>`,
+ * or `greenpay://recurring/<id>`) through the exact same allowlist/charset
+ * rules as the QR format — this is the only parser `hooks/useDeepLink.ts`
+ * may use, so the two paths can never enforce different trust levels.
+ * For the recurring segment, `projectId` in the result is the recurring
+ * entry id (same charset). Never throws.
  */
 export function parseGreenPayDeepLink(raw: unknown): GreenPayDeepLinkResult {
   try {
@@ -176,7 +176,7 @@ export function parseGreenPayDeepLink(raw: unknown): GreenPayDeepLinkResult {
     if (!trimmed.startsWith(CUSTOM_SCHEME)) {
       return { ok: false, reason: 'invalid-scheme' };
     }
-    return parseCustomSchemePath(trimmed, ['donate', 'project']);
+    return parseCustomSchemePath(trimmed, ['donate', 'project', 'recurring']);
   } catch {
     return { ok: false, reason: 'unexpected-error' };
   }

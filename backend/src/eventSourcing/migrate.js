@@ -16,6 +16,66 @@ const { round7 } = require("./aggregates");
 const BATCH_SIZE = 500;
 const EVENT_STORE_BATCH = 200;
 
+/**
+ * One-time data fix for the stream-id double-prefix bug: DomainEvent.getStreamId()
+ * used to prefix an `aggregateId` that every writer had *already* prefixed
+ * (e.g. `Donation:${txHash}`), so historical rows have stream_id stored as
+ * "Donation:Donation:<txHash>" and aggregate_id stored as "Donation:<txHash>"
+ * instead of the bare id. Both writers and readers now agree that
+ * aggregateId is unprefixed (see events.js's buildStreamId), so existing
+ * rows need to be rewritten to match or every stream read for data written
+ * before this fix stays permanently broken.
+ *
+ * Guarded by event_store_migration_state the same way runLegacyMigration is,
+ * so it runs at most once per database and is a cheap no-op on every
+ * subsequent boot.
+ */
+async function normalizeDoublePrefixedStreamIds() {
+  const alreadyDone = await pool.query(
+    "SELECT id FROM event_store_migration_state WHERE id = 'stream-id-normalization'"
+  );
+  if (alreadyDone.rows[0]) {
+    console.log("[Migration] Stream id normalization already applied. Skipping.");
+    return { status: "already_migrated", rowsFixed: 0 };
+  }
+
+  console.log("[Migration] Normalizing double-prefixed stream ids...");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    // Only rows whose aggregate_id still starts with "<aggregate_type>:" are
+    // touched — rows already written correctly (including load-harness rows,
+    // which never had aggregateId pre-prefixed) don't match and are left
+    // alone, which is also what makes this UPDATE idempotent on its own even
+    // without the migration-state guard above. Both SET expressions read the
+    // stripped id from the pre-update `aggregate_id` value: a single UPDATE's
+    // SET clauses all see the row's original values, not each other's result.
+    const result = await client.query(
+      `UPDATE event_stream
+       SET aggregate_id = substring(aggregate_id from length(aggregate_type) + 2),
+           stream_id    = aggregate_type || ':' || substring(aggregate_id from length(aggregate_type) + 2)
+       WHERE aggregate_id LIKE aggregate_type || ':%'`
+    );
+    const rowsFixed = result.rowCount || 0;
+
+    await client.query(
+      "INSERT INTO event_store_migration_state (id, migrated_at, event_count) VALUES ('stream-id-normalization', NOW(), $1) ON CONFLICT (id) DO UPDATE SET migrated_at = NOW(), event_count = EXCLUDED.event_count",
+      [rowsFixed]
+    );
+
+    await client.query("COMMIT");
+    console.log(`[Migration] Normalized ${rowsFixed} double-prefixed stream id(s)`);
+    return { status: "completed", rowsFixed };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("[Migration] Stream id normalization failed:", err.message);
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 async function runLegacyMigration() {
   console.log("[Migration] Starting legacy data migration into event store...");
 
@@ -40,7 +100,7 @@ async function runLegacyMigration() {
     for (const project of projectsResult.rows) {
       events.push(
         new ProjectCreatedEvent({
-          aggregateId: `Project:${project.id}`,
+          aggregateId: project.id,
           version: 1,
           actor: "migration",
           name: project.name,
@@ -56,7 +116,7 @@ async function runLegacyMigration() {
       if (project.status !== "active") {
         events.push(
           new ProjectStatusChangedEvent({
-            aggregateId: `Project:${project.id}`,
+            aggregateId: project.id,
             version: 2,
             actor: "migration",
             previousStatus: "active",
@@ -87,7 +147,7 @@ async function runLegacyMigration() {
       events.push(
         new MigratedDonationEvent({
           originalId: donation.id,
-          donationId: `Donation:${donation.transaction_hash}`,
+          donationId: donation.transaction_hash,
           version: 1,
           actor: "migration",
           originalCreatedAt: donation.created_at?.toISOString ? donation.created_at.toISOString() : donation.created_at,
@@ -116,7 +176,7 @@ async function runLegacyMigration() {
     for (const match of matchesResult.rows) {
       events.push(
         new (require("./events").MatchCreatedEvent)({
-          aggregateId: `Match:${match.id}`,
+          aggregateId: match.id,
           version: 1,
           actor: "migration",
           matchId: match.id,
@@ -133,7 +193,7 @@ async function runLegacyMigration() {
       if (matchedXlm > 0) {
         events.push(
           new (require("./events").MatchAppliedEvent)({
-            aggregateId: `Match:${match.id}`,
+            aggregateId: match.id,
             version: 2,
             actor: "migration",
             matchId: match.id,
@@ -160,7 +220,7 @@ async function runLegacyMigration() {
     for (const milestone of milestonesResult.rows) {
       events.push(
         new MilestoneReachedEvent({
-          aggregateId: `Milestone:${milestone.id}`,
+          aggregateId: milestone.id,
           version: 1,
           actor: "migration",
           milestoneId: milestone.id,
@@ -183,7 +243,7 @@ async function runLegacyMigration() {
     for (const job of jobsResult.rows) {
       events.push(
         new JobReleasedEvent({
-          aggregateId: `Job:${job.id}`,
+          aggregateId: job.id,
           version: 1,
           actor: "migration",
           clientPublicKey: job.client_public_key,
@@ -334,4 +394,4 @@ async function verifyMigration(expectedUniqueTxCount, expectedDonationCount) {
   };
 }
 
-module.exports = { runLegacyMigration, rebuildReadModels, verifyMigration };
+module.exports = { runLegacyMigration, rebuildReadModels, verifyMigration, normalizeDoublePrefixedStreamIds };

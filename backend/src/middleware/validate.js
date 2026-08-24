@@ -11,19 +11,22 @@
  *      (used by handlers that are unit-tested in isolation) and throw a
  *      `ValidationError` (status 400) on failure.
  *
- * All rejection responses use the project's `{ error: <message> }` envelope
- * so they flow through the existing error handler consistently.
+ * Rejections flow through the shared API error middleware so clients receive
+ * one stable error envelope.
  */
 "use strict";
 
 const { ZodError } = require("zod");
+const { createApiError } = require("./apiEnvelope");
 
 class ValidationError extends Error {
   constructor(message, issues) {
     super(message);
     this.name = "ValidationError";
     this.status = 400;
+    this.code = "VALIDATION_FAILED";
     this.issues = issues;
+    this.details = { issues };
   }
 }
 
@@ -62,7 +65,7 @@ function validate(schema, { source = "body", stripUnknown = true } = {}) {
       next();
     } catch (err) {
       if (err instanceof ZodError) {
-        return res.status(400).json({ error: firstIssueMessage(err) });
+        return next(createApiError(400, "VALIDATION_FAILED", firstIssueMessage(err), { issues: err.issues }));
       }
       next(err);
     }

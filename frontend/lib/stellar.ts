@@ -1,20 +1,60 @@
 /**
  * lib/stellar.ts — Stellar SDK helpers for GreenPay
  */
-import { Horizon, Networks, Asset, Operation, TransactionBuilder, Transaction, Memo, rpc, Contract, scValToNative, Address, nativeToScVal, Account, xdr } from "@stellar/stellar-sdk";
+import { Horizon, Networks, Asset, Operation, TransactionBuilder, Transaction, Memo, rpc, Contract, scValToNative, Address, nativeToScVal, Account, xdr, StrKey } from "@stellar/stellar-sdk";
 import { parseToStroops, stroopsToXLM } from "@/utils/amount";
+import { getActiveManifest } from "@greenpay/config/networks";
 
-export const NETWORK = (process.env.NEXT_PUBLIC_STELLAR_NETWORK || "testnet") as "testnet" | "mainnet";
-const HORIZON_URL = process.env.NEXT_PUBLIC_HORIZON_URL || "https://horizon-testnet.stellar.org";
-const RPC_URL     = process.env.NEXT_PUBLIC_SOROBAN_RPC_URL || "https://soroban-testnet.stellar.org";
+// Load manifest once at module init — throws if misconfigured
+const manifest = getActiveManifest();
 
-export const NETWORK_PASSPHRASE = NETWORK === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
-export const server = new Horizon.Server(HORIZON_URL);
-export const rpcServer = new rpc.Server(RPC_URL);
-export const CONTRACT_ID = process.env.NEXT_PUBLIC_CONTRACT_ID || "";
+export const NETWORK = manifest.network as "testnet" | "mainnet";
+export const NETWORK_PASSPHRASE = manifest.networkPassphrase;
+export const server = new Horizon.Server(manifest.horizonUrl);
+export const rpcServer = new rpc.Server(manifest.sorobanRpcUrl);
+
+/** GreenPay core contract */
+export const CONTRACT_ID = manifest.contracts.greenPay || "";
 
 /** Soroban escrow contract (deploy `contracts/escrow-contract`). */
-export const ESCROW_CONTRACT_ID = process.env.NEXT_PUBLIC_ESCROW_CONTRACT_ID || "";
+export const ESCROW_CONTRACT_ID = manifest.contracts.escrow || "";
+
+/** DAO governance contract */
+export const DAO_GOVERNANCE_CONTRACT_ID = manifest.contracts.daoGovernance || "";
+
+/**
+ * The Stellar Asset Contract (SAC) address for native XLM is deterministic —
+ * it's derived from the asset and the network passphrase, not a fixed
+ * literal. Deriving it here means a mainnet build automatically gets the
+ * mainnet SAC address instead of silently reusing testnet's.
+ */
+export function getNativeAssetContractId(networkPassphrase: string): string {
+  return Asset.native().contractId(networkPassphrase);
+}
+
+export const NATIVE_ASSET_CONTRACT_ID = getNativeAssetContractId(NETWORK_PASSPHRASE);
+
+/**
+ * Fails fast at import time (rather than at donation time, buried behind a
+ * simulation error) if any configured contract ID isn't even a well-formed
+ * contract address for the active network's passphrase.
+ */
+function assertContractIdsAreWellFormed() {
+  const configured: Array<[string, string]> = [
+    ["NATIVE_ASSET_CONTRACT_ID", NATIVE_ASSET_CONTRACT_ID],
+    ["NEXT_PUBLIC_CONTRACT_ID", CONTRACT_ID],
+    ["NEXT_PUBLIC_ESCROW_CONTRACT_ID", ESCROW_CONTRACT_ID],
+  ];
+  for (const [name, id] of configured) {
+    if (!id) continue; // CONTRACT_ID / ESCROW_CONTRACT_ID are optional
+    if (!StrKey.isValidContract(id)) {
+      throw new Error(
+        `${name} ("${id}") is not a valid contract address for NEXT_PUBLIC_STELLAR_NETWORK=${NETWORK}.`,
+      );
+    }
+  }
+}
+assertContractIdsAreWellFormed();
 
 export async function getXLMBalance(publicKey: string): Promise<string> {
   try {
@@ -166,7 +206,7 @@ export async function buildContractDonationTransaction({
     // Prepare the transaction with simulation results
     return rpc.assembleTransaction(tx, simulated).build();
   } else {
-    throw formatSimulationFailure(simulated);
+    throw formatSimulationFailure(simulated, { contractId });
   }
 }
 
@@ -207,7 +247,7 @@ export async function buildReleaseEscrowTransaction({
   if (rpc.Api.isSimulationSuccess(simulated)) {
     return rpc.assembleTransaction(tx, simulated).build();
   }
-  throw formatSimulationFailure(simulated);
+  throw formatSimulationFailure(simulated, { contractId });
 }
 
 /**
@@ -240,7 +280,10 @@ export async function buildMilestoneTransaction({
 }
 
 /** Maps Soroban simulation errors to short, user-facing messages. */
-export function formatSimulationFailure(simulated: unknown): Error {
+export function formatSimulationFailure(
+  simulated: unknown,
+  context?: { contractId?: string },
+): Error {
   const raw = JSON.stringify(simulated);
   if (/underfunded|insufficient/i.test(raw) && /balance|fee|Fund/i.test(raw)) {
     return new Error(
@@ -257,6 +300,17 @@ export function formatSimulationFailure(simulated: unknown): Error {
   }
   if (raw.includes("Already released")) {
     return new Error("This escrow was already released on-chain.");
+  }
+  // A "MissingValue" storage error while invoking a contract instance is what
+  // Soroban raises when the contract ID has no instance on the currently
+  // configured RPC's network — e.g. NEXT_PUBLIC_STELLAR_NETWORK points at
+  // mainnet but a contract ID was only ever deployed on testnet (or vice
+  // versa). Surface that distinctly from a generic host error.
+  if (/MissingValue/i.test(raw) && /contract instance/i.test(raw)) {
+    const id = context?.contractId ? ` (${context.contractId})` : "";
+    return new Error(
+      `Contract${id} was not found on ${NETWORK}. This usually means NEXT_PUBLIC_STELLAR_NETWORK ("${NETWORK}") doesn't match the network this contract was deployed to.`,
+    );
   }
   if (raw.includes("HostError") || raw.includes("VmValidation")) {
     return new Error(
@@ -449,7 +503,14 @@ export async function submitAndConfirmDonation(signedXDR: string): Promise<{ has
   );
 }
 
-export function isValidStellarAddress(a: string): boolean { return /^G[A-Z0-9]{55}$/.test(a); }
+export function isValidStellarAddress(address: string): boolean {
+  if (!address || typeof address !== "string") {
+    return false;
+  }
+  // Full validation: checks format AND CRC16 checksum
+  return StrKey.isValidEd25519PublicKey(address);
+}
+
 export function explorerUrl(hash: string): string {
   return `https://stellar.expert/explorer/${NETWORK === "mainnet" ? "public" : "testnet"}/tx/${hash}`;
 }
@@ -527,6 +588,18 @@ export function hashMessage(message: string): number {
 }
 
 /**
+ * A Horizon paging token (the opaque cursor Horizon's streaming endpoints
+ * expect). Branded so it can't be confused with — or accidentally passed as
+ * — an unrelated identifier such as a backend donation ID.
+ */
+declare const HORIZON_PAGING_TOKEN_BRAND: unique symbol;
+export type HorizonPagingToken = string & { readonly [HORIZON_PAGING_TOKEN_BRAND]: true };
+
+function toHorizonPagingToken(value: string): HorizonPagingToken {
+  return value as HorizonPagingToken;
+}
+
+/**
  * Stream real-time payments to a wallet address using Horizon SSE.
  * Returns a cleanup function to close the stream.
  */
@@ -534,13 +607,15 @@ export function streamProjectPayments(
   walletAddress: string,
   onPayment: (payment: {
     id: string;
+    pagingToken: HorizonPagingToken;
     from: string;
     amount: string;
     asset: string;
     createdAt: string;
     transactionHash: string;
   }) => void,
-  cursor?: string,
+  cursor?: HorizonPagingToken,
+  onStreamError?: (err: unknown) => void,
 ): () => void {
   const builder = server
     .payments()
@@ -553,6 +628,7 @@ export function streamProjectPayments(
       if (record.type !== "payment" && record.type !== "create_account") return;
       onPayment({
         id: record.id,
+        pagingToken: toHorizonPagingToken(record.paging_token),
         from: record.from || record.funder || record.source_account,
         amount: record.amount || record.starting_balance || "0",
         asset: record.asset_code || "XLM",
@@ -562,69 +638,9 @@ export function streamProjectPayments(
     },
     onerror: (err: any) => {
       console.error("Horizon SSE stream error:", err);
+      onStreamError?.(err);
     },
   });
-
-  return closeStream;
-}
-
-/**
- * Stream global XLM donations and map destination accounts to known projects.
- * Returns a cleanup function to close the Horizon SSE stream.
- */
-export function streamGlobalProjectDonations(
-  projects: Array<{ id: string; name: string; walletAddress: string }>,
-  onDonation: (donation: {
-    id: string;
-    projectId: string;
-    projectName: string;
-    amountXLM: string;
-    from: string;
-    createdAt: string;
-    transactionHash: string;
-  }) => void,
-  cursor?: string,
-): () => void {
-  const projectByWallet = new Map(
-    projects.map((project) => [project.walletAddress.toUpperCase(), project]),
-  );
-
-  const closeStream = server
-    .payments()
-    .cursor(cursor || "now")
-    .stream({
-      onmessage: (record: any) => {
-        if (record.type !== "payment" && record.type !== "create_account") return;
-        const destination = String(
-          record.to || record.account || record.destination || "",
-        ).toUpperCase();
-        if (!destination || !projectByWallet.has(destination)) return;
-
-        const project = projectByWallet.get(destination);
-        if (!project) return;
-
-        const isNativeXLM =
-          record.asset_type === "native" || !record.asset_type || record.asset_code === "XLM";
-        if (!isNativeXLM) return;
-
-        const amountRaw = record.amount || record.starting_balance || "0";
-        const amount = Number.parseFloat(amountRaw);
-        if (!Number.isFinite(amount) || amount <= 0) return;
-
-        onDonation({
-          id: String(record.id),
-          projectId: project.id,
-          projectName: project.name,
-          amountXLM: stroopsToXLM(parseToStroops(amountRaw)),
-          from: record.from || record.funder || record.source_account || "Unknown",
-          createdAt: record.created_at || new Date().toISOString(),
-          transactionHash: record.transaction_hash || "",
-        });
-      },
-      onerror: (err: any) => {
-        console.error("Global Horizon stream error:", err);
-      },
-    });
 
   return closeStream;
 }

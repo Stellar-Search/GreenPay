@@ -54,7 +54,11 @@ describe('useDonationSync — reconnect conflict resolution', () => {
     });
     (NetInfo.fetch as jest.Mock).mockResolvedValue({ isConnected: true, isInternetReachable: true });
 
-    (axios.get as jest.Mock).mockResolvedValue({ data: { data: [ACTIVE_PROJECT] } });
+    (axios.get as jest.Mock).mockResolvedValue({ data: { success: true, data: [ACTIVE_PROJECT] } });
+    // preflightCheck now POSTs to the backend when an entry carries a
+    // horizonTransactionHash, so we need a default success response here.
+    // Individual tests that want to simulate backend failure can override this.
+    (axios.post as jest.Mock).mockResolvedValue({ data: { success: true, data: null } });
 
     (Server as jest.Mock).mockImplementation(() => ({
       loadAccount: jest.fn().mockResolvedValue(mockHorizonAccount('1000')),
@@ -102,7 +106,7 @@ describe('useDonationSync — reconnect conflict resolution', () => {
 
     // The project goes inactive while the device is still offline.
     (axios.get as jest.Mock).mockResolvedValue({
-      data: { data: [{ ...ACTIVE_PROJECT, status: 'inactive' }] },
+      data: { success: true, data: [{ ...ACTIVE_PROJECT, status: 'inactive' }] },
     });
 
     await goOfflineThenOnline();
@@ -224,7 +228,7 @@ describe('useDonationSync — reconnect conflict resolution', () => {
       { id: 'proj-2', name: 'Project Two', status: 'active' },
       { id: 'proj-3', name: 'Project Three', status: 'active' },
     ];
-    (axios.get as jest.Mock).mockResolvedValue({ data: { data: projects } });
+    (axios.get as jest.Mock).mockResolvedValue({ data: { success: true, data: projects } });
 
     await enqueueDonation({ projectId: 'proj-1', projectName: 'Project One', donorAddress: sameDonor, amountXLM: '1' });
     await enqueueDonation({ projectId: 'proj-2', projectName: 'Project Two', donorAddress: sameDonor, amountXLM: '2' });

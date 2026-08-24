@@ -4,8 +4,12 @@ import RecurringScreen from '../app/recurring';
 import * as recurringDonations from '../utils/recurringDonations';
 
 jest.mock('expo-router', () => ({
+  useRouter: () => ({ push: jest.fn() }),
   useFocusEffect: (cb: any) => {
-    React.useEffect(() => {
+    // jest.mock factories are hoisted above the imports, so the module-scope
+    // React binding is not in scope yet. Require it inside the factory.
+    const ReactInFactory = require('react');
+    ReactInFactory.useEffect(() => {
       const cleanup = cb();
       return () => {
         if (cleanup) cleanup();

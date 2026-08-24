@@ -43,7 +43,8 @@ export default defineConfig({
         // Not secrets — this backend only ever talks to the ephemeral CI/local Postgres instance.
         ADMIN_USERNAME: "admin",
         ADMIN_PASSWORD: "e2e-test-admin-password",
-        JWT_SECRET: "e2e-test-jwt-secret",
+        // Must be at least 32 characters to satisfy the backend env validator.
+        JWT_SECRET: "e2e-test-jwt-secret-not-a-real-credential",
       },
     },
     {

@@ -7,13 +7,21 @@
     "noEmit": true,
     "esModuleInterop": true,
     "module": "esnext",
-    "moduleResolution": "bundler",
+    "moduleResolution": "node",
     "resolveJsonModule": true,
     "isolatedModules": true,
     "jsx": "preserve",
     "incremental": true,
     "plugins": [{ "name": "next" }],
-    "paths": { "@/*": ["./*"] }
+    "paths": {
+      "@/*": ["./*"],
+      // Two candidates: the repo layout puts config/ beside frontend/, while
+      // the container image copies it to /app/config next to the app root.
+      // TypeScript tries each in order and uses the first that exists.
+      "@greenpay/config/*": ["../config/*", "./config/*"],
+      "@greenpay/i18n": ["../shared/i18n"],
+      "@greenpay/i18n/*": ["../shared/i18n/*"]
+    }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
   "exclude": ["node_modules"]

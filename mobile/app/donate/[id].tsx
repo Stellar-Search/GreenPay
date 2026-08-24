@@ -5,10 +5,9 @@
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, Alert, ActivityIndicator } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import axios from 'axios';
 import NetInfo from '@react-native-community/netinfo';
 import { authenticate } from '../../hooks/useBiometricAuth';
-import { Keypair, Horizon, TransactionBuilder, Networks, Operation, Asset, Memo } from '@stellar/stellar-sdk';
+import { Keypair, Horizon } from '@stellar/stellar-sdk';
 
 const StellarServer = (require('@stellar/stellar-sdk') as any).Server || Horizon.Server;
 import { useTheme } from '../theme';
@@ -20,9 +19,30 @@ import {
   updateQueuedDonation,
   QueuedDonation,
 } from '../../utils/donationQueue';
+import { apiGet, apiPost } from '../../utils/api';
+import { buildDonationPaymentTransaction } from '../../utils/donationTransaction';
+import {
+  getConfiguredHorizonUrl,
+  getExpectedNetworkDisplayName,
+} from '../../utils/stellarNetwork';
+import { useWallet } from '../../src/hooks/useWallet';
+import { WalletConnect } from '../../src/components/WalletConnect';
+import {
+  createRecurringDonation,
+  completeRecurringCycle,
+  getRecurringDonation,
+  requestNotificationPermissionsIfNeeded,
+} from '../../utils/recurringDonations';
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
-const HORIZON_URL = process.env.EXPO_PUBLIC_HORIZON_URL || 'https://horizon-testnet.stellar.org';
+
+const HORIZON_URL = getConfiguredHorizonUrl();
+
+const DURATION_OPTIONS: { label: string; months: number | null }[] = [
+  { label: '3 months', months: 3 },
+  { label: '6 months', months: 6 },
+  { label: '12 months', months: 12 },
+  { label: 'Ongoing', months: null },
+];
 
 interface ClimateProject {
   id: string;
@@ -34,14 +54,19 @@ interface ClimateProject {
 export default function DonateScreen() {
   const { colors } = useTheme();
   const router = useRouter();
-  const { id, queueId } = useLocalSearchParams();
+  const { id, queueId, recurringId, amount: amountParam } = useLocalSearchParams();
   const [projects, setProjects] = useState<ClimateProject[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | undefined>(id as string | undefined);
   const [amount, setAmount] = useState('1');
   const [message, setMessage] = useState('');
   const [queueEntry, setQueueEntry] = useState<QueuedDonation | null>(null);
+  const [activeRecurringId, setActiveRecurringId] = useState<string | null>(
+    typeof recurringId === 'string' ? recurringId : null,
+  );
+  const [durationMonths, setDurationMonths] = useState<number | null>(6);
+  const [settingUpMonthly, setSettingUpMonthly] = useState(false);
   const [secretKey, setSecretKey] = useState('');
-  const [publicKey, setPublicKey] = useState('');
+  const { publicKey } = useWallet();
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -50,6 +75,25 @@ export default function DonateScreen() {
   useEffect(() => {
     loadProjects();
   }, [id]);
+
+  // Prefill from a monthly-due deep link / push notification tap.
+  useEffect(() => {
+    if (typeof amountParam === 'string' && amountParam.trim()) {
+      setAmount(amountParam);
+    }
+    if (typeof recurringId !== 'string') return;
+    (async () => {
+      const entry = await getRecurringDonation(recurringId);
+      if (!entry || entry.status !== 'active') return;
+      setActiveRecurringId(entry.id);
+      setAmount(entry.amountXLM);
+      setSelectedProjectId(entry.projectId);
+      setStatusType('info');
+      setStatusMessage(
+        `Monthly donation due for ${entry.projectName}. Enter your secret key and tap Donate to sign this cycle — GreenPay never auto-signs.`,
+      );
+    })();
+  }, [recurringId, amountParam]);
 
   // Arriving from the offline queue ("Complete now") — prefill the amount
   // and message from the queued intent, and check whether a prior attempt
@@ -76,8 +120,7 @@ export default function DonateScreen() {
     setStatusMessage(null);
 
     try {
-      const res = await axios.get(`${API_URL}/api/projects`);
-      const list: ClimateProject[] = Array.isArray(res.data.data) ? res.data.data : [];
+      const list = await apiGet<ClimateProject[]>('/api/projects');
       setProjects(list);
       const initialProjectId = (id as string | undefined) || list[0]?.id;
       setSelectedProjectId(initialProjectId);
@@ -102,7 +145,7 @@ export default function DonateScreen() {
     setStatusType('info');
     setStatusMessage('Confirming your donation with the server...');
     try {
-      await axios.post(`${API_URL}/api/donations`, {
+      await apiPost('/api/donations', {
         projectId: entry.projectId,
         donorAddress: entry.donorAddress,
         amountXLM: entry.amountXLM,
@@ -214,20 +257,16 @@ export default function DonateScreen() {
       const server = new StellarServer(HORIZON_URL);
       const sourceAccount = await server.loadAccount(publicKey);
 
-      const transaction = new TransactionBuilder(sourceAccount, {
-        fee: '100',
-        networkPassphrase: Networks.TESTNET,
-      })
-        .addOperation(
-          Operation.payment({
-            destination: selectedProject.walletAddress,
-            asset: Asset.native(),
-            amount: formattedAmount,
-          })
-        )
-        .addMemo(Memo.text(`GreenPay:${selectedProject.id.slice(0, 16)}`))
-        .setTimeout(60)
-        .build();
+      // Built by utils/donationTransaction so the network passphrase comes from
+      // one place. The previous inline builder referenced TransactionBuilder,
+      // Operation, Asset, Memo and NETWORK_PASSPHRASE, none of which are imported
+      // in this module, so every submission threw a ReferenceError.
+      const transaction = buildDonationPaymentTransaction({
+        sourceAccount,
+        destination: selectedProject.walletAddress,
+        amount: formattedAmount,
+        projectId: selectedProject.id,
+      });
 
       transaction.sign(keypair);
 
@@ -237,7 +276,7 @@ export default function DonateScreen() {
       console.error('Donation failed:', error);
       setStatusType('error');
       setStatusMessage(
-        error?.response?.data?.message || error?.message || 'Donation failed. Please try again.'
+        error?.message || 'Donation failed. Please try again.'
       );
       setSubmitting(false);
       return;
@@ -246,7 +285,7 @@ export default function DonateScreen() {
     // Horizon has already accepted the payment at this point — it must never
     // be resubmitted, even if the backend confirmation below fails.
     try {
-      await axios.post(`${API_URL}/api/donations`, {
+      await apiPost('/api/donations', {
         projectId: selectedProject.id,
         donorAddress: publicKey,
         amountXLM: formattedAmount,
@@ -261,6 +300,11 @@ export default function DonateScreen() {
         setQueueEntry(null);
       }
 
+      if (activeRecurringId) {
+        await completeRecurringCycle(activeRecurringId);
+        setActiveRecurringId(null);
+      }
+
       setStatusType('success');
       setStatusMessage(`Donation successful! Transaction hash: ${transactionHash}`);
       setAmount('1');
@@ -269,14 +313,27 @@ export default function DonateScreen() {
     } catch (error) {
       console.error('Donation backend confirmation failed:', error);
       if (queueEntry) {
+        // Queue-originated donation: stamp the hash onto the existing entry.
         await updateQueuedDonation(queueEntry.id, { horizonTransactionHash: transactionHash });
         setQueueEntry({ ...queueEntry, horizonTransactionHash: transactionHash });
+      } else {
+        // Plain online donation (no prior queue entry): the payment already
+        // reached Horizon, so we must never resubmit it. Create a rescue entry
+        // with the tx hash pre-stamped so the hash survives navigation/restart
+        // and the background sync can retry backend confirmation on reconnect.
+        const rescue = await enqueueDonation({
+          projectId: selectedProject.id,
+          projectName: selectedProject.name,
+          donorAddress: publicKey,
+          amountXLM: formattedAmount,
+          message: message.trim() || undefined,
+        });
+        await updateQueuedDonation(rescue.id, { horizonTransactionHash: transactionHash });
+        setQueueEntry({ ...rescue, horizonTransactionHash: transactionHash });
       }
       setStatusType('info');
       setStatusMessage(
-        `Your donation reached the blockchain (tx ${transactionHash}) but we couldn't confirm it with our server yet. It's saved and won't be submitted twice${
-          queueEntry ? ' — tap Donate again to retry confirming it' : ''
-        }.`
+        `Your donation reached the blockchain (tx ${transactionHash}) but we couldn't confirm it with our server yet. It's saved and won't be submitted twice — tap Donate again to retry confirming it.`
       );
       setSecretKey('');
     } finally {
@@ -284,28 +341,45 @@ export default function DonateScreen() {
     }
   };
 
-  const connectWallet = async () => {
-    Alert.alert(
-      'Connect Wallet',
-      'Enter your Stellar public key:',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'OK',
-          onPress: (input: any) => {
-            const trimmed = String(input || '').trim();
-            if (/^G[A-Z0-9]{55}$/.test(trimmed)) {
-              setPublicKey(trimmed);
-            } else {
-              Alert.alert('Invalid Key', 'Please enter a valid Stellar public key');
-            }
-          },
-        },
-      ],
-      { cancelable: true }
-    );
-  };
+  const handleSetupMonthly = async () => {
+    if (!selectedProject) {
+      Alert.alert('Error', 'Please choose a project first.');
+      return;
+    }
+    const donationStroops = parseAmountToStroops(amount);
+    if (donationStroops === null || donationStroops < STROOPS_PER_XLM) {
+      Alert.alert('Error', 'Enter a valid monthly amount (minimum 1 XLM).');
+      return;
+    }
 
+    setSettingUpMonthly(true);
+    try {
+      await requestNotificationPermissionsIfNeeded();
+      const created = await createRecurringDonation({
+        projectId: selectedProject.id,
+        projectName: selectedProject.name,
+        amountXLM: formatStroopsToXLM(donationStroops),
+        durationMonths,
+      });
+      setStatusType('success');
+      setStatusMessage(
+        `Monthly giving scheduled for ${created.amountXLM} XLM. We'll notify you when the next cycle is due — you'll tap to sign; GreenPay never stores your secret key.`,
+      );
+      Alert.alert(
+        'Monthly giving set up',
+        `Next reminder: ${new Date(created.nextDueDate).toLocaleDateString()}. Manage it anytime under Monthly Giving.`,
+        [
+          { text: 'View schedule', onPress: () => router.push('/recurring') },
+          { text: 'OK' },
+        ],
+      );
+    } catch (error) {
+      console.error('Failed to create recurring donation', error);
+      Alert.alert('Error', 'Could not set up monthly giving. Please try again.');
+    } finally {
+      setSettingUpMonthly(false);
+    }
+  };
   if (loading) {
     return (
       <View style={styles.container}>
@@ -319,7 +393,7 @@ export default function DonateScreen() {
     <ScrollView style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>Donate to {selectedProject?.name || 'a project'}</Text>
-        <Text style={styles.subtitle}>Choose a project and donate XLM on testnet.</Text>
+        <Text style={styles.subtitle}>Choose a project and donate XLM on {getExpectedNetworkDisplayName()}.</Text>
       </View>
 
       <View style={styles.selectorCard}>
@@ -347,18 +421,9 @@ export default function DonateScreen() {
         </ScrollView>
       </View>
 
-      {!publicKey ? (
-        <TouchableOpacity style={[styles.connectButton, { backgroundColor: colors.buttonBackground }]}
-          onPress={connectWallet}
-        >
-          <Text style={[styles.connectButtonText, { color: colors.buttonText }]}>Connect Wallet</Text>
-        </TouchableOpacity>
-      ) : (
-        <View style={styles.walletCard}>
-          <Text style={styles.walletLabel}>Connected wallet</Text>
-          <Text style={styles.walletAddress}>{publicKey.slice(0, 8)}...{publicKey.slice(-4)}</Text>
-        </View>
-      )}
+      <View style={{ alignItems: 'center', marginVertical: 8, paddingHorizontal: 16 }}>
+        <WalletConnect />
+      </View>
 
       <View style={styles.card}>
         <Text style={styles.label}>Amount (XLM)</Text>
@@ -416,9 +481,52 @@ export default function DonateScreen() {
             ? 'Sending donation...'
             : queueEntry?.horizonTransactionHash
             ? '🌱 Confirm with server'
+            : activeRecurringId
+            ? `🌱 Sign monthly ${amount || '1'} XLM`
             : `🌱 Donate ${amount || '1'} XLM`}
         </Text>
       </TouchableOpacity>
+
+      {!activeRecurringId && !queueEntry ? (
+        <View style={styles.monthlyCard}>
+          <Text style={styles.sectionTitle}>Monthly giving</Text>
+          <Text style={styles.monthlyHint}>
+            Schedule a reminder each month. You always re-enter your secret key to sign —
+            GreenPay never auto-pays.
+          </Text>
+          <View style={styles.durationRow}>
+            {DURATION_OPTIONS.map((opt) => (
+              <TouchableOpacity
+                key={opt.label}
+                style={[
+                  styles.durationChip,
+                  durationMonths === opt.months && styles.durationChipActive,
+                ]}
+                onPress={() => setDurationMonths(opt.months)}
+              >
+                <Text
+                  style={[
+                    styles.durationChipText,
+                    durationMonths === opt.months && styles.durationChipTextActive,
+                  ]}
+                >
+                  {opt.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <TouchableOpacity
+            style={[styles.monthlyButton, settingUpMonthly && styles.donateButtonDisabled]}
+            onPress={handleSetupMonthly}
+            disabled={settingUpMonthly}
+            accessibilityLabel="Set up monthly donation"
+          >
+            <Text style={styles.monthlyButtonText}>
+              {settingUpMonthly ? 'Scheduling...' : `📅 Set up ${amount || '1'} XLM / month`}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
     </ScrollView>
   );
 }
@@ -555,6 +663,7 @@ const styles = StyleSheet.create({
     margin: 16,
     borderRadius: 12,
     alignItems: 'center',
+    backgroundColor: '#227239',
   },
   donateButtonDisabled: {
     backgroundColor: '#8aaa8a',
@@ -562,5 +671,55 @@ const styles = StyleSheet.create({
   donateButtonText: {
     fontSize: 18,
     fontWeight: 'bold',
+    color: '#ffffff',
+  },
+  monthlyCard: {
+    marginHorizontal: 16,
+    marginBottom: 28,
+    padding: 16,
+    borderRadius: 12,
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#d1e7d1',
+  },
+  monthlyHint: {
+    fontSize: 13,
+    color: '#5a7a5a',
+    lineHeight: 18,
+    marginBottom: 12,
+  },
+  durationRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 12,
+  },
+  durationChip: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    backgroundColor: '#f0f7f0',
+  },
+  durationChipActive: {
+    backgroundColor: '#227239',
+  },
+  durationChipText: {
+    fontSize: 13,
+    color: '#1f5136',
+  },
+  durationChipTextActive: {
+    color: '#fff',
+    fontWeight: '700',
+  },
+  monthlyButton: {
+    padding: 14,
+    borderRadius: 10,
+    alignItems: 'center',
+    backgroundColor: '#1a2e1a',
+  },
+  monthlyButtonText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
   },
 });

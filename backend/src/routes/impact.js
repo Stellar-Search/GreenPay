@@ -14,15 +14,21 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../db/pool");
 const cache = require("../services/cache");
+const { UUID } = require("../schemas/common");
+const { createApiError } = require("../middleware/apiEnvelope");
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const KG_CO2_PER_TREE = 21.77; // heuristic, used for treesEquivalent
 
 function validateKey(k) {
   if (!k || !/^G[A-Z0-9]{55}$/.test(k)) {
-    const e = new Error("Invalid Stellar public key");
-    e.status = 400;
-    throw e;
+    throw createApiError(400, "INVALID_PUBLIC_KEY", "Invalid Stellar public key");
+  }
+}
+
+function validateProjectId(id) {
+  if (!id || !UUID.test(id)) {
+    throw createApiError(400, "INVALID_PROJECT_ID", "Invalid project id");
   }
 }
 
@@ -31,12 +37,23 @@ function treesEquivalentFromKg(kg) {
   return Number((kg / KG_CO2_PER_TREE).toFixed(2));
 }
 
-function cacheKey(req) {
-  return req.originalUrl;
+// Cache keys are built from validated route params rather than
+// req.originalUrl — an arbitrary query string on the URL must never be able
+// to mint a new, permanent cache entry.
+function projectCacheKey(id) {
+  return `impact:project:${id}`;
 }
 
-function sendCached(req, res, payload) {
-  cache.set(cacheKey(req), payload, CACHE_TTL_MS);
+function globalCacheKey() {
+  return "impact:global";
+}
+
+function donorCacheKey(publicKey) {
+  return `impact:donor:${publicKey}`;
+}
+
+function sendCached(res, key, payload) {
+  cache.set(key, payload, CACHE_TTL_MS);
   res.set("Cache-Control", "public, max-age=300");
   return res.json(payload);
 }
@@ -44,7 +61,10 @@ function sendCached(req, res, payload) {
 // GET /api/impact/project/:id
 router.get("/project/:id", async (req, res, next) => {
   try {
-    const hit = cache.get(cacheKey(req));
+    validateProjectId(req.params.id);
+    const key = projectCacheKey(req.params.id);
+
+    const hit = cache.get(key);
     if (hit) return res.json(hit);
 
     const projectResult = await pool.query(
@@ -53,7 +73,9 @@ router.get("/project/:id", async (req, res, next) => {
        WHERE id = $1`,
       [req.params.id],
     );
-    if (!projectResult.rows[0]) return res.status(404).json({ error: "Project not found" });
+    if (!projectResult.rows[0]) {
+      throw createApiError(404, "PROJECT_NOT_FOUND", "Project not found");
+    }
 
     const aggResult = await pool.query(
       `SELECT
@@ -74,15 +96,12 @@ router.get("/project/:id", async (req, res, next) => {
     const kgPerXlm = raisedXlm > 0 ? projectCo2OffsetKg / raisedXlm : 0;
     const co2OffsetKg = Math.round(totalDonationsXLM * kgPerXlm);
 
-    return sendCached(req, res, {
-      success: true,
-      data: {
-        totalDonationsXLM: totalDonationsXLM.toFixed(7),
-        donorCount,
-        co2OffsetKg,
-        treesEquivalent: treesEquivalentFromKg(co2OffsetKg),
-        uniqueCountries: 0,
-      },
+    return sendCached(res, key, {
+      totalDonationsXLM: totalDonationsXLM.toFixed(7),
+      donorCount,
+      co2OffsetKg,
+      treesEquivalent: treesEquivalentFromKg(co2OffsetKg),
+      uniqueCountries: 0,
     });
   } catch (e) {
     next(e);
@@ -92,7 +111,8 @@ router.get("/project/:id", async (req, res, next) => {
 // GET /api/impact/global
 router.get("/global", async (req, res, next) => {
   try {
-    const hit = cache.get(cacheKey(req));
+    const key = globalCacheKey();
+    const hit = cache.get(key);
     if (hit) return res.json(hit);
 
     const totalsResult = await pool.query(
@@ -146,16 +166,13 @@ router.get("/global", async (req, res, next) => {
       co2OffsetKg: Math.round(Number.parseFloat(row.co2OffsetKg || "0")),
     }));
 
-    return sendCached(req, res, {
-      success: true,
-      data: {
-        totalDonationsXLM: totalDonationsXLM.toFixed(7),
-        donorCount,
-        co2OffsetKg,
-        treesEquivalent: treesEquivalentFromKg(co2OffsetKg),
-        uniqueCountries: 0,
-        breakdownByCategory,
-      },
+    return sendCached(res, key, {
+      totalDonationsXLM: totalDonationsXLM.toFixed(7),
+      donorCount,
+      co2OffsetKg,
+      treesEquivalent: treesEquivalentFromKg(co2OffsetKg),
+      uniqueCountries: 0,
+      breakdownByCategory,
     });
   } catch (e) {
     next(e);
@@ -166,8 +183,9 @@ router.get("/global", async (req, res, next) => {
 router.get("/donor/:publicKey", async (req, res, next) => {
   try {
     validateKey(req.params.publicKey);
+    const key = donorCacheKey(req.params.publicKey);
 
-    const hit = cache.get(cacheKey(req));
+    const hit = cache.get(key);
     if (hit) return res.json(hit);
 
     const totalsResult = await pool.query(
@@ -210,14 +228,11 @@ router.get("/donor/:publicKey", async (req, res, next) => {
     const co2OffsetKg = Math.round(Number.parseFloat(row.co2OffsetKg || "0"));
     const topCategory = topCategoryResult.rows[0]?.category || null;
 
-    return sendCached(req, res, {
-      success: true,
-      data: {
-        totalDonatedXLM: totalDonatedXLM.toFixed(7),
-        co2OffsetKg,
-        projectsSupported,
-        topCategory,
-      },
+    return sendCached(res, key, {
+      totalDonatedXLM: totalDonatedXLM.toFixed(7),
+      co2OffsetKg,
+      projectsSupported,
+      topCategory,
     });
   } catch (e) {
     next(e);
@@ -225,4 +240,3 @@ router.get("/donor/:publicKey", async (req, res, next) => {
 });
 
 module.exports = router;
-

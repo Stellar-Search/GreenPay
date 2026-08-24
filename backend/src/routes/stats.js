@@ -22,12 +22,9 @@ router.get("/global", async (req, res, next) => {
 
     const row = result.rows[0];
     res.json({
-      success: true,
-      data: {
-        totalDonations: row.totalDonations,
-        totalXLMRaised: parseFloat(row.totalXLMRaised).toFixed(7),
-        totalCO2OffsetKg: row.totalCO2OffsetKg,
-      },
+      totalDonations: row.totalDonations,
+      totalXLMRaised: parseFloat(row.totalXLMRaised).toFixed(7),
+      totalCO2OffsetKg: row.totalCO2OffsetKg,
     });
   } catch (e) {
     next(e);
@@ -47,10 +44,7 @@ router.get("/categories", async (req, res, next) => {
       ORDER BY count DESC, category ASC
     `);
 
-    res.json({
-      success: true,
-      data: result.rows,
-    });
+    res.json(result.rows);
   } catch (e) {
     next(e);
   }

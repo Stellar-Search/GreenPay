@@ -12,6 +12,12 @@ on:
         required: false
         default: ''
 
+# Default token to read-only; container_build_scan below is the only job
+# that needs more (packages:write to push to GHCR, security-events:write for
+# scan results), so it overrides at the job level rather than widening here.
+permissions:
+  contents: read
+
 jobs:
   docs:
     name: Contributor Docs (command drift)
@@ -25,6 +31,20 @@ jobs:
       # docs/getting-started.md §7 still exists. No toolchains needed — this only
       # checks that the commands the doc names are still declared.
       - run: node scripts/check-documented-commands.js
+      # Guards against source files committed in a non-UTF-8 encoding, which
+      # silently breaks parsers while still looking like text in a diff.
+      - run: node scripts/check-source-encoding.js
+      # Asserts backend/.env.example documents every variable the env schema
+      # declares. The script existed but no workflow ran it.
+      - run: node scripts/check-env-example.js
+      # docs/database.md states this runs on every push. It did not. It guards
+      # the function-ordering regression that broke nightly backups for months,
+      # which `bash -n` cannot catch, and needs no database.
+      - run: bash scripts/tests/test-backup-restore.sh
+      # Cluster-free consistency checks over k8s/: kustomization coverage,
+      # Ingress backends resolving to real Services, PDB selectors matching a
+      # workload, and default-deny paired with allow rules.
+      - run: python3 scripts/check-k8s-manifests.py
 
   frontend:
     name: Frontend (Next.js)
@@ -37,6 +57,9 @@ jobs:
       - uses: ./.github/actions/setup-node-install
         with:
           working-directory: frontend
+      - name: Install shared dependencies
+        run: npm install
+        working-directory: shared
       - name: npm audit (fail on high/critical)
         run: npx --yes audit-ci@7.1.0 --high --package-manager npm --config .audit-ci.json
       - run: npm run type-check
@@ -58,6 +81,9 @@ jobs:
       - uses: ./.github/actions/setup-node-install
         with:
           working-directory: frontend
+      - name: Install shared dependencies
+        run: npm install
+        working-directory: shared
       - run: npx playwright install chromium
       - run: npm run build
         env:
@@ -106,7 +132,7 @@ jobs:
         working-directory: contracts
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           targets: wasm32-unknown-unknown
       - uses: actions/cache@v4
@@ -118,7 +144,16 @@ jobs:
           key: ${{ runner.os }}-cargo-contracts-${{ hashFiles('contracts/**/Cargo.lock') }}
       - run: cargo check --workspace
       - run: cargo test --workspace
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Rust vulnerability scan
+        run: cargo audit
       - run: cargo build --workspace --target wasm32-unknown-unknown --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: greenpay-contract-wasm
+          path: contracts/target/wasm32-unknown-unknown/release/greenpay_contract.wasm
+          retention-days: 1
 
   scheduler:
     name: Go Scheduler
@@ -130,7 +165,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          # Every standard-library finding govulncheck reported is fixed in
+          # go1.25.13; building with an older toolchain is what surfaced them.
+          go-version: '1.25.13'
           cache-dependency-path: scheduler/go.sum
       - name: Verify gofmt
         run: |
@@ -140,6 +177,17 @@ jobs:
             exit 1
           fi
       - run: go vet ./...
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      # The Go toolchain bump above clears the standard-library findings.
+      # What remains is anchored on k8s.io/kubernetes and needs a major-version
+      # bump of that dependency, which is a change of its own. Until then the
+      # scan reports without wedging every build on main: the findings stay
+      # visible in the log, but a known-unfixable transitive advisory does not
+      # block unrelated work. Restore this to a hard gate with the k8s bump.
+      - name: Go vulnerability scan
+        continue-on-error: true
+        run: govulncheck ./...
       - run: go test -v ./...
       - run: go build -v ./...
 
@@ -151,7 +199,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
         with:
           version: v3.16.3
 
@@ -220,7 +268,7 @@ jobs:
         # Scan failures against the live target are a precondition/tooling
         # outcome, not a code defect, so they must not fail the whole build.
         continue-on-error: true
-        uses: zaproxy/action-baseline@v0.14.0
+        uses: zaproxy/action-baseline@7c4deb10e6261301961c86d65d54a516394f9aed # v0.14.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           target: ${{ steps.resolve_target.outputs.target }}
@@ -247,9 +295,9 @@ jobs:
           if-no-files-found: warn
 
   integration:
-    name: Integration (Real Backend + Postgres)
+    name: Integration (Local Chain + Backend + Postgres)
     runs-on: ubuntu-latest
-    needs: [frontend, backend]
+    needs: [frontend, backend, contracts]
     services:
       postgres:
         image: postgres:16-alpine
@@ -269,23 +317,80 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: greenpay-contract-wasm
+          path: contracts/target/wasm32-unknown-unknown/release
       - uses: ./.github/actions/setup-node-install
         with:
           working-directory: backend
       - uses: ./.github/actions/setup-node-install
         with:
           working-directory: frontend
+      # The frontend build compiles shared/i18n, which resolves its own
+      # dependencies from shared/node_modules. Without this the build fails on
+      # a missing intl-messageformat, exactly as it does in the frontend job.
+      - name: Install shared dependencies
+        run: npm install
+        working-directory: shared
       - name: Backend real-transaction integration test
         working-directory: backend
-        run: npx jest src/services/indexerService.integration.test.js --runInBand
+        run: npx jest src/services/indexerService.integration.test.js src/routes/leaderboard.integration.test.js --runInBand
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/greenpay
+      - name: Start local Stellar protocol 21 network
+        run: |
+          # Source revision ae7fdb0: protocol 21 matches soroban-sdk 21 used by the contracts.
+          docker run -d --name greenpay-stellar-local -p 8000:8000 \
+            stellar/quickstart@sha256:d65f52ac01b3b8ebe4cd4952878433958cea6eb2ee602cb7687127e1df537ddf \
+            --local --enable-soroban-rpc
+          for attempt in $(seq 1 90); do
+            if curl --fail --silent http://127.0.0.1:8000/ >/dev/null; then
+              friendbot_status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+                'http://127.0.0.1:8000/friendbot?addr=not-a-stellar-address')
+              if [ "$friendbot_status" = "400" ]; then
+                # Horizon is ready; now wait for the Soroban RPC to also be serving.
+                # The RPC port can lag behind Horizon by several seconds inside quickstart.
+                rpc_status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+                  --max-time 2 -X POST http://127.0.0.1:8000/soroban/rpc \
+                  -H 'Content-Type: application/json' \
+                  -d '{"jsonrpc":"2.0","id":1,"method":"getNetwork","params":{}}')
+                if [ "$rpc_status" = "200" ]; then
+                  exit 0
+                fi
+              fi
+            fi
+            sleep 1
+          done
+          docker logs greenpay-stellar-local
+          exit 1
+      - name: Local-chain donation convergence test
+        working-directory: backend
+        run: npm run test:local-chain
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/greenpay
+          GREENPAY_WASM_PATH: ../contracts/target/wasm32-unknown-unknown/release/greenpay_contract.wasm
+          LOCAL_STELLAR_HORIZON_URL: http://127.0.0.1:8000
+          LOCAL_STELLAR_RPC_URL: http://127.0.0.1:8000/soroban/rpc
       - run: npx playwright install chromium
       - run: npm run build
         env:
           NEXT_PUBLIC_STELLAR_NETWORK: testnet
           NEXT_PUBLIC_HORIZON_URL: https://horizon-testnet.stellar.org
           NEXT_PUBLIC_API_URL: http://localhost:4000
+      - name: Capture local Stellar logs
+        if: always()
+        run: docker logs greenpay-stellar-local > /tmp/greenpay-stellar-local.log 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: local-stellar-logs
+          path: /tmp/greenpay-stellar-local.log
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Stop local Stellar network
+        if: always()
+        run: docker rm -f greenpay-stellar-local || true
       - name: Run E2E Integration Tests
         run: npx playwright test --config=playwright.integration.config.ts
         env:
@@ -309,7 +414,7 @@ jobs:
             context: ./backend
             dockerfile: ./backend/Dockerfile
           - image: greenpay-frontend
-            context: ./frontend
+            context: .
             dockerfile: ./frontend/Dockerfile
           - image: greenpay-scheduler
             context: ./scheduler
@@ -319,10 +424,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
@@ -331,7 +436,7 @@ jobs:
 
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           tags: |
@@ -341,7 +446,7 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Build and load image for scanning
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
@@ -350,12 +455,33 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Guards the .dockerignore exclusions: a developer- or CI-present env
+      # file must never be baked into a published layer. Fails the build if
+      # any .env* file survives inside the image.
+      - name: Assert no .env files are baked into the image
+        run: |
+          env_files=$(docker run --rm --entrypoint sh \
+            "${{ matrix.image }}:local-scan" \
+            -c 'find /app -name ".env*" -type f 2>/dev/null' || true)
+          if [ -n "$env_files" ]; then
+            echo "::error::env files baked into ${{ matrix.image }} image:"
+            echo "$env_files"
+            exit 1
+          fi
+          echo "No .env* files present in ${{ matrix.image }} image."
+
       - name: Run Trivy Vulnerability Scanner
+        # Pinned to a digest rather than :latest so a compromised or broken
+        # upstream image can't silently change what runs here. This is a
+        # shell string, not a `uses:`/Dockerfile reference, so Dependabot
+        # cannot bump it — refresh manually: pick a release from
+        # https://github.com/aquasecurity/trivy/releases, then resolve its
+        # digest with `docker buildx imagetools inspect aquasec/trivy:<tag>`.
         run: |
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "${{ github.workspace }}/.trivyignore:/.trivyignore" \
-            aquasec/trivy:latest image \
+            aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 image \
             --exit-code 0 \
             --severity CRITICAL,HIGH \
             --ignore-unfixed \
@@ -375,7 +501,7 @@ jobs:
           fi
 
       - name: Build and push image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         if: github.event_name != 'pull_request'
         with:
           context: ${{ matrix.context }}

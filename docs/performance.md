@@ -15,6 +15,24 @@ These targets are validated by the k6 load test at `scripts/load-test.js`
 a hard k6 `thresholds` check; the test exits with a non-zero status if it
 is violated.
 
+A fixed 2-pod fleet cannot hold those numbers under a donation spike. Replica
+count for the public Rollouts is owned by `autoscaling/v2` HPAs:
+
+| Workload | Manifest | Metrics | Range |
+| --- | --- | --- | --- |
+| backend | `k8s/hpa.yaml` / `helm/greenpay/templates/hpa.yaml` | CPU 60%, p95 latency 400 ms, queue depth 25 | 2–10 (12 on mainnet) |
+| frontend | same files | CPU 70%, 40 req/s per pod | 2–8 (10 on mainnet) |
+| ml-inference | `k8s/ml-workloads/ml-inference.yaml` | GPU util 70%, queue depth 50 | 1–8 |
+
+Scale-up has no stabilization window and may double (or add 4 pods) every 15 s
+so p95 is corrected before it crosses 500 ms. Scale-down waits 5 minutes.
+Backend `topologySpreadConstraints` (`maxSkew: 1`, `DoNotSchedule`) are
+unchanged; maxReplicas stays small enough to place on a 2- or 3-node cluster.
+
+CPU comes from metrics-server. Latency, queue depth and RPS come from
+prometheus-adapter — the same custom-metrics stack `ml-inference-hpa` already
+requires. The HPA targets the Argo `Rollout`, not a `Deployment`.
+
 ## Running the test
 
 ```bash
@@ -24,8 +42,10 @@ is violated.
 # Against local dev server
 k6 run scripts/load-test.js
 
-# Against a deployed staging environment
+# Against a deployed staging environment (HPA-enabled)
 BASE_URL=https://your-deployed-staging.example.com k6 run scripts/load-test.js
+# In another terminal, confirm replicas move during the spike:
+# kubectl -n greenpay get hpa backend-hpa frontend-hpa -w
 
 # HTML report
 k6 run --out json=results.json scripts/load-test.js

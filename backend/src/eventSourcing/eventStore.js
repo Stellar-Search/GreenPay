@@ -2,6 +2,7 @@
 
 const pool = require("../db/pool");
 const { dispatchToProjections } = require("./projections");
+const { buildStreamId } = require("./events");
 const { logger: rootLogger } = require("../utils/logger");
 
 const logger = rootLogger.child({ service: "event-store" });
@@ -62,13 +63,18 @@ class EventStoreService {
     const row = event.toRow();
 
     try {
+      // DO NOTHING (not DO UPDATE) is what makes `inserted` meaningful: on a
+      // conflict Postgres reports rowCount 0, so a matched row no longer fakes a
+      // successful insert. The xmax = 0 RETURNING expression is a belt-and-braces
+      // check — xmax is 0 only for freshly inserted rows — so even if a future
+      // caller relies on the returned flag it stays provably correct.
       const result = await this.pool.query(
         `INSERT INTO event_stream (
           event_id, stream_id, aggregate_type, aggregate_id, event_type,
           version, aggregate_version, payload, actor, occurred_at, created_at
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
-        ON CONFLICT (stream_id, version) DO UPDATE SET
-          payload = event_stream.payload`,
+        ON CONFLICT (stream_id, version) DO NOTHING
+        RETURNING (xmax = 0) AS inserted`,
         [
           row.event_id,
           row.stream_id,
@@ -83,7 +89,8 @@ class EventStoreService {
           row.created_at,
         ]
       );
-      return { eventId: row.event_id, version: row.version, inserted: (result.rowCount === 1) };
+      const inserted = result.rows.length > 0 ? result.rows[0].inserted : false;
+      return { eventId: row.event_id, version: row.version, inserted };
     } catch (err) {
       if (err.code === "23505") {
         throw new Error(`Duplicate event: stream ${row.stream_id} version ${row.version} already exists`);
@@ -101,12 +108,14 @@ class EventStoreService {
       const results = [];
       for (const event of events) {
         const row = event.toRow();
-        await client.query(
+        // DO NOTHING (not DO UPDATE) so re-running a migration batch skips rows
+        // that were already written instead of touching them as "affected".
+        const result = await client.query(
           `INSERT INTO event_stream (
             event_id, stream_id, aggregate_type, aggregate_id, event_type,
             version, aggregate_version, payload, actor, occurred_at, created_at
           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
-          ON CONFLICT (stream_id, version) DO UPDATE SET payload = event_stream.payload`,
+          ON CONFLICT (stream_id, version) DO NOTHING`,
           [
             row.event_id,
             row.stream_id,
@@ -121,7 +130,7 @@ class EventStoreService {
             row.created_at,
           ]
         );
-        results.push({ eventId: row.event_id, version: row.version });
+        results.push({ eventId: row.event_id, version: row.version, inserted: (result.rowCount === 1) });
       }
       await client.query("COMMIT");
       inTransaction = false;
@@ -175,7 +184,7 @@ class EventStoreService {
   }
 
   async getStream(aggregateType, aggregateId) {
-    const streamId = `${aggregateType}:${aggregateId}`;
+    const streamId = buildStreamId(aggregateType, aggregateId);
     const result = await this.pool.query(
       `SELECT event_id, stream_id, aggregate_type, aggregate_id, event_type,
           version, aggregate_version, payload, actor, occurred_at, created_at
@@ -188,7 +197,7 @@ class EventStoreService {
   }
 
   async getStreamVersion(aggregateType, aggregateId) {
-    const streamId = `${aggregateType}:${aggregateId}`;
+    const streamId = buildStreamId(aggregateType, aggregateId);
     const result = await this.pool.query(
       "SELECT MAX(version) AS max_version FROM event_stream WHERE stream_id = $1",
       [streamId]

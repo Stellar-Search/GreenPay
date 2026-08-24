@@ -1,8 +1,10 @@
 "use strict";
 const jwt = require("jsonwebtoken");
+const { createApiError } = require("./apiEnvelope");
+const { env } = require("../config/env");
 
 function getSecret() {
-  return process.env.JWT_SECRET || "dev-secret-do-not-use-in-prod";
+  return env.jwtSecret;
 }
 
 function signToken(payload, expiresIn) {
@@ -16,7 +18,7 @@ function verifyToken(token) {
 function adminRequired(req, res, next) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return res.status(401).json({ error: "Missing or malformed Authorization header" });
+    return next(createApiError(401, "AUTH_HEADER_INVALID", "Missing or malformed Authorization header"));
   }
   const token = authHeader.slice(7);
   try {
@@ -25,9 +27,9 @@ function adminRequired(req, res, next) {
     next();
   } catch (err) {
     if (err.name === "TokenExpiredError") {
-      return res.status(401).json({ error: "Token expired" });
+      return next(createApiError(401, "TOKEN_EXPIRED", "Token expired"));
     }
-    return res.status(401).json({ error: "Invalid token" });
+    return next(createApiError(401, "INVALID_TOKEN", "Invalid token"));
   }
 }
 

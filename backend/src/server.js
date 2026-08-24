@@ -3,11 +3,15 @@
  */
 "use strict";
 
-const express   = require("express");
+const express = require("express");
 const cookieParser = require("cookie-parser");
-const csurf     = require("csurf");
-const helmet    = require("helmet");
+const csurf = require("csurf");
+const helmet = require("helmet");
 require("dotenv").config();
+
+// MUST be first: validate all environment variables or exit
+const { env } = require("./config/env");
+
 const { runMigrations } = require("./db/migrate");
 const { startTurretsServer } = require("./services/turrets");
 const http = require("http");
@@ -15,22 +19,32 @@ const { Server } = require("socket.io");
 const { startIndexer, stopIndexer } = require("./services/indexerService");
 const { createCorsMiddleware, getAllowedOrigins } = require("./middleware/corsPolicy");
 const { correlationIdMiddleware } = require("./middleware/correlationId");
+const { apiEnvelope, errorHandler, notFoundHandler } = require("./middleware/apiEnvelope");
 const { initializeEventSourcing, shutdownEventSourcing } = require("./eventSourcing");
 const pool = require("./db/pool");
 const { createShutdownHandler } = require("./shutdown");
 const { logger } = require("./utils/logger");
 
-const app  = express();
-const PORT = process.env.PORT || 4000;
+const app = express();
 const server = http.createServer(app);
+
+// Behind the nginx ingress controller (or any proxy) Express must be told to
+// trust the proxy chain before req.ip reflects the real client: X-Forwarded-For
+// is ignored otherwise, every request looks like it comes from the proxy, and
+// every IP-keyed rate-limit bucket collapses to one shared counter. Kept off by
+// default so local dev can't spoof headers; deployments set TRUST_PROXY=true
+// and TRUST_PROXY_HOPS to match their topology (see helm configmap). A number
+// of hops (not `true`) is deliberate — see express-rate-limit's
+// ERR_ERL_PERMISSIVE_TRUST_PROXY.
+app.set("trust proxy", env.trustProxy ? env.trustProxyHops : false);
 // Kubernetes sends SIGTERM (not SIGINT) to terminate pods during rolling
 // deploys, HPA scale-down, or node drains — keep this below the pod's
 // terminationGracePeriodSeconds (see k8s/backend.yaml) so the process has
 // time to exit on its own before the kubelet sends SIGKILL.
-const SHUTDOWN_TIMEOUT_MS = Number(process.env.SHUTDOWN_TIMEOUT_MS) || 25000;
+const SHUTDOWN_TIMEOUT_MS = env.shutdownTimeoutMs;
 
 // ── Swagger UI (development) ─────────────────────────────────────────────────
-if (process.env.NODE_ENV !== "production") {
+if (!env.isProduction) {
   try {
     const swaggerUi = require("swagger-ui-express");
     const yaml = require("js-yaml");
@@ -67,6 +81,7 @@ app.use(cookieParser());
 // Access-Control-Allow-Origin — otherwise browsers report a same-origin-looking
 // 403 as an opaque "blocked by CORS policy" failure instead of the real error.
 const origins = getAllowedOrigins();
+app.use(apiEnvelope);
 app.use(...createCorsMiddleware(origins));
 
 app.use(csurf({
@@ -75,8 +90,8 @@ app.use(csurf({
     // SameSite=None requires Secure, or browsers drop the cookie outright.
     // Only production serves over HTTPS, so keep them tied together —
     // otherwise every CSRF-protected request silently fails everywhere else.
-    secure: process.env.NODE_ENV === "production",
-    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+    secure: env.isProduction,
+    sameSite: env.isProduction ? "none" : "lax",
     path: "/",
   },
   ignoreMethods: ["GET", "HEAD", "OPTIONS"],
@@ -100,7 +115,7 @@ app.set("io", io);
 const API_V1 = "/api/v1";
 
 app.get(`${API_V1}/csrf-token`, (req, res) => {
-  res.json({ success: true, csrfToken: req.csrfToken() });
+  res.json({ csrfToken: req.csrfToken() });
 });
 
 app.get("/livez", (req, res) => res.json({ status: "ok" }));
@@ -134,12 +149,8 @@ app.use("/api", (req, res, next) => {
   return res.redirect(308, `${API_V1}${req.url}`);
 });
 
-app.use((req, res) => res.status(404).json({ error: `${req.method} ${req.path} not found` }));
-app.use((err, req, res, next) => {
-  void next;
-  logger.error({ msg: "unhandled error", error: err.message, status: err.status || 500 });
-  res.status(err.status || 500).json({ error: err.message || "Internal server error" });
-});
+app.use(notFoundHandler);
+app.use(errorHandler);
 
 async function startServer() {
   await runMigrations();
@@ -152,20 +163,23 @@ async function startServer() {
   const { start: startPushReceiptQueue } = require("./services/push");
   await startPushReceiptQueue();
 
+  const { start: startEmailNotifyQueue } = require("./services/email");
+  await startEmailNotifyQueue();
+
   startIndexer(io).catch(err =>
     logger.error({ msg: "indexer startup error", error: err.message })
   );
 
-  server.listen(PORT, () => {
+  server.listen(env.port, () => {
     logger.info({
       msg: "server started",
-      port: PORT,
-      network: process.env.STELLAR_NETWORK || "testnet",
+      port: env.port,
+      network: env.stellarNetwork,
     });
   });
 
-  if (process.env.ENABLE_TURRETS === "true") {
-    const turretsPort = process.env.TURRETS_PORT || 3001;
+  if (env.enableTurrets) {
+    const turretsPort = env.turretsPort;
     startTurretsServer(turretsPort);
   }
 }

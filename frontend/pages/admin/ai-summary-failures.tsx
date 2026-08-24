@@ -6,57 +6,42 @@
  * one.
  */
 import { useState, useEffect, useCallback } from "react";
+import { useRouter } from "next/router";
 import {
-  adminLogin,
+  isAdminAuthenticated,
   fetchAISummaryFailures,
   retryAISummaryFailure,
   type AISummaryJobFailure,
 } from "@/lib/api";
 
 export default function AISummaryFailuresPage() {
-  const [token, setToken] = useState<string | null>(null);
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [loginError, setLoginError] = useState<string | null>(null);
-  const [loggingIn, setLoggingIn] = useState(false);
-
+  const router = useRouter();
   const [failures, setFailures] = useState<AISummaryJobFailure[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [retryingId, setRetryingId] = useState<string | null>(null);
 
-  const loadFailures = useCallback((authToken: string) => {
+  const loadFailures = useCallback(() => {
     setLoading(true);
     setError(null);
-    fetchAISummaryFailures(authToken)
+    fetchAISummaryFailures()
       .then(setFailures)
       .catch((e: unknown) => setError((e as Error).message || "Failed to load failed jobs"))
       .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
-    if (token) loadFailures(token);
-  }, [token, loadFailures]);
-
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoggingIn(true);
-    setLoginError(null);
-    try {
-      const { token: authToken } = await adminLogin(username, password);
-      setToken(authToken);
-    } catch (e: unknown) {
-      setLoginError((e as Error).message || "Login failed");
-    } finally {
-      setLoggingIn(false);
+    if (!isAdminAuthenticated()) {
+      router.push("/admin/login");
+    } else {
+      loadFailures();
     }
-  };
+  }, [router, loadFailures]);
 
   const handleRetry = async (failureId: string) => {
-    if (!token) return;
     setRetryingId(failureId);
     try {
-      await retryAISummaryFailure(token, failureId);
+      await retryAISummaryFailure(failureId);
       setFailures((prev) => prev.filter((f) => f.id !== failureId));
     } catch (e: unknown) {
       setError((e as Error).message || "Retry failed");
@@ -65,38 +50,11 @@ export default function AISummaryFailuresPage() {
     }
   };
 
-  if (!token) {
+  // Render loading while checking auth
+  if (loading && failures.length === 0 && !error) {
     return (
-      <div className="max-w-md mx-auto px-4 sm:px-6 py-16">
-        <div className="text-center mb-8">
-          <h1 className="font-display text-3xl font-bold text-forest-900 mb-3">Admin Login</h1>
-          <p className="text-[#4b654b] font-body">Sign in to view AI summary job failures.</p>
-        </div>
-        <form onSubmit={handleLogin} className="card space-y-4">
-          <input
-            className="input-field"
-            placeholder="Username"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            autoComplete="username"
-          />
-          <input
-            className="input-field"
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="current-password"
-          />
-          {loginError && <p className="text-red-600 font-body text-sm">{loginError}</p>}
-          <button
-            type="submit"
-            disabled={loggingIn}
-            className="btn-primary w-full disabled:opacity-50"
-          >
-            {loggingIn ? "Signing in…" : "Sign in"}
-          </button>
-        </form>
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 py-10">
+        <div className="card animate-pulse h-32" />
       </div>
     );
   }

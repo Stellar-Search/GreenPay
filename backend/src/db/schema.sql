@@ -56,6 +56,11 @@ ALTER TABLE donations ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'com
 ALTER TABLE donations ADD COLUMN IF NOT EXISTS saga_step TEXT NOT NULL DEFAULT 'donation_recorded';
 ALTER TABLE donations ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
+-- Speeds up the leaderboard's period=month/year donor aggregation, which
+-- joins donations onto profiles by donor_address (donor_stats has no
+-- per-donation timestamp, so that path can't read from the aggregate table).
+CREATE INDEX IF NOT EXISTS idx_donations_donor_address ON donations(donor_address);
+
 CREATE TABLE IF NOT EXISTS profiles (
   public_key TEXT PRIMARY KEY,
   display_name TEXT,
@@ -267,6 +272,29 @@ CREATE INDEX IF NOT EXISTS idx_ai_summary_job_failures_status
 CREATE INDEX IF NOT EXISTS idx_ai_summary_job_failures_created_at
   ON ai_summary_job_failures (created_at);
 
+-- Permanently-failed update-notification batches (pg-boss retries exhausted
+-- on either the email or push fan-out queue). Populated from each queue's
+-- dead-letter queue so a batch that never got delivered is distinctly
+-- visible instead of silently swallowed by a fire-and-forget .catch().
+CREATE TABLE IF NOT EXISTS notification_job_failures (
+  id UUID PRIMARY KEY,
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  update_id UUID REFERENCES project_updates(id) ON DELETE CASCADE,
+  channel TEXT NOT NULL, -- 'email' | 'push'
+  payload JSONB NOT NULL DEFAULT '{}'::JSONB,
+  error_message TEXT,
+  error_stack TEXT,
+  status TEXT NOT NULL DEFAULT 'failed',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  resolved_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_job_failures_status
+  ON notification_job_failures (status);
+
+CREATE INDEX IF NOT EXISTS idx_notification_job_failures_created_at
+  ON notification_job_failures (created_at);
+
 -- Indexer cursor: durable resume point so the Horizon operations stream
 -- can pick up where it left off after a deploy, crash, or restart.
 CREATE TABLE IF NOT EXISTS indexer_state (
@@ -274,3 +302,26 @@ CREATE TABLE IF NOT EXISTS indexer_state (
   value      TEXT NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- ============================================================
+-- Turrets matching idempotency fence
+-- Records every (original_tx_hash, match_id) pair whose
+-- matching payment has been successfully submitted.  The
+-- UNIQUE constraint is the hard guarantee: even when the
+-- application-level pre-check races with a concurrent retry,
+-- only one row can ever be inserted for a given pair, making
+-- matchDonationTxFunction a provable no-op on any subsequent
+-- call for the same transaction_hash + match_id.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS matching_processed_donations (
+  id               UUID        PRIMARY KEY,
+  original_tx_hash TEXT        NOT NULL,
+  match_id         UUID        NOT NULL REFERENCES donation_matches(id) ON DELETE CASCADE,
+  matching_tx_hash TEXT        NOT NULL,
+  match_amount_xlm NUMERIC(20, 7) NOT NULL,
+  processed_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (original_tx_hash, match_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_matching_processed_donations_tx_hash
+  ON matching_processed_donations (original_tx_hash);

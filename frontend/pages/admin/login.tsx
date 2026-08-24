@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/router";
-import { adminLogin } from "@/lib/api";
+import { adminLogin, getApiErrorMessage } from "@/lib/api";
 
 export default function AdminLogin() {
   const router = useRouter();
@@ -16,8 +16,8 @@ export default function AdminLogin() {
     try {
       await adminLogin(username, password);
       router.push("/admin");
-    } catch (e: any) {
-      setError(e.response?.data?.error || "Invalid credentials");
+    } catch (e: unknown) {
+      setError(getApiErrorMessage(e, "Invalid credentials"));
       setState("error");
     }
   };
@@ -40,7 +40,7 @@ export default function AdminLogin() {
           <div>
             <label
               htmlFor="admin-username"
-              className="block text-xs font-bold text-forest-800 uppercase tracking-widest mb-1 ms-1 opacity-50"
+              className="block text-xs font-bold text-forest-800 uppercase tracking-widest mb-1 ms-1 opacity-75"
             >
               Username
             </label>
@@ -57,7 +57,7 @@ export default function AdminLogin() {
           <div>
             <label
               htmlFor="admin-password"
-              className="block text-xs font-bold text-forest-800 uppercase tracking-widest mb-1 ms-1 opacity-50"
+              className="block text-xs font-bold text-forest-800 uppercase tracking-widest mb-1 ms-1 opacity-75"
             >
               Password
             </label>

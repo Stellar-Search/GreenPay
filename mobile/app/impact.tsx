@@ -4,12 +4,10 @@
  */
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity } from 'react-native';
 import { useEffect, useRef, useState } from 'react';
-import axios from 'axios';
 import { captureRef } from 'react-native-view-shot';
 import * as Sharing from 'expo-sharing';
 import { useTheme } from './theme';
-
-const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
+import { apiGet } from '../utils/api';
 
 interface Donation {
   id: string;
@@ -50,14 +48,14 @@ export default function ImpactScreen() {
 
   const loadImpactData = async (pk: string) => {
     try {
-      const [profileRes, donationsRes, impactRes] = await Promise.all([
-        axios.get(`${API_URL}/api/profiles/${pk}`).catch(() => ({ data: { data: null } })),
-        axios.get(`${API_URL}/api/donations/donor/${pk}`).catch(() => ({ data: { data: [] } })),
-        axios.get(`${API_URL}/api/impact/donor/${pk}`).catch(() => ({ data: { data: null } })),
+      const [profileData, donationData, impactData] = await Promise.all([
+        apiGet<DonorProfile | null>(`/api/profiles/${pk}`).catch(() => null),
+        apiGet<Donation[]>(`/api/donations/donor/${pk}`).catch(() => []),
+        apiGet<ImpactStats | null>(`/api/impact/donor/${pk}`).catch(() => null),
       ]);
-      setProfile(profileRes.data.data);
-      setDonations(donationsRes.data.data);
-      setImpactStats(impactRes.data.data);
+      setProfile(profileData);
+      setDonations(donationData);
+      setImpactStats(impactData);
     } catch (error) {
       console.error('Error loading impact data:', error);
     } finally {

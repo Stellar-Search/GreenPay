@@ -6,6 +6,13 @@ metadata:
 data:
   NODE_ENV: "production"
   PORT: {{ .Values.backend.port | quote }}
+  # The backend sits behind the nginx ingress controller (and, on some
+  # clusters, a cloud load balancer in front of it). TRUST_PROXY must be on or
+  # req.ip — and every IP-keyed rate-limit bucket — collapses to the proxy's
+  # address. TRUST_PROXY_HOPS counts the proxy chain between the internet and
+  # the pod: 1 for a single nginx ingress, 2 if a cloud LB fronts the ingress.
+  TRUST_PROXY: "true"
+  TRUST_PROXY_HOPS: "1"
   STELLAR_NETWORK: {{ .Values.config.stellarNetwork }}
   HORIZON_URL: {{ .Values.config.horizonUrl }}
   # backend/src/services/stellar.js reads SOROBAN_RPC_URL and silently defaults

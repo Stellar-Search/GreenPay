@@ -1,0 +1,24 @@
+{{- if .Values.certManager.enabled }}
+# Cluster-scoped ACME issuer used by the Ingress cert-manager annotation.
+# helm.sh/resource-policy: keep so `helm uninstall` does not delete the account
+# key or in-flight certificates.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: {{ .Values.certManager.clusterIssuerName }}
+  labels:
+    app.kubernetes.io/name: greenpay
+    app.kubernetes.io/part-of: greenpay
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  acme:
+    server: {{ .Values.certManager.acme.server | quote }}
+    email: {{ .Values.certManager.acme.email | quote }}
+    privateKeySecretRef:
+      name: {{ .Values.certManager.acme.privateKeySecretName }}
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: {{ .Values.ingress.className }}
+{{- end }}

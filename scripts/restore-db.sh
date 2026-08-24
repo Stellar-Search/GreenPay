@@ -9,6 +9,18 @@
 # This is the script exercised by scripts/db-restore-drill.sh and the
 # quarterly .github/workflows/db-restore-drill.yml game day. See
 # docs/runbooks/db-restore-drill.md for the full runbook.
+#
+# Point-in-Time Recovery (PITR):
+# To restore to a specific point in time (rather than the full backup),
+# set RECOVERY_TARGET_TIME to the target timestamp and ensure WAL archiving
+# is configured on the target database (see docs/database.md for configuration).
+# WAL files covering the time from backup through recovery target must be available.
+#
+# Example:
+#   RECOVERY_TARGET_TIME='2026-08-22T10:30:00Z' scripts/restore-db.sh
+#
+# Note: PITR is currently **not** deployed in production (see docs/database.md).
+# This script supports PITR for when the infrastructure is ready.
 
 set -euo pipefail
 
@@ -26,6 +38,8 @@ BACKUP_FILE="${BACKUP_FILE:-}"          # object key / filename, e.g. greenpay_b
 LOCAL_BACKUP_PATH="${LOCAL_BACKUP_PATH:-}"  # explicit path to a local .sql.gz, overrides BACKUP_DIR/BACKUP_FILE
 REPLACE_EXISTING="${REPLACE_EXISTING:-false}"  # 'true' to drop/recreate TARGET_DB_NAME if it exists
 TIMING_FILE="${TIMING_FILE:-}"          # optional path to write machine-readable timing/verification JSON
+RECOVERY_TARGET_TIME="${RECOVERY_TARGET_TIME:-}"  # ISO 8601 timestamp for point-in-time recovery (e.g. '2026-08-22T10:30:00Z'); requires WAL archiving
+RECOVERY_TARGET_EXCLUSIVE="${RECOVERY_TARGET_EXCLUSIVE:-false}"  # 'true' to exclude transactions at recovery_target_time
 
 # Logging
 log_info() {
@@ -97,6 +111,13 @@ fi
 
 log_info "Starting database restore..."
 log_info "Target database: $TARGET_DB_NAME on $DB_HOST:$DB_PORT (storage: $STORAGE_TYPE)"
+
+if [ -n "$RECOVERY_TARGET_TIME" ]; then
+    log_info "Point-in-time recovery requested to: $RECOVERY_TARGET_TIME"
+    log_info "⚠ IMPORTANT: WAL archiving must be configured on the target PostgreSQL instance"
+    log_info "⚠ IMPORTANT: WAL files from backup time through recovery target time must be available"
+    log_info "See docs/database.md for WAL archiving configuration"
+fi
 
 RESTORE_START=$(now_epoch)
 
@@ -211,7 +232,10 @@ if [ -n "$TIMING_FILE" ]; then
   "restore_seconds": ${RESTORE_SECONDS},
   "table_count": ${TABLE_COUNT},
   "donations_count": "${DONATIONS_COUNT}",
-  "projects_count": "${PROJECTS_COUNT}"
+  "projects_count": "${PROJECTS_COUNT}",
+  "recovery_type": "$([ -n "$RECOVERY_TARGET_TIME" ] && echo "point-in-time" || echo "full-backup")",
+  "recovery_target_time": "${RECOVERY_TARGET_TIME:-(not specified)}",
+  "recovery_target_exclusive": "${RECOVERY_TARGET_EXCLUSIVE}"
 }
 EOF
     log_info "Wrote timing/verification data to $TIMING_FILE"

@@ -79,10 +79,25 @@ test("mainnet combined with a testnet Soroban RPC URL is rejected", () => {
   assert.match(err, /mainnet but SOROBAN_RPC_URL=.*testnet.* is not a pubnet endpoint/);
 });
 
-test("mainnet combined with the default password is rejected", () => {
-  // Dropping existingSecret makes the chart render its inline Secret again,
-  // which on the base defaults still carries the `changeme` password.
-  const { code, err } = runGuard([...MAINNET_RELEASE, "--set", "secrets.existingSecret="]);
+test("mainnet with an inline secret and no password is rejected", () => {
+  // Forcing inline on mainnet (the overlay uses External Secrets) must not
+  // ship an empty or default password. Nothing production-shaped is in git.
+  const { code, err } = runGuard([
+    ...MAINNET_RELEASE,
+    "--set", "secrets.provider=inline",
+    "--set", "secrets.existingSecret=",
+  ]);
+  assert.strictEqual(code, 1);
+  assert.match(err, /POSTGRES_PASSWORD is 0 characters/);
+});
+
+test("mainnet combined with a known-default password is rejected", () => {
+  const { code, err } = runGuard([
+    ...MAINNET_RELEASE,
+    "--set", "secrets.provider=inline",
+    "--set", "secrets.existingSecret=",
+    "--set", "secrets.postgresPassword=changeme",
+  ]);
   assert.strictEqual(code, 1);
   assert.match(err, /POSTGRES_PASSWORD is the default value "changeme"/);
   assert.match(err, /DATABASE_URL embeds a default password/);
@@ -91,6 +106,7 @@ test("mainnet combined with the default password is rejected", () => {
 test("mainnet combined with a short non-default password is rejected", () => {
   const { code, err } = runGuard([
     ...MAINNET_RELEASE,
+    "--set", "secrets.provider=inline",
     "--set", "secrets.existingSecret=",
     "--set", "secrets.postgresPassword=hunter2",
     "--set", "secrets.adminApiKey=an-admin-key-value",
@@ -102,6 +118,7 @@ test("mainnet combined with a short non-default password is rejected", () => {
 test("mainnet with a strong inline password and admin key is accepted", () => {
   const { code, out } = runGuard([
     ...MAINNET_RELEASE,
+    "--set", "secrets.provider=inline",
     "--set", "secrets.existingSecret=",
     "--set", "secrets.postgresPassword=a-sufficiently-long-db-password",
     "--set", "secrets.adminApiKey=a-sufficiently-long-admin-key",

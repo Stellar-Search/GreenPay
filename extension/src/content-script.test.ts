@@ -199,4 +199,54 @@ describe('content script hostile-page hardening', () => {
     expect(document.body.querySelector('.greenpay-tooltip')).toBeNull();
     expect(ACTIVE_TOOLTIPS.has(span!)).toBe(false);
   });
+
+  it('positions tooltip consistently with stubbed getBoundingClientRect and non-zero scroll/body offsets', () => {
+    const hook = document.createElement('div');
+    hook.textContent = ADDRESS;
+    document.body.appendChild(hook);
+    highlightAddresses(hook);
+
+    const span = hook.querySelector<HTMLSpanElement>('.greenpay-address');
+    expect(span).not.toBeNull();
+
+    vi.spyOn(span!, 'getBoundingClientRect').mockReturnValue({
+      left: 150,
+      top: 250,
+      width: 100,
+      height: 20,
+      right: 250,
+      bottom: 270,
+      x: 150,
+      y: 250,
+      toJSON: () => {},
+    });
+
+    vi.spyOn(document.body, 'getBoundingClientRect').mockReturnValue({
+      left: -40,
+      top: -90,
+      width: 1000,
+      height: 2000,
+      right: 960,
+      bottom: 1910,
+      x: -40,
+      y: -90,
+      toJSON: () => {},
+    });
+
+    span!.dispatchEvent(new MouseEvent('mouseenter'));
+
+    const tooltip = document.body.querySelector<HTMLDivElement>('.greenpay-tooltip');
+    expect(tooltip).not.toBeNull();
+
+    // Computed left: 150 - (-40) + 50 = 240px
+    // Computed top: 250 - (-90) = 340px
+    expect(tooltip!.style.left).toBe('240px');
+    expect(tooltip!.style.top).toBe('340px');
+
+    // Conflicting CSS declarations removed
+    expect(tooltip!.style.bottom).toBe('');
+    expect(tooltip!.style.transform).toBe('');
+    expect(tooltip!.style.marginBottom).toBe('');
+  });
 });
+

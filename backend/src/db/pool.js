@@ -1,20 +1,18 @@
 "use strict";
 
 const { Pool } = require("pg");
-
-const DATABASE_URL =
-  process.env.DATABASE_URL || "postgres://postgres:postgres@localhost:5432/greenpay";
+const { env } = require("../config/env");
 
 const useSsl =
-  process.env.DATABASE_SSL === "true" ||
-  (process.env.NODE_ENV === "production" &&
-    process.env.DATABASE_SSL !== "false" &&
-    !DATABASE_URL.includes("localhost") &&
-    !DATABASE_URL.includes("postgres:5432") &&
-    !DATABASE_URL.includes("@postgres"));
+  env.databaseSsl === "true" ||
+  (env.isProduction &&
+    env.databaseSsl !== "false" &&
+    !env.databaseUrl.includes("localhost") &&
+    !env.databaseUrl.includes("postgres:5432") &&
+    !env.databaseUrl.includes("@postgres"));
 
 const pool = new Pool({
-  connectionString: DATABASE_URL,
+  connectionString: env.databaseUrl,
   ssl: useSsl ? { rejectUnauthorized: false } : false,
 });
 

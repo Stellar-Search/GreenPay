@@ -11,6 +11,7 @@ GreenPay splits its storage between **instance** and **persistent** storage:
   - `DataKey::GlobalTotalRaised`
   - `DataKey::GlobalCO2OffsetGrams`
   - `DataKey::AllowedToken(Address)`
+  - `DataKey::NftCount` (total badge tokens minted; also the next token id)
 
 - **Persistent storage** (per-entity records, each with its own per-key TTL):
   - `DataKey::Project(String)`
@@ -19,6 +20,8 @@ GreenPay splits its storage between **instance** and **persistent** storage:
   - `DataKey::HasDonated(String, Address)`
   - `DataKey::Proposal(String)`
   - `DataKey::HasVoted(String, Address)`
+  - `DataKey::NftMeta(u32)` (canonical per-token badge metadata, keyed by token id)
+  - `DataKey::NftOwnerTokens(Address)` (token ids owned by an address)
 
 Per-entity records are stored in persistent storage because they grow unbounded
 as the platform gains projects and donors. Soroban's instance storage is
@@ -59,6 +62,23 @@ transaction-safe migration** in the contract itself:
 There is no explicit offline migration step required — upgrading the contract
 executable and letting the first invocation per key trigger migration is
 sufficient. New keys written after the upgrade go directly to persistent storage.
+
+## Impact NFT interface (token registry)
+
+Badge tokens (`DataKey::ImpactNFT(Address, BadgeTier)`) predate the NFT
+interface. The interface introduced a token registry — `DataKey::NftMeta(u32)`
+(canonical per-token metadata) and `DataKey::NftOwnerTokens(Address)` (ownership
+index) — plus the `DataKey::NftCount` counter. On the first query of a badge
+through the standard interface (`balance_of`, `tokens_of`, `get_token_id`,
+`has_nft`), a legacy badge that only exists as an `ImpactNFT(donor, tier)`
+marker is transparently backfilled into the registry (a token id is assigned and
+the registry entries are written), so pre-interface badges remain discoverable
+and transferable without an offline migration step. This mirrors the v1 → v2
+lazy-migration pattern above.
+
+When `transfer` moves a badge to a new owner, the legacy
+`ImpactNFT(donor, tier)` marker is also moved to the new owner so pre-interface
+readers (and `has_nft`) follow the token.
 
 Do not rename or remove these variants, change their argument order, or
 reorder/remove fields from stored structs such as `Project`, `DonorStats`,

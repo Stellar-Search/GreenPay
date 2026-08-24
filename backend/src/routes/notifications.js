@@ -12,11 +12,18 @@ const express = require("express");
 const router = express.Router();
 const { v4: uuidv4 } = require("uuid");
 const pool = require("../db/pool");
-const { createRateLimiter } = require("../middleware/rateLimiter");
+const { createLayeredRateLimiter } = require("../middleware/rateLimiter");
+const { createApiError } = require("../middleware/apiEnvelope");
 
-// Rate limiter for follow/unfollow operations per donor address
-// Prevents enumeration and follow/unfollow spam
-const notificationLimiter = createRateLimiter(10, 1, "notification-follow"); // 10 follows/unfollows per donor per hour
+// Rate limiter for follow/unfollow operations: a coarse per-IP floor so donors
+// behind a shared egress don't throttle each other, plus the real per-wallet
+// cap that prevents enumeration and follow/unfollow spam.
+const notificationLimiter = createLayeredRateLimiter({
+  name: "notification-follow",
+  windowMinutes: 1,
+  ip: 30,
+  wallet: 10, // 10 follows/unfollows per donor per minute
+});
 
 // POST /api/notifications/register
 // Register or update a device token
@@ -25,10 +32,10 @@ router.post("/register", async (req, res, next) => {
     const { token, platform, walletAddress } = req.body;
 
     if (!token || typeof token !== "string") {
-      return res.status(400).json({ error: "token is required" });
+      throw createApiError(400, "TOKEN_REQUIRED", "token is required");
     }
     if (!platform || typeof platform !== "string") {
-      return res.status(400).json({ error: "platform is required (ios/android)" });
+      throw createApiError(400, "PLATFORM_REQUIRED", "platform is required (ios/android)");
     }
 
     // Check if token exists
@@ -45,7 +52,7 @@ router.post("/register", async (req, res, next) => {
          WHERE token = $3`,
         [platform, walletAddress || null, token]
       );
-      res.json({ success: true, data: { tokenId: existingResult.rows[0].id } });
+      res.json({ tokenId: existingResult.rows[0].id });
     } else {
       // Insert new token
       const id = uuidv4();
@@ -54,7 +61,7 @@ router.post("/register", async (req, res, next) => {
          VALUES ($1, $2, $3, $4)`,
         [id, token, platform, walletAddress || null]
       );
-      res.json({ success: true, data: { tokenId: id } });
+      res.json({ tokenId: id });
     }
   } catch (e) {
     next(e);
@@ -69,10 +76,10 @@ router.post("/follow", notificationLimiter, async (req, res, next) => {
     const { projectId, token, walletAddress } = req.body;
 
     if (!projectId || typeof projectId !== "string") {
-      return res.status(400).json({ error: "projectId is required" });
+      throw createApiError(400, "PROJECT_ID_REQUIRED", "projectId is required");
     }
     if (!token || typeof token !== "string") {
-      return res.status(400).json({ error: "token is required" });
+      throw createApiError(400, "TOKEN_REQUIRED", "token is required");
     }
 
     // Get device token ID
@@ -82,7 +89,7 @@ router.post("/follow", notificationLimiter, async (req, res, next) => {
     );
 
     if (!tokenResult.rows[0]) {
-      return res.status(404).json({ error: "Device token not found. Please register first." });
+      throw createApiError(404, "DEVICE_TOKEN_NOT_FOUND", "Device token not found. Please register first.");
     }
 
     const deviceId = tokenResult.rows[0].id;
@@ -94,7 +101,7 @@ router.post("/follow", notificationLimiter, async (req, res, next) => {
     );
 
     if (!projectResult.rows[0]) {
-      return res.status(404).json({ error: "Project not found" });
+      throw createApiError(404, "PROJECT_NOT_FOUND", "Project not found");
     }
 
     // Check if already following
@@ -104,7 +111,7 @@ router.post("/follow", notificationLimiter, async (req, res, next) => {
     );
 
     if (existingFollow.rows[0]) {
-      return res.json({ success: true, message: "Already following this project" });
+      return res.json({ message: "Already following this project" });
     }
 
     // Create follow relationship
@@ -115,7 +122,7 @@ router.post("/follow", notificationLimiter, async (req, res, next) => {
       [followId, projectId, deviceId, walletAddress || null]
     );
 
-    res.status(201).json({ success: true, data: { followId } });
+    res.status(201).json({ followId });
   } catch (e) {
     next(e);
   }
@@ -129,10 +136,10 @@ router.post("/unfollow", notificationLimiter, async (req, res, next) => {
     const { projectId, token } = req.body;
 
     if (!projectId || typeof projectId !== "string") {
-      return res.status(400).json({ error: "projectId is required" });
+      throw createApiError(400, "PROJECT_ID_REQUIRED", "projectId is required");
     }
     if (!token || typeof token !== "string") {
-      return res.status(400).json({ error: "token is required" });
+      throw createApiError(400, "TOKEN_REQUIRED", "token is required");
     }
 
     // Get device token ID
@@ -142,7 +149,7 @@ router.post("/unfollow", notificationLimiter, async (req, res, next) => {
     );
 
     if (!tokenResult.rows[0]) {
-      return res.status(404).json({ error: "Device token not found" });
+      throw createApiError(404, "DEVICE_TOKEN_NOT_FOUND", "Device token not found");
     }
 
     const deviceId = tokenResult.rows[0].id;
@@ -153,7 +160,7 @@ router.post("/unfollow", notificationLimiter, async (req, res, next) => {
       [projectId, deviceId]
     );
 
-    res.json({ success: true, deleted: result.rowCount > 0 });
+    res.json({ deleted: result.rowCount > 0 });
   } catch (e) {
     next(e);
   }
@@ -166,7 +173,7 @@ router.get("/follows", async (req, res, next) => {
     const { token } = req.query;
 
     if (!token || typeof token !== "string") {
-      return res.status(400).json({ error: "token query parameter is required" });
+      throw createApiError(400, "TOKEN_REQUIRED", "token query parameter is required");
     }
 
     // Get device token ID
@@ -176,7 +183,7 @@ router.get("/follows", async (req, res, next) => {
     );
 
     if (!tokenResult.rows[0]) {
-      return res.status(404).json({ error: "Device token not found" });
+      throw createApiError(404, "DEVICE_TOKEN_NOT_FOUND", "Device token not found");
     }
 
     const deviceId = tokenResult.rows[0].id;
@@ -191,7 +198,7 @@ router.get("/follows", async (req, res, next) => {
       [deviceId]
     );
 
-    res.json({ success: true, data: result.rows });
+    res.json(result.rows);
   } catch (e) {
     next(e);
   }

@@ -1,0 +1,17 @@
+{
+  "name": "@greenpay/i18n",
+  "version": "0.1.0",
+  "description": "Shared i18n system for GreenPay",
+  "main": "i18n/index.ts",
+  "types": "i18n/index.ts",
+  "exports": {
+    ".": "./i18n/index.ts",
+    "./locales/*": "./locales/*"
+  },
+  "dependencies": {
+    "intl-messageformat": "^11.2.14"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

@@ -6,9 +6,7 @@
 import { View, Text, ScrollView, StyleSheet, ActivityIndicator } from 'react-native';
 import { useEffect, useState } from 'react';
 import { useLocalSearchParams } from 'expo-router';
-import axios from 'axios';
-
-const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
+import { apiGet } from '../../utils/api';
 
 interface Badge {
   tier: 'seedling' | 'tree' | 'forest' | 'earth';
@@ -63,12 +61,12 @@ export default function ProfileScreen() {
 
   const loadProfile = async (pk: string) => {
     try {
-      const [profileRes, donationsRes] = await Promise.all([
-        axios.get(`${API_URL}/api/profiles/${pk}`).catch(() => ({ data: { data: null } })),
-        axios.get(`${API_URL}/api/donations/donor/${pk}`).catch(() => ({ data: { data: [] } })),
+      const [profile, donations] = await Promise.all([
+        apiGet<DonorProfile | null>(`/api/profiles/${pk}`).catch(() => null),
+        apiGet<Donation[]>(`/api/donations/donor/${pk}`).catch(() => []),
       ]);
-      setProfile(profileRes.data.data);
-      setDonations(donationsRes.data.data ?? []);
+      setProfile(profile);
+      setDonations(donations);
     } catch {
       setError('Failed to load profile');
     } finally {

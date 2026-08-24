@@ -5,14 +5,10 @@ metadata:
   namespace: {{ .Values.namespace }}
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /
+    {{- include "greenpay.ingress.tlsAnnotations" . | nindent 4 }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}
-{{- if .Values.ingress.tls.enabled }}
-  tls:
-    - hosts:
-        - {{ .Values.ingress.host }}
-      secretName: {{ .Values.ingress.tls.secretName }}
-{{- end }}
+  {{- include "greenpay.ingress.tls" . | nindent 2 }}
   rules:
     - host: {{ .Values.ingress.host }}
       http:

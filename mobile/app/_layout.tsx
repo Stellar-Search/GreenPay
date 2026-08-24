@@ -14,7 +14,9 @@ import { useFonts, Lora_700Bold } from '@expo-google-fonts/lora';
 import { useColorScheme } from 'react-native';
 import { ThemeProvider, themes } from './theme';
 import { useDeepLink } from '../hooks/useDeepLink';
+import { useRecurringReminders } from '../hooks/useRecurringReminders';
 import { AppInitProvider, useAppInit } from '../src/context/AppInitContext';
+import { assertStellarNetworkConfigConsistency } from '../utils/stellarNetwork';
 
 SplashScreen.preventAutoHideAsync();
 import { useWallet } from '../src/hooks/useWallet';
@@ -23,6 +25,7 @@ import { SecurityWarningBanner } from '../components/SecurityWarningBanner';
 
 function DeepLinkHandler() {
   useDeepLink();
+  useRecurringReminders();
   return null;
 }
 
@@ -37,6 +40,11 @@ function AppShell() {
   const [fontsLoaded, fontError] = useFonts({
     Lora_700Bold,
   });
+
+  useEffect(() => {
+    // Fail fast if Horizon URL and STELLAR_NETWORK disagree (issue #145).
+    assertStellarNetworkConfigConsistency();
+  }, []);
 
   useEffect(() => {
     if ((fontsLoaded || fontError) && isHydrated) {

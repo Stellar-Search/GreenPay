@@ -9,10 +9,13 @@
  *  - Edges: a single THREE.LineSegments backed by one BufferGeometry (one
  *    draw call for all edges) — cheaper than per-edge instancing for thin
  *    lines and avoids the overhead of tens of thousands of separate draws.
- *  - Frustum culling: nodes outside the camera frustum are excluded from the
- *    hover/click raycasting candidate list every frame, so interaction cost
- *    scales with what's on screen, not with total graph size. GPU-side
- *    clipping handles the actual render culling for both meshes.
+ *  - Picking: at most once per animation frame (raw pointermove events are
+ *    coalesced), against a screen-space bucket grid rebuilt a few times a
+ *    second as the camera moves. Bucketing by projected screen position
+ *    (rather than the camera frustum alone) means a pick only has to test
+ *    the handful of nodes near the cursor, not every node currently in
+ *    view — so cost tracks cursor locality, not total graph size, even
+ *    when zoomed out far enough that the whole graph is on screen.
  *  - Layout: node positions are derived deterministically from a hash of the
  *    wallet address (no full force-directed simulation client-side, which
  *    would not be feasible synchronously at 50k-node scale on the main
@@ -24,6 +27,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { NetworkNode, NetworkEdge } from "@/lib/api";
 import { shortenAddress, formatXLM } from "@/utils/format";
 import { useI18n } from "@/lib/i18n";
+import { ScreenBucketGrid } from "@/lib/graphPicking";
 
 interface TransactionGraphVisualizerProps {
   nodes: NetworkNode[];
@@ -71,6 +75,13 @@ export default function TransactionGraphVisualizer({ nodes, edges }: Transaction
   const containerRef = useRef<HTMLDivElement>(null);
   const [hovered, setHovered] = useState<HoveredNode | null>(null);
   const [selected, setSelected] = useState<NetworkNode | null>(null);
+  const [query, setQuery] = useState("");
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const searchMatches =
+    normalizedQuery.length >= 2
+      ? nodes.filter((n) => n.id.toLowerCase().includes(normalizedQuery)).slice(0, 8)
+      : [];
 
   useEffect(() => {
     const container = containerRef.current;
@@ -157,24 +168,46 @@ export default function TransactionGraphVisualizer({ nodes, edges }: Transaction
     const edgeLines = new THREE.LineSegments(edgeGeometry, edgeMaterial);
     scene.add(edgeLines);
 
-    // ── Interaction: frustum-culled candidate list + manual ray/sphere test ─
+    // ── Interaction: screen-space bucket grid + manual ray/sphere test ─────
+    // Rebuilt a few times a second (see frustumCounter below) as the camera
+    // moves; queried on every pick. All scratch objects and typed arrays are
+    // allocated once here and reused — no per-candidate allocation below.
     const raycaster = new THREE.Raycaster();
     const pointerNdc = new THREE.Vector2();
     const frustum = new THREE.Frustum();
     const projScreenMatrix = new THREE.Matrix4();
-    let visibleIndices: number[] = [];
+    const scratchSphere = new THREE.Sphere();
+    const scratchVec3 = new THREE.Vector3();
+    const scratchHitPoint = new THREE.Vector3();
     let hoveredIndex = -1;
+
+    const screenX = new Float32Array(nodes.length);
+    const screenY = new Float32Array(nodes.length);
+    const screenNodeIndex = new Int32Array(nodes.length);
+    const bucketGrid = new ScreenBucketGrid(nodes.length);
+    let visibleCount = 0;
 
     function recomputeFrustumVisibility() {
       projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
       frustum.setFromProjectionMatrix(projScreenMatrix);
-      visibleIndices = [];
-      const sphere = new THREE.Sphere();
+
+      const canvasWidth = renderer.domElement.clientWidth || 1;
+      const canvasHeight = renderer.domElement.clientHeight || 1;
+
+      visibleCount = 0;
       for (let i = 0; i < nodes.length; i++) {
-        sphere.center.set(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
-        sphere.radius = 4;
-        if (frustum.intersectsSphere(sphere)) visibleIndices.push(i);
+        scratchSphere.center.set(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+        scratchSphere.radius = 4;
+        if (!frustum.intersectsSphere(scratchSphere)) continue;
+
+        scratchVec3.set(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]).project(camera);
+        screenX[visibleCount] = (scratchVec3.x * 0.5 + 0.5) * canvasWidth;
+        screenY[visibleCount] = (-scratchVec3.y * 0.5 + 0.5) * canvasHeight;
+        screenNodeIndex[visibleCount] = i;
+        visibleCount++;
       }
+
+      bucketGrid.rebuild(screenX, screenY, visibleCount, canvasWidth, canvasHeight);
     }
 
     function setNodeColor(index: number, color: THREE.Color) {
@@ -184,30 +217,42 @@ export default function TransactionGraphVisualizer({ nodes, edges }: Transaction
 
     function pickNode(clientX: number, clientY: number): number {
       const rect = renderer.domElement.getBoundingClientRect();
-      pointerNdc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-      pointerNdc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+      const px = clientX - rect.left;
+      const py = clientY - rect.top;
+      pointerNdc.x = (px / rect.width) * 2 - 1;
+      pointerNdc.y = -(py / rect.height) * 2 + 1;
       raycaster.setFromCamera(pointerNdc, camera);
+
+      const centerCol = bucketGrid.centerCol(px);
+      const centerRow = bucketGrid.centerRow(py);
 
       let closestIndex = -1;
       let closestDist = Infinity;
-      const sphere = new THREE.Sphere();
-      for (const i of visibleIndices) {
-        sphere.center.set(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
-        sphere.radius = 3;
-        const hit = raycaster.ray.intersectSphere(sphere, new THREE.Vector3());
-        if (hit) {
-          const dist = hit.distanceTo(camera.position);
-          if (dist < closestDist) {
-            closestDist = dist;
-            closestIndex = i;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const bucket = bucketGrid.boundedBucketIndex(centerCol + dx, centerRow + dy);
+          if (bucket === -1) continue;
+          const start = bucketGrid.bucketStart[bucket];
+          const end = bucketGrid.bucketStart[bucket + 1];
+          for (let k = start; k < end; k++) {
+            const i = screenNodeIndex[bucketGrid.bucketItems[k]];
+            scratchSphere.center.set(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+            scratchSphere.radius = 3;
+            const hit = raycaster.ray.intersectSphere(scratchSphere, scratchHitPoint);
+            if (hit) {
+              const dist = hit.distanceTo(camera.position);
+              if (dist < closestDist) {
+                closestDist = dist;
+                closestIndex = i;
+              }
+            }
           }
         }
       }
       return closestIndex;
     }
 
-    function onPointerMove(e: PointerEvent) {
-      const index = pickNode(e.clientX, e.clientY);
+    function applyPick(index: number, clientX: number, clientY: number) {
       if (index === hoveredIndex) return;
 
       if (hoveredIndex !== -1) {
@@ -221,7 +266,20 @@ export default function TransactionGraphVisualizer({ nodes, edges }: Transaction
       }
       setNodeColor(index, HOVER_COLOR);
       const rect = renderer.domElement.getBoundingClientRect();
-      setHovered({ node: nodes[index], screenX: e.clientX - rect.left, screenY: e.clientY - rect.top });
+      setHovered({ node: nodes[index], screenX: clientX - rect.left, screenY: clientY - rect.top });
+    }
+
+    // Raw pointermove can fire far faster than the display refresh rate
+    // (high-poll-rate mice/trackpads). Record only the latest coordinates
+    // here and resolve the pick once per animation frame in animate().
+    let pendingPickX = 0;
+    let pendingPickY = 0;
+    let pickPending = false;
+
+    function onPointerMove(e: PointerEvent) {
+      pendingPickX = e.clientX;
+      pendingPickY = e.clientY;
+      pickPending = true;
     }
 
     function onClick(e: PointerEvent) {
@@ -246,9 +304,13 @@ export default function TransactionGraphVisualizer({ nodes, edges }: Transaction
     function animate() {
       frameId = requestAnimationFrame(animate);
       controls.update();
-      // Recompute frustum-visible candidates a few times a second, not every frame —
-      // it only needs to track camera movement, not render-loop cadence.
+      // Recompute the screen-space bucket grid a few times a second, not every
+      // frame — it only needs to track camera movement, not render-loop cadence.
       if (frustumCounter++ % 6 === 0) recomputeFrustumVisibility();
+      if (pickPending) {
+        pickPending = false;
+        applyPick(pickNode(pendingPickX, pendingPickY), pendingPickX, pendingPickY);
+      }
       renderer.render(scene, camera);
     }
     recomputeFrustumVisibility();
@@ -265,30 +327,86 @@ export default function TransactionGraphVisualizer({ nodes, edges }: Transaction
       edgeGeometry.dispose();
       edgeMaterial.dispose();
       renderer.dispose();
+      // Explicitly release the underlying WebGL context (dispose() frees
+      // three.js-tracked GPU resources but keeps the context alive) — without
+      // this, repeated mounts of this component leak contexts toward the
+      // browser's limit (~16 in Chromium) and eventually fail to render.
+      renderer.forceContextLoss();
       container.removeChild(renderer.domElement);
     };
   }, [nodes, edges]);
 
   return (
-    <div ref={containerRef} className="relative w-full h-full min-h-[600px]">
-      {hovered && (
-        <div
-          className="absolute z-10 pointer-events-none px-3 py-2 rounded-lg bg-black/80 text-white text-xs font-mono"
-          style={{ left: hovered.screenX + 12, top: hovered.screenY + 12 }}
-        >
-          <div>{shortenAddress(hovered.node.id, 6)}</div>
-          <div>In: {formatXLM(hovered.node.totalIn, 2, localeTag)} · Out: {formatXLM(hovered.node.totalOut, 2, localeTag)}</div>
-          <div>Connections: {hovered.node.degree}</div>
-        </div>
-      )}
-      {selected && (
-        <div className="absolute z-10 top-4 end-4 px-4 py-3 rounded-xl bg-white/95 shadow-lg text-sm">
-          <p className="font-mono font-semibold text-forest-900">{shortenAddress(selected.id, 8)}</p>
-          <p className="text-forest-600 mt-1">Total in: {formatXLM(selected.totalIn, 2, localeTag)}</p>
-          <p className="text-forest-600">Total out: {formatXLM(selected.totalOut, 2, localeTag)}</p>
-          <p className="text-forest-600">Connections: {selected.degree}</p>
-        </div>
-      )}
+    <div className="w-full h-full min-h-[600px] flex flex-col">
+      {/* Keyboard-accessible fallback — the canvas below has no accessibility
+          affordances of its own (raycasting against a WebGL canvas isn't
+          reachable by keyboard or a screen reader), so this search box gives
+          non-mouse users an equivalent way to reach node details. */}
+      <div className="mb-3">
+        <label htmlFor="graph-node-search" className="block text-xs text-forest-300 mb-1">
+          Find a wallet without using the mouse
+        </label>
+        <input
+          id="graph-node-search"
+          type="text"
+          role="combobox"
+          aria-expanded={searchMatches.length > 0}
+          aria-controls="graph-node-search-results"
+          aria-autocomplete="list"
+          autoComplete="off"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search wallet address…"
+          className="w-full max-w-sm px-3 py-2 rounded-lg bg-black/40 border border-forest-700 text-white text-sm placeholder:text-forest-400 focus:outline-none focus:ring-2 focus:ring-forest-400"
+        />
+        {searchMatches.length > 0 && (
+          <ul
+            id="graph-node-search-results"
+            role="listbox"
+            aria-label="Matching wallets"
+            className="mt-1 max-w-sm rounded-lg bg-black/90 border border-forest-700 divide-y divide-forest-800 overflow-hidden"
+          >
+            {searchMatches.map((n) => (
+              <li key={n.id} role="option" aria-selected={selected?.id === n.id}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelected(n);
+                    setQuery("");
+                  }}
+                  className="w-full text-start px-3 py-2 text-xs font-mono text-white hover:bg-forest-800 focus:bg-forest-800 focus:outline-none"
+                >
+                  {shortenAddress(n.id, 8)} · {n.degree} connection{n.degree === 1 ? "" : "s"}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div ref={containerRef} className="relative w-full flex-1 min-h-[600px]">
+        {hovered && (
+          <div
+            className="absolute z-10 pointer-events-none px-3 py-2 rounded-lg bg-black/80 text-white text-xs font-mono"
+            style={{ left: hovered.screenX + 12, top: hovered.screenY + 12 }}
+          >
+            <div>{shortenAddress(hovered.node.id, 6)}</div>
+            <div>In: {formatXLM(hovered.node.totalIn, 2, localeTag)} · Out: {formatXLM(hovered.node.totalOut, 2, localeTag)}</div>
+            <div>Connections: {hovered.node.degree}</div>
+          </div>
+        )}
+        {selected && (
+          <div
+            className="absolute z-10 top-4 end-4 px-4 py-3 rounded-xl bg-white/95 shadow-lg text-sm"
+            aria-live="polite"
+          >
+            <p className="font-mono font-semibold text-forest-900">{shortenAddress(selected.id, 8)}</p>
+            <p className="text-forest-600 mt-1">Total in: {formatXLM(selected.totalIn, 2, localeTag)}</p>
+            <p className="text-forest-600">Total out: {formatXLM(selected.totalOut, 2, localeTag)}</p>
+            <p className="text-forest-600">Connections: {selected.degree}</p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

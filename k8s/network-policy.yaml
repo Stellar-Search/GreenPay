@@ -30,3 +30,58 @@ spec:
     ports:
     - protocol: TCP
       port: 5432
+---
+# Without these, default-deny-ingress above blackholes the entire application:
+# it selects every pod in the namespace and allows nothing, and the only other
+# policy covers Postgres. Applying k8s/ as-is left the ingress controller
+# unable to reach the frontend or backend, and the frontend unable to reach the
+# backend.
+#
+# The namespaceSelector matches the ingress-nginx controller's namespace via
+# the kubernetes.io/metadata.name label that Kubernetes applies automatically.
+# Change it if the cluster runs its nginx controller somewhere else — every
+# Ingress in k8s/ declares ingressClassName: nginx.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-controller
+  namespace: greenpay
+spec:
+  podSelector:
+    matchExpressions:
+    - key: app
+      operator: In
+      values: [frontend, backend]
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 3000
+    - protocol: TCP
+      port: 4000
+---
+# The frontend server-renders pages that call the backend API directly.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-to-backend
+  namespace: greenpay
+spec:
+  podSelector:
+    matchLabels:
+      app: backend
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: frontend
+    ports:
+    - protocol: TCP
+      port: 4000

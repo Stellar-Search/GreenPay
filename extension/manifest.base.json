@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "GreenPay Companion",
+  "version": "1.0.0",
+  "description": "Support your favorite sustainable projects with a single click.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "GreenPay Companion"
+  },
+  "background": {
+    "service_worker": "dist/background.js"
+  },
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["dist/content-script.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "privacy_policy_url": "https://github.com/Emmy123222/Stellar-GreenPay/blob/main/PRIVACY.md"
+}

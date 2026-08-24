@@ -301,6 +301,55 @@ Badge tiers are **automatically calculated** when a donor's cumulative total exc
 3. **Governance**: Badge holders (Seedling and above) can vote to verify new projects via community proposals.
 4. **Query anytime**: Use `get_donor_stats()` to check the current badge at any time.
 
+---
+
+## Impact Badge NFTs
+
+Every earned badge is minted as a **real, non-fungible token** — not just an
+internal flag — so it is discoverable, displayable, and transferable by any
+standard Stellar wallet, explorer, or marketplace integration. Each badge is a
+distinct token with a stable `u32` token id, an owner, and full on-chain
+metadata (`ImpactNFT`: `owner`, `tier`, `total_donated` at mint,
+`minted_at_ledger`).
+
+The contract exposes a minimal NFT interface in the spirit of SEP-41 (the
+Soroban Token Interface), with NFT-style operations because each badge is
+non-fungible:
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `name` | `() -> String` | Collection name: `GreenPay Impact Badge` |
+| `symbol` | `() -> String` | Collection symbol: `GPB` |
+| `decimals` | `() -> u32` | Always `0` (badges are indivisible) |
+| `total_supply` | `() -> u32` | Total badge tokens minted |
+| `balance_of` | `(owner: Address) -> u32` | Number of badge tokens `owner` holds |
+| `owner_of` | `(token_id: u32) -> Address` | Current owner of `token_id` |
+| `tokens_of` | `(owner: Address) -> Vec<u32>` | Token ids held by `owner` |
+| `token_metadata` | `(token_id: u32) -> ImpactNFT` | Full on-chain metadata |
+| `token_tier` | `(token_id: u32) -> BadgeTier` | Badge tier of `token_id` |
+| `get_token_id` | `(donor: Address, tier: BadgeTier) -> Option<u32>` | Token id for a donor's badge, if minted |
+| `transfer` | `(from: Address, to: Address, token_id: u32)` | Transfer a badge (owner-authenticated) |
+| `has_nft` | `(donor: Address, tier: BadgeTier) -> bool` | Whether `donor` holds a badge for `tier` |
+
+**How a wallet/explorer integration discovers badges:**
+
+1. Call `name()`, `symbol()`, and `decimals()` for collection metadata.
+2. For a donor, call `balance_of(donor)` and `tokens_of(donor)` to enumerate
+   their badge token ids.
+3. For each token id, call `token_metadata(id)` (full metadata incl. tier and
+   `total_donated`) and `owner_of(id)`.
+
+**Transfer semantics:** `transfer(from, to, token_id)` requires `from`'s
+signature and only succeeds when `from` is the current `owner_of(token_id)`.
+Transferring a badge does **not** change the donor's giving-based badge tier
+(`get_badge`/`get_donor_stats` reflect donation history); the token itself is a
+portable collectible.
+
+**Backward compatibility:** badges minted before this interface existed (legacy
+`ImpactNFT(donor, tier)` markers) are backfilled into the token registry on
+first query, so existing donors' badges are immediately discoverable through
+the interface above without any migration step.
+
 ### Example: Displaying Badges
 
 ```typescript

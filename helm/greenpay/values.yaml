@@ -1,7 +1,7 @@
 # GreenPay Helm chart — BASE DEFAULTS (testnet).
 #
 # This file is the safe-by-default baseline: it targets Stellar **testnet**,
-# uses a placeholder ingress host and a well-known development password. It is
+# uses a placeholder ingress host, and renders no live default password. It is
 # suitable for local clusters, CI and testnet staging, and for nothing else.
 #
 # Mainnet is deployed by layering the overlay on top of this file:
@@ -35,6 +35,32 @@ backend:
   pdb:
     enabled: true
     maxUnavailable: 1
+  # HPA targets the Argo Rollout (not a Deployment). minReplicas matches the
+  # HA floor so topologySpreadConstraints (maxSkew: 1) still have two pods to
+  # place. CPU uses metrics-server; latency/queue-depth need prometheus-adapter.
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    cpuUtilization: 60
+    latency:
+      enabled: true
+      metric: greenpay_backend_request_latency_p95_ms
+      targetValue: "400"
+    queueDepth:
+      enabled: true
+      metric: greenpay_backend_queue_depth
+      targetValue: "25"
+    behavior:
+      scaleUp:
+        stabilizationWindowSeconds: 0
+        pods: 4
+        percent: 100
+        periodSeconds: 15
+      scaleDown:
+        stabilizationWindowSeconds: 300
+        percent: 25
+        periodSeconds: 60
   canary:
     steps:
       initialWeight: 10
@@ -59,6 +85,26 @@ frontend:
   pdb:
     enabled: true
     maxUnavailable: 1
+  # HPA targets the frontend Rollout. CPU + per-pod RPS (prometheus-adapter).
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+    cpuUtilization: 70
+    rps:
+      enabled: true
+      metric: http_requests_per_second
+      targetAverageValue: "40"
+    behavior:
+      scaleUp:
+        stabilizationWindowSeconds: 0
+        pods: 4
+        percent: 100
+        periodSeconds: 15
+      scaleDown:
+        stabilizationWindowSeconds: 300
+        percent: 25
+        periodSeconds: 60
   canary:
     steps:
       initialWeight: 10
@@ -111,24 +157,73 @@ config:
   emailFrom: "GreenPay <updates@yourdomain.com>"
 
 secrets:
-  # existingSecret: when set, the chart does NOT render a Secret and instead
-  # mounts the named, pre-existing Secret. Mainnet uses this so no production
-  # credential is ever written into a values file. The Secret must supply
-  # POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB, DATABASE_URL, RESEND_API_KEY
-  # and ADMIN_API_KEY (AWS_* optional).
+  # inline    — chart renders a Kubernetes Secret from the fields below.
+  #             Passwords are empty in git; pass them with --set for local clusters.
+  # external  — chart renders an ExternalSecret (and optional SecretStore) that
+  #             materializes the workload Secret from AWS Secrets Manager or Vault.
+  #             This is the mainnet path. Requires the External Secrets Operator.
+  #
+  # existingSecret: when set with provider=inline, the chart renders no Secret
+  # and every workload mounts that pre-existing name instead.
+  provider: inline
   existingSecret: ""
   postgresUser: postgres
-  # Development-only default. The guard rejects this value on mainnet.
-  postgresPassword: changeme
+  # Empty in git on purpose. A live default (e.g. changeme) would ship in every
+  # `helm template` of the defaults. Local clusters must --set this; mainnet
+  # never uses inline credentials. The pre-deploy guard still rejects known
+  # defaults and short passwords if an inline Secret is rendered on mainnet.
+  postgresPassword: ""
   postgresDb: greenpay
   resendApiKey: ""
   adminApiKey: ""
   awsAccessKeyId: ""
   awsSecretAccessKey: ""
+  external:
+    # When true the chart also renders the SecretStore. Set false if the
+    # cluster already has one and only the ExternalSecret is needed.
+    createSecretStore: true
+    secretStoreName: greenpay-secret-store
+    secretStoreKind: SecretStore
+    refreshInterval: 1h
+    # JSON secret in the backend whose keys match the workload Secret:
+    # POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB, DATABASE_URL,
+    # RESEND_API_KEY, ADMIN_API_KEY (AWS_* optional).
+    remoteKey: greenpay/credentials
+    # aws (Secrets Manager) or vault
+    backend: aws
+    aws:
+      region: us-east-1
+      service: SecretsManager
+    vault:
+      server: ""
+      path: secret
+      version: "v2"
+      mountPath: kubernetes
+      role: greenpay
 
 ingress:
   host: greenpay.local
   className: nginx
+  # TLS is off in the testnet defaults (HTTP on greenpay.local). The mainnet
+  # overlay turns it on. ingress.tls.enabled is the enableTLS switch;
+  # ingress.tls.secretName is the tlsSecretName the Ingress spec.tls block
+  # and cert-manager both write into.
   tls:
     enabled: false
     secretName: greenpay-tls
+    # Empty here so testnet renders no cert-manager annotation. Mainnet sets
+    # this to the ClusterIssuer the chart (or the operator) creates.
+    clusterIssuer: ""
+
+# cert-manager ClusterIssuer the production overlay enables. The chart does
+# not install cert-manager itself — that is a cluster prerequisite (see
+# docs/deployment-mainnet.md). Disabled on testnet so `helm template` of the
+# defaults never emits a cluster-scoped ACME issuer.
+certManager:
+  enabled: false
+  clusterIssuerName: letsencrypt-prod
+  acme:
+    # REQUIRED at deploy time on mainnet: --set certManager.acme.email=ops@...
+    email: ""
+    server: https://acme-v02.api.letsencrypt.org/directory
+    privateKeySecretName: letsencrypt-prod-account-key

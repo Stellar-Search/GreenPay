@@ -1,3 +1,5 @@
+import { activeManifest } from './network-config';
+
 export const SESSION_SCHEMA_VERSION = 1;
 export const WALLET_SESSION_TTL_MS = 15 * 60 * 1000;
 export const PROJECT_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -8,9 +10,12 @@ export const STORAGE_KEYS = {
   lastPopupWorker: 'greenpay.lastPopupWorkerId',
 } as const;
 
+// Load manifest once at module init
+const manifest = activeManifest;
+
 export interface WalletSession {
   publicKey: string;
-  network: 'TESTNET';
+  network: string; // Derived from active manifest
   validatedAt: number;
 }
 
@@ -56,7 +61,8 @@ function isWalletSession(value: unknown): value is WalletSession {
     isRecord(value) &&
     typeof value.publicKey === 'string' &&
     /^G[A-Z2-7]{55}$/.test(value.publicKey) &&
-    value.network === 'TESTNET' &&
+    typeof value.network === 'string' &&
+    value.network === manifest.network.toUpperCase() &&
     typeof value.validatedAt === 'number'
   );
 }
@@ -75,6 +81,14 @@ function isProject(value: unknown): value is ProjectSummary {
 /**
  * Owns the state that may be cached in the MV3 worker. Every mutation is
  * persisted before it is exposed so a terminated worker can reconstruct it.
+ *
+ * Trust boundary:
+ * Session mutations (`setWallet`, `clearWallet`) and worker snapshots represent
+ * privileged operations. The background listener strictly restricts these
+ * messages to extension-page origins (`sender.id === chrome.runtime.id` and
+ * `sender.tab === undefined`, e.g. popup). Untrusted content scripts injected
+ * into arbitrary host web pages are unprivileged and rejected at the messaging
+ * boundary, preventing wallet session poisoning or unauthorized session clearing.
  */
 export class WorkerSessionState {
   private wallet: WalletSession | null = null;
@@ -182,7 +196,7 @@ export class WorkerSessionState {
 
       this.wallet = {
         publicKey,
-        network: 'TESTNET',
+        network: manifest.network.toUpperCase(),
         validatedAt: this.now(),
       };
       const persisted: PersistedSessionState = {

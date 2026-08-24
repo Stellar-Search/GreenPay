@@ -2,9 +2,10 @@
  * pages/admin/index.tsx — Admin dashboard listing all projects with status.
  */
 import { useState, useEffect } from "react";
+import { useRouter } from "next/router";
 import Link from "next/link";
 import WalletConnect from "@/components/WalletConnect";
-import { fetchProjects } from "@/lib/api";
+import { fetchProjects, isAdminAuthenticated } from "@/lib/api";
 import { formatXLM, shortenAddress } from "@/utils/format";
 import type { ClimateProject } from "@/utils/types";
 
@@ -14,18 +15,27 @@ interface AdminIndexProps {
 }
 
 export default function AdminIndex({ publicKey, onConnect }: AdminIndexProps) {
+  const router = useRouter();
   const [projects, setProjects] = useState<ClimateProject[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!isAdminAuthenticated()) {
+      router.push("/admin/login");
+      return;
+    }
+
     if (!publicKey) return;
     setLoading(true);
     fetchProjects({ limit: 100 })
       .then(setProjects)
       .catch((e: unknown) => setError((e as Error).message || "Failed to load projects"))
       .finally(() => setLoading(false));
-  }, [publicKey]);
+  }, [publicKey, router]);
+
+  const isAuthenticated = typeof window !== "undefined" ? isAdminAuthenticated() : false;
+  if (!isAuthenticated) return null;
 
   if (!publicKey) {
     return (

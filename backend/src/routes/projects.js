@@ -8,13 +8,58 @@ const router = express.Router();
 const { v4: uuid } = require("uuid");
 const pool = require("../db/pool");
 const { adminRequired } = require("../middleware/auth");
+const { createLayeredRateLimiter } = require("../middleware/rateLimiter");
 const { logAdminAction } = require("../services/audit");
 const { mapProjectRow, mapProjectMilestoneRow } = require("../services/store");
 const { getOnChainProject, CONTRACT_ID, server, NETWORK_PASSPHRASE } = require("../services/stellar");
 const { enqueueAISummary } = require("../services/summaryQueue");
 const { Contract, TransactionBuilder } = require("@stellar/stellar-sdk");
 const { validate } = require("../middleware/validate");
+const { createApiError } = require("../middleware/apiEnvelope");
 const { ProjectStatusUpdateSchema } = require("../schemas/projects");
+
+// Layered rate limiters — see middleware/rateLimiter.js for the dimensions.
+// Every project mutation is wallet-identity-tied (adminAddress / matcherAddress)
+// or authenticated, so IP alone is never the only thing constraining it.
+
+// Generic admin project writes (campaigns, milestones, matches): a coarse
+// per-IP floor plus a per-wallet cap keyed on the acting admin/matcher address.
+const projectMutationLimiter = createLayeredRateLimiter({
+  name: "project-mutation",
+  windowMinutes: 1,
+  ip: 60,
+  wallet: 20,
+});
+
+// On-chain admin ops (register / confirm) hit Horizon RPC per call.
+const onChainAdminLimiter = createLayeredRateLimiter({
+  name: "project-onchain-admin",
+  windowMinutes: 1,
+  ip: 30,
+  wallet: 10,
+});
+
+// AI summary generation spends paid Anthropic API credits, so it gets the
+// tightest treatment: an IP floor, a per-wallet cap on the project owner, and
+// a global cap that no distributed client (each under its own limits) can
+// exceed — the expensive-endpoint backpressure the audit called for.
+const aiSummaryLimiter = createLayeredRateLimiter({
+  name: "project-summary",
+  windowMinutes: 1,
+  ip: 10,
+  wallet: 2,
+  global: 20,
+});
+
+// Authenticated platform-admin status changes: per-subject cap keyed on the
+// verified JWT subject (set by adminRequired), not on any client-supplied
+// address.
+const statusLimiter = createLayeredRateLimiter({
+  name: "project-status",
+  windowMinutes: 1,
+  ip: 30,
+  subject: 10,
+});
 
 const VALID_STATUSES = ["active", "completed", "paused"];
 const VALID_CATEGORIES = [
@@ -89,7 +134,7 @@ router.get("/featured", async (req, res, next) => {
   try {
     const now = Date.now();
     if (featuredCache && now < featuredCacheExpiry) {
-      return res.json({ success: true, data: featuredCache });
+      return res.json({ ...featuredCache, serverNow: Date.now() });
     }
 
     const result = await pool.query(
@@ -100,12 +145,12 @@ router.get("/featured", async (req, res, next) => {
     );
 
     if (!result.rows[0]) {
-      return res.status(404).json({ error: "No featured project found" });
+      throw createApiError(404, "FEATURED_PROJECT_NOT_FOUND", "No featured project found");
     }
 
     featuredCache = mapProjectRow(result.rows[0]);
     featuredCacheExpiry = now + 24 * 60 * 60 * 1000; // 24 hours
-    res.json({ success: true, data: featuredCache });
+    res.json({ ...featuredCache, serverNow: Date.now() });
   } catch (e) {
     next(e);
   }
@@ -149,7 +194,7 @@ router.get("/", async (req, res, next) => {
 
     const result = await pool.query(query, values);
 
-    res.json({ success: true, data: result.rows.map(mapProjectRow) });
+    res.json(result.rows.map(row => ({ ...mapProjectRow(row), serverNow: Date.now() })));
   } catch (e) {
     next(e);
   }
@@ -181,28 +226,22 @@ router.get("/:id/verify", async (req, res) => {
     };
 
     res.json({
-      success: true,
-      data: {
-        projectId,
-        onChainVerified: Boolean(onChainProject),
-        contractRegisteredAt: onChainProject ? Number(onChainProject.registered_at) : null,
-        totalRaisedOnChain: onChainProject ? stroopsToXlm(onChainProject.total_raised) : "0.0000000",
-      },
+      projectId,
+      onChainVerified: Boolean(onChainProject),
+      contractRegisteredAt: onChainProject ? Number(onChainProject.registered_at) : null,
+      totalRaisedOnChain: onChainProject ? stroopsToXlm(onChainProject.total_raised) : "0.0000000",
     });
   } catch (err) {
     res.json({
-      success: true,
-      data: {
-        projectId: req.params.id,
-        onChainVerified: false,
-        contractRegisteredAt: null,
-        totalRaisedOnChain: "0.0000000",
-      },
+      projectId: req.params.id,
+      onChainVerified: false,
+      contractRegisteredAt: null,
+      totalRaisedOnChain: "0.0000000",
     });
   }
 });
 
-router.post("/:id/campaigns", async (req, res, next) => {
+router.post("/:id/campaigns", projectMutationLimiter, async (req, res, next) => {
   try {
     const { title, goalXLM, deadline, description } = req.body || {};
     const trimmedTitle = typeof title === "string" ? title.trim() : "";
@@ -211,24 +250,24 @@ router.post("/:id/campaigns", async (req, res, next) => {
     const deadlineDate = new Date(deadline);
 
     if (trimmedTitle.length < 3 || trimmedTitle.length > 120) {
-      return res.status(400).json({ error: "title must be between 3 and 120 characters" });
+      throw createApiError(400, "TITLE_LENGTH_INVALID", "title must be between 3 and 120 characters");
     }
     if (!Number.isFinite(goal) || goal <= 0) {
-      return res.status(400).json({ error: "goalXLM must be a positive number" });
+      throw createApiError(400, "GOAL_XLM_INVALID", "goalXLM must be a positive number");
     }
     if (!deadline || Number.isNaN(deadlineDate.getTime())) {
-      return res.status(400).json({ error: "deadline must be a valid ISO date string" });
+      throw createApiError(400, "DEADLINE_INVALID", "deadline must be a valid ISO date string");
     }
     if (deadlineDate.getTime() <= Date.now()) {
-      return res.status(400).json({ error: "deadline must be in the future" });
+      throw createApiError(400, "DEADLINE_NOT_FUTURE", "deadline must be in the future");
     }
     if (trimmedDescription.length > 500) {
-      return res.status(400).json({ error: "description must be 500 characters or fewer" });
+      throw createApiError(400, "DESCRIPTION_TOO_LONG", "description must be 500 characters or fewer");
     }
 
     const projectResult = await pool.query("SELECT id FROM projects WHERE id = $1", [req.params.id]);
     if (!projectResult.rows[0]) {
-      return res.status(404).json({ error: "Project not found" });
+      throw createApiError(404, "PROJECT_NOT_FOUND", "Project not found");
     }
 
     const result = await pool.query(
@@ -247,7 +286,7 @@ router.post("/:id/campaigns", async (req, res, next) => {
       ipAddress: req.ip,
     });
 
-    res.status(201).json({ success: true, data: mapCampaignRow(result.rows[0]) });
+    res.status(201).json(mapCampaignRow(result.rows[0]));
   } catch (e) {
     next(e);
   }
@@ -257,10 +296,10 @@ router.get("/:id/campaigns", async (req, res, next) => {
   try {
     const projectResult = await pool.query("SELECT id FROM projects WHERE id = $1", [req.params.id]);
     if (!projectResult.rows[0]) {
-      return res.status(404).json({ error: "Project not found" });
+      throw createApiError(404, "PROJECT_NOT_FOUND", "Project not found");
     }
     const campaigns = await fetchCampaignsForProject(req.params.id);
-    res.json({ success: true, data: campaigns });
+    res.json(campaigns);
   } catch (e) {
     next(e);
   }
@@ -272,17 +311,17 @@ router.get("/:id/milestones", async (req, res, next) => {
       "SELECT * FROM project_milestones WHERE project_id = $1 ORDER BY percentage ASC",
       [req.params.id],
     );
-    res.json({ success: true, data: result.rows.map(mapProjectMilestoneRow) });
+    res.json(result.rows.map(mapProjectMilestoneRow));
   } catch (e) {
     next(e);
   }
 });
 
-router.post("/:id/milestones", async (req, res, next) => {
+router.post("/:id/milestones", projectMutationLimiter, async (req, res, next) => {
   try {
     const { title, percentage } = req.body;
     if (!title || typeof percentage !== "number") {
-      return res.status(400).json({ error: "title and percentage (number) are required" });
+      throw createApiError(400, "MILESTONE_FIELDS_REQUIRED", "title and percentage (number) are required");
     }
     const result = await pool.query(
       `INSERT INTO project_milestones (id, project_id, title, percentage)
@@ -300,13 +339,13 @@ router.post("/:id/milestones", async (req, res, next) => {
       ipAddress: req.ip,
     });
 
-    res.status(201).json({ success: true, data: mapProjectMilestoneRow(result.rows[0]) });
+    res.status(201).json(mapProjectMilestoneRow(result.rows[0]));
   } catch (e) {
     next(e);
   }
 });
 
-router.post("/:id/milestones/:milestoneId/reach", async (req, res, next) => {
+router.post("/:id/milestones/:milestoneId/reach", projectMutationLimiter, async (req, res, next) => {
   try {
     const { transactionHash } = req.body;
     const result = await pool.query(
@@ -316,7 +355,9 @@ router.post("/:id/milestones/:milestoneId/reach", async (req, res, next) => {
        RETURNING *`,
       [transactionHash || null, req.params.milestoneId, req.params.id],
     );
-    if (!result.rows[0]) return res.status(404).json({ error: "Milestone not found" });
+    if (!result.rows[0]) {
+      throw createApiError(404, "MILESTONE_NOT_FOUND", "Milestone not found");
+    }
 
     logAdminAction({
       actor: req.body?.adminAddress || "unknown",
@@ -327,7 +368,7 @@ router.post("/:id/milestones/:milestoneId/reach", async (req, res, next) => {
       ipAddress: req.ip,
     });
 
-    res.json({ success: true, data: mapProjectMilestoneRow(result.rows[0]) });
+    res.json(mapProjectMilestoneRow(result.rows[0]));
   } catch (e) {
     next(e);
   }
@@ -338,12 +379,16 @@ router.post("/:id/milestones/:milestoneId/reach", async (req, res, next) => {
  * Builds a Soroban transaction to register a project on-chain.
  * Returns the XDR for the admin to sign.
  */
-router.post("/admin/register", async (req, res) => {
+router.post("/admin/register", onChainAdminLimiter, async (req, res, next) => {
   try {
     const { projectId, name, wallet, co2PerXLM, adminAddress } = req.body;
     
-    if (!CONTRACT_ID) throw new Error("CONTRACT_ID not configured");
-    if (!adminAddress) throw new Error("adminAddress is required");
+    if (!CONTRACT_ID) {
+      throw createApiError(503, "CONTRACT_NOT_CONFIGURED", "CONTRACT_ID not configured");
+    }
+    if (!adminAddress) {
+      throw createApiError(400, "ADMIN_ADDRESS_REQUIRED", "adminAddress is required");
+    }
 
     const contract = new Contract(CONTRACT_ID);
     const sourceAccount = await server.loadAccount(adminAddress);
@@ -365,9 +410,9 @@ router.post("/admin/register", async (req, res) => {
       ipAddress: req.ip,
     });
 
-    res.json({ success: true, xdr: tx.toXDR() });
+    res.json({ xdr: tx.toXDR() });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    next(err);
   }
 });
 
@@ -375,12 +420,14 @@ router.post("/admin/register", async (req, res) => {
  * POST /api/projects/admin/confirm
  * Verifies a registration transaction and updates the local store.
  */
-router.post("/admin/confirm", async (req, res) => {
+router.post("/admin/confirm", onChainAdminLimiter, async (req, res, next) => {
   try {
     const { transactionHash, projectId } = req.body;
     
     const tx = await server.getTransaction(transactionHash);
-    if (!tx.successful) throw new Error("Transaction failed");
+    if (!tx.successful) {
+      throw createApiError(400, "TRANSACTION_FAILED", "Transaction failed");
+    }
 
     const result = await pool.query(
       `UPDATE projects
@@ -401,16 +448,18 @@ router.post("/admin/confirm", async (req, res) => {
       ipAddress: req.ip,
     });
 
-    res.json({ success: true, data: result.rows[0] ? mapProjectRow(result.rows[0]) : null });
+    res.json(result.rows[0] ? mapProjectRow(result.rows[0]) : null);
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    next(err);
   }
 });
 
 router.get("/:id", async (req, res, next) => {
   try {
     const projectResult = await pool.query("SELECT * FROM projects WHERE id = $1", [req.params.id]);
-    if (!projectResult.rows[0]) return res.status(404).json({ error: "Project not found" });
+    if (!projectResult.rows[0]) {
+      throw createApiError(404, "PROJECT_NOT_FOUND", "Project not found");
+    }
     const campaigns = await fetchCampaignsForProject(req.params.id);
     const onChainProject = await getOnChainProject(req.params.id);
 
@@ -443,18 +492,16 @@ router.get("/:id", async (req, res, next) => {
     };
 
     res.json({
-      success: true,
-      data: {
-        ...mapProjectRow(projectResult.rows[0]),
-        onChainVerified: Boolean(onChainProject) || Boolean(projectResult.rows[0].on_chain_verified),
-        contractRegisteredAt: onChainProject ? Number(onChainProject.registered_at) : null,
-        totalRaisedOnChain: onChainProject ? stroopsToXlm(onChainProject.total_raised) : "0.0000000",
-        campaigns,
-        activeCampaign: campaigns.find((campaign) => campaign.active) || null,
-        averageRating: parseFloat(ratingResult.rows[0].avg_rating) || 0,
-        ratingCount: parseInt(ratingResult.rows[0].count) || 0,
-        milestones: milestoneResult.rows.map(mapProjectMilestoneRow),
-      },
+      ...mapProjectRow(projectResult.rows[0]),
+      serverNow: Date.now(),
+      onChainVerified: Boolean(onChainProject) || Boolean(projectResult.rows[0].on_chain_verified),
+      contractRegisteredAt: onChainProject ? Number(onChainProject.registered_at) : null,
+      totalRaisedOnChain: onChainProject ? stroopsToXlm(onChainProject.total_raised) : "0.0000000",
+      campaigns,
+      activeCampaign: campaigns.find((campaign) => campaign.active) || null,
+      averageRating: parseFloat(ratingResult.rows[0].avg_rating) || 0,
+      ratingCount: parseInt(ratingResult.rows[0].count) || 0,
+      milestones: milestoneResult.rows.map(mapProjectMilestoneRow),
     });
   } catch (e) {
     next(e);
@@ -472,14 +519,14 @@ router.get("/:id", async (req, res, next) => {
  * Mirrors the admin-page convention (`isOwner = publicKey === walletAddress`)
  * so only the project owner can spend Anthropic API credits on their project.
  *
- * Response: { success: true, data: { aiSummary, aiSummaryGeneratedAt,
- *                                    aiSummaryModel, aiSummarySourceHash } }
+ * Response data: { aiSummary, aiSummaryGeneratedAt, aiSummaryModel,
+ *                  aiSummarySourceHash }
  */
-router.post("/:id/generate-summary", async (req, res, next) => {
+router.post("/:id/generate-summary", aiSummaryLimiter, async (req, res, next) => {
   try {
     const { adminAddress } = req.body || {};
     if (!adminAddress || typeof adminAddress !== "string") {
-      return res.status(400).json({ error: "adminAddress is required" });
+      throw createApiError(400, "ADMIN_ADDRESS_REQUIRED", "adminAddress is required");
     }
 
     const projectResult = await pool.query(
@@ -487,9 +534,11 @@ router.post("/:id/generate-summary", async (req, res, next) => {
       [req.params.id],
     );
     const project = projectResult.rows[0];
-    if (!project) return res.status(404).json({ error: "Project not found" });
+    if (!project) {
+      throw createApiError(404, "PROJECT_NOT_FOUND", "Project not found");
+    }
     if (project.wallet_address !== adminAddress) {
-      return res.status(403).json({ error: "Only the project owner can generate a summary" });
+      throw createApiError(403, "PROJECT_OWNER_REQUIRED", "Only the project owner can generate a summary");
     }
 
     await enqueueAISummary(req.params.id, {
@@ -508,35 +557,35 @@ router.post("/:id/generate-summary", async (req, res, next) => {
       ipAddress: req.ip,
     });
 
-    res.status(202).json({ success: true, data: { status: "queued" } });
+    res.status(202).json({ status: "queued" });
   } catch (e) {
     next(e);
   }
 });
 
-router.post("/:id/matching", async (req, res, next) => {
+router.post("/:id/matching", projectMutationLimiter, async (req, res, next) => {
   try {
     const { matcherAddress, capXLM, multiplier, expiresAt } = req.body || {};
 
     if (!matcherAddress || typeof matcherAddress !== "string") {
-      return res.status(400).json({ error: "matcherAddress is required" });
+      throw createApiError(400, "MATCHER_ADDRESS_REQUIRED", "matcherAddress is required");
     }
     if (!capXLM || isNaN(Number.parseFloat(capXLM)) || Number.parseFloat(capXLM) <= 0) {
-      return res.status(400).json({ error: "capXLM must be a positive number" });
+      throw createApiError(400, "CAP_XLM_INVALID", "capXLM must be a positive number");
     }
     if (!multiplier || typeof multiplier !== "number" || multiplier < 1) {
-      return res.status(400).json({ error: "multiplier must be >= 1" });
+      throw createApiError(400, "MULTIPLIER_INVALID", "multiplier must be >= 1");
     }
     if (!expiresAt || Number.isNaN(new Date(expiresAt).getTime())) {
-      return res.status(400).json({ error: "expiresAt must be a valid ISO date string" });
+      throw createApiError(400, "EXPIRES_AT_INVALID", "expiresAt must be a valid ISO date string");
     }
     if (new Date(expiresAt).getTime() <= Date.now()) {
-      return res.status(400).json({ error: "expiresAt must be in the future" });
+      throw createApiError(400, "EXPIRES_AT_NOT_FUTURE", "expiresAt must be in the future");
     }
 
     const projectResult = await pool.query("SELECT id FROM projects WHERE id = $1", [req.params.id]);
     if (!projectResult.rows[0]) {
-      return res.status(404).json({ error: "Project not found" });
+      throw createApiError(404, "PROJECT_NOT_FOUND", "Project not found");
     }
 
     const result = await pool.query(
@@ -557,17 +606,14 @@ router.post("/:id/matching", async (req, res, next) => {
 
     const row = result.rows[0];
     res.status(201).json({
-      success: true,
-      data: {
-        id: row.id,
-        projectId: row.project_id,
-        matcherAddress: row.matcher_address,
-        capXLM: row.cap_xlm?.toString() || "0",
-        multiplier: row.multiplier,
-        matchedXLM: row.matched_xlm?.toString() || "0",
-        expiresAt: new Date(row.expires_at).toISOString(),
-        createdAt: new Date(row.created_at).toISOString(),
-      },
+      id: row.id,
+      projectId: row.project_id,
+      matcherAddress: row.matcher_address,
+      capXLM: row.cap_xlm?.toString() || "0",
+      multiplier: row.multiplier,
+      matchedXLM: row.matched_xlm?.toString() || "0",
+      expiresAt: new Date(row.expires_at).toISOString(),
+      createdAt: new Date(row.created_at).toISOString(),
     });
   } catch (e) {
     next(e);
@@ -596,7 +642,7 @@ router.get("/:id/matching", async (req, res, next) => {
       createdAt: new Date(row.created_at).toISOString(),
     }));
 
-    res.json({ success: true, data: matches });
+    res.json(matches);
   } catch (e) {
     next(e);
   }
@@ -612,8 +658,10 @@ router.patch(
   "/:id/status",
   // adminRequired runs before validate so an unauthenticated caller is turned
   // away with a 401 rather than being told, via a 400, whether their body was
-  // well-formed.
+  // well-formed. It also sets req.admin so the subject-keyed limiter can
+  // constrain the authenticated identity regardless of source address.
   adminRequired,
+  statusLimiter,
   validate(ProjectStatusUpdateSchema),
   async (req, res, next) => {
     try {
@@ -621,7 +669,7 @@ router.patch(
 
       const projectResult = await pool.query("SELECT * FROM projects WHERE id = $1", [req.params.id]);
       if (!projectResult.rows[0]) {
-        return res.status(404).json({ error: "Project not found" });
+        throw createApiError(404, "PROJECT_NOT_FOUND", "Project not found");
       }
 
       const result = await pool.query(
@@ -646,7 +694,7 @@ router.patch(
         ipAddress: req.ip,
       });
 
-      res.json({ success: true, data: mapProjectRow(result.rows[0]) });
+      res.json(mapProjectRow(result.rows[0]));
     } catch (e) {
       next(e);
     }

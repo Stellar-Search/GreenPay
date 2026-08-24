@@ -2,7 +2,7 @@
  * pages/index.tsx — GreenPay landing page
  */
 import Link from "next/link";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import WalletConnect from "@/components/WalletConnect";
 import { useCountUp } from "@/hooks/useCountUp";
 import {
@@ -11,7 +11,7 @@ import {
   fetchProjects,
   fetchCategoryStats,
 } from "@/lib/api";
-import { streamGlobalProjectDonations } from "@/lib/stellar";
+import { useDonationSocket, type DonationSocketPayload } from "@/hooks/useDonationSocket";
 import { formatCO2, formatXLM, progressPercent } from "@/utils/format";
 import { useI18n } from "@/lib/i18n";
 import type { GlobalStats, CategoryStats } from "@/lib/api";
@@ -92,11 +92,9 @@ export default function Home({ publicKey, onConnect }: HomeProps) {
     [],
   );
   const [tickerIndex, setTickerIndex] = useState(0);
+  const projectNamesRef = useRef<Map<string, string>>(new Map());
 
   useEffect(() => {
-    let closeStream: (() => void) | null = null;
-    let isMounted = true;
-
     fetchGlobalStats()
       .then(setGlobalStats)
       .catch(() => null);
@@ -109,36 +107,32 @@ export default function Home({ publicKey, onConnect }: HomeProps) {
 
     fetchProjects({ limit: 100 })
       .then((projects) => {
-        if (!isMounted || projects.length === 0) return;
-        closeStream = streamGlobalProjectDonations(
-          projects.map((project) => ({
-            id: project.id,
-            name: project.name,
-            walletAddress: project.walletAddress,
-          })),
-          (donation) => {
-            setLiveDonations((prev) =>
-              [
-                {
-                  id: donation.id,
-                  projectId: donation.projectId,
-                  projectName: donation.projectName,
-                  amountXLM: donation.amountXLM,
-                  createdAt: donation.createdAt,
-                },
-                ...prev.filter((item) => item.id !== donation.id),
-              ].slice(0, 10),
-            );
-          },
+        projectNamesRef.current = new Map(
+          projects.map((project) => [project.id, project.name]),
         );
       })
       .catch(() => null);
-
-    return () => {
-      isMounted = false;
-      if (closeStream) closeStream();
-    };
   }, []);
+
+  const handleDonationEvent = useCallback((payload: DonationSocketPayload) => {
+    const projectName = projectNamesRef.current.get(payload.projectId);
+    if (!projectName) return;
+
+    setLiveDonations((prev) =>
+      [
+        {
+          id: payload.transactionHash,
+          projectId: payload.projectId,
+          projectName,
+          amountXLM: String(payload.amountXLM),
+          createdAt: payload.timestamp,
+        },
+        ...prev.filter((item) => item.id !== payload.transactionHash),
+      ].slice(0, 10),
+    );
+  }, []);
+
+  useDonationSocket(null, handleDonationEvent);
 
   useEffect(() => {
     if (liveDonations.length <= 1) return;

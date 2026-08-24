@@ -5,15 +5,16 @@
 "use strict";
 
 const { Horizon, Networks, rpc, Contract, TransactionBuilder, scValToNative } = require("@stellar/stellar-sdk");
+const { env } = require("../config/env");
 
-const NETWORK     = process.env.STELLAR_NETWORK || "testnet";
-const HORIZON_URL = process.env.HORIZON_URL || "https://horizon-testnet.stellar.org";
-const RPC_URL     = process.env.SOROBAN_RPC_URL || "https://soroban-testnet.stellar.org";
+const NETWORK = env.stellarNetwork;
+const HORIZON_URL = env.horizonUrl;
+const RPC_URL = env.sorobanRpcUrl;
+const CONTRACT_ID = env.contractId;
 
 const NETWORK_PASSPHRASE = NETWORK === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
 const server = new Horizon.Server(HORIZON_URL);
 const rpcServer = new rpc.Server(RPC_URL);
-const CONTRACT_ID = process.env.CONTRACT_ID || "";
 
 async function getOnChainProject(projectId) {
   if (!CONTRACT_ID) return null;

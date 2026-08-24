@@ -13,9 +13,7 @@ import {
 } from 'react-native';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'expo-router';
-import axios from 'axios';
-
-const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
+import { apiGet } from '../utils/api';
 
 // In a real app this would come from wallet connection state.
 // For demo purposes this is left empty so no row is auto-highlighted.
@@ -55,8 +53,8 @@ export default function LeaderboardScreen() {
 
   const fetchLeaderboard = async () => {
     try {
-      const res = await axios.get(`${API_URL}/api/leaderboard`);
-      setEntries(res.data.data ?? []);
+      const data = await apiGet<LeaderboardEntry[]>('/api/leaderboard');
+      setEntries(data);
     } catch {
       setError('Failed to load leaderboard');
     } finally {

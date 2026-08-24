@@ -12,7 +12,7 @@ import AxeBuilder from "@axe-core/playwright";
 // ── Shared mock data ──────────────────────────────────────────────────────────
 
 const MOCK_PROJECT_ID = "8d9ac19b-52eb-42f7-80d9-19a88ba59e43";
-const MOCK_PUBLIC_KEY = "GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGLEWZE5BGYTG2XTGQBC3VP";
+const MOCK_PUBLIC_KEY = "GDNNXUMEULKSN4PL3VOAN7NNSNM3EKDVTNGX66OWM2E7UJKKVWCUN3GZ";
 const MOCK_WALLET     = "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";
 
 const MOCK_PROJECT = {
@@ -69,6 +69,20 @@ async function mockApi(page: Page) {
   await page.route("**/api/v1/projects/featured",        (r) => r.fulfill(ok(MOCK_PROJECT)));
   await page.route(`**/api/v1/projects/${MOCK_PROJECT_ID}/**`, (r) => r.fulfill(ok([])));
   await page.route(`**/api/v1/projects/${MOCK_PROJECT_ID}`,    (r) => r.fulfill(ok(MOCK_PROJECT)));
+
+  // Registered after the catch-all above so this more specific route wins
+  // (Playwright resolves overlapping routes in reverse registration order).
+  await page.route("**/api/v1/network/graph**", (r) =>
+    r.fulfill(
+      ok({
+        nodes: [
+          { id: MOCK_WALLET, totalIn: 500, totalOut: 120, degree: 4 },
+          { id: MOCK_PUBLIC_KEY, totalIn: 80, totalOut: 20, degree: 2 },
+        ],
+        edges: [{ source: MOCK_WALLET, target: MOCK_PUBLIC_KEY, amount: 50, type: "donation", txHash: "tx1" }],
+      })
+    )
+  );
 }
 
 // ── Axe helper — assert zero critical/serious violations ─────────────────────
@@ -119,6 +133,13 @@ test.describe("Accessibility (axe)", () => {
   test("home page has no critical/serious violations", async ({ page }) => {
     await mockApi(page);
     await page.goto("/");
+    await assertNoCriticalViolations(page);
+  });
+
+  test("transaction network page has no critical/serious violations", async ({ page }) => {
+    await mockApi(page);
+    await page.goto("/network");
+    await expect(page.locator("canvas")).toBeVisible({ timeout: 15_000 });
     await assertNoCriticalViolations(page);
   });
 

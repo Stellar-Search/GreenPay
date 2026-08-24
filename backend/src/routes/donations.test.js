@@ -6,14 +6,25 @@ jest.mock("../db/pool", () => ({
 
 jest.mock("../eventSourcing/commandBus", () => ({
   execute: jest.fn(),
+  DonationReplayConflictError: class DonationReplayConflictError extends Error {
+    constructor(transactionHash, mismatches) {
+      super(`Transaction ${transactionHash} is already recorded with different details (${mismatches.join("; ")})`);
+      this.name = "DonationReplayConflictError";
+      this.code = "DONATION_TX_CONFLICT";
+      this.status = 409;
+      this.transactionHash = transactionHash;
+      this.mismatches = mismatches;
+    }
+  },
 }));
 
 jest.mock("../middleware/rateLimiter", () => ({
   createRateLimiter: () => (req, res, next) => next(),
+  createLayeredRateLimiter: () => (req, res, next) => next(),
 }));
 
 const pool = require("../db/pool");
-const { execute } = require("../eventSourcing/commandBus");
+const { execute, DonationReplayConflictError } = require("../eventSourcing/commandBus");
 const { computeBadges } = require("../services/store");
 const { DonationRecordedEvent } = require("../eventSourcing/events");
 const { recordDonation } = require("./donations");
@@ -32,7 +43,7 @@ function queryResult(rows = []) {
 
 function makeDonationRecordedEvent({ projectId, donorAddress, amountXlm, transactionHash, currency = "XLM", message = null }) {
   return new DonationRecordedEvent({
-    aggregateId: `Donation:${transactionHash}`,
+    aggregateId: transactionHash,
     version: 1,
     actor: donorAddress,
     projectId,
@@ -48,12 +59,33 @@ function createMockResponse() {
   return {
     statusCode: 200,
     body: null,
+    meta: undefined,
     status(code) {
       this.statusCode = code;
       return this;
     },
+    apiMeta(meta) {
+      this.meta = meta;
+      return this;
+    },
     json(payload) {
-      this.body = payload;
+      if (this.statusCode >= 400) {
+        this.body = {
+          success: false,
+          error: {
+            code: payload.code || "ERROR",
+            message: payload.message || payload.error,
+          },
+        };
+      } else {
+        this.body = {
+          success: true,
+          data: payload,
+        };
+        if (this.meta !== undefined) {
+          this.body.meta = this.meta;
+        }
+      }
       return this;
     },
   };
@@ -64,7 +96,7 @@ async function invokeRecordDonation(body) {
   const res = createMockResponse();
   const next = jest.fn((err) => {
     if (err) {
-      res.status(err.status || 500).json({ error: err.message || "Internal server error" });
+      res.status(err.status || 500).json({ code: err.code || "ERROR", message: err.message || "Internal server error" });
     }
   });
 
@@ -145,7 +177,7 @@ describe("POST /api/donations", () => {
     });
     execute.mockResolvedValueOnce({
       events: [donationEvent],
-      data: { donationId: donationEvent.eventId, amountXlm: 10 },
+      data: { donationId: donationEvent.eventId, amountXlm: "10.0000000" },
       deduplicated: false,
     });
 
@@ -164,7 +196,7 @@ describe("POST /api/donations", () => {
         id: donationEvent.eventId,
         projectId: "project-1",
         donorAddress,
-        amountXlm: 10,
+        amountXlm: "10.0000000",
         currency: "XLM",
         transactionHash,
       }),
@@ -190,7 +222,7 @@ describe("POST /api/donations", () => {
 
     expect(next).toHaveBeenCalledTimes(1);
     expect(res.statusCode).toBe(404);
-    expect(res.body.error).toBe("Project not found");
+    expect(res.body.error).toMatchObject({ code: "PROJECT_NOT_FOUND", message: "Project not found" });
     expect(execute).not.toHaveBeenCalled();
   });
 
@@ -204,7 +236,7 @@ describe("POST /api/donations", () => {
 
     expect(next).toHaveBeenCalledTimes(1);
     expect(res.statusCode).toBe(400);
-    expect(res.body.error).toBe("Invalid Stellar public key");
+    expect(res.body.error).toMatchObject({ code: "VALIDATION_FAILED", message: "Invalid Stellar public key" });
     expect(pool.query).not.toHaveBeenCalled();
   });
 
@@ -218,7 +250,7 @@ describe("POST /api/donations", () => {
 
     expect(next).toHaveBeenCalledTimes(1);
     expect(res.statusCode).toBe(400);
-    expect(res.body.error).toBe("Invalid transaction hash");
+    expect(res.body.error).toMatchObject({ code: "VALIDATION_FAILED", message: "Invalid transaction hash" });
     expect(pool.query).not.toHaveBeenCalled();
   });
 
@@ -248,7 +280,33 @@ describe("POST /api/donations", () => {
         amountXlm: 25,
       }),
     );
-    expect(res.body.deduplicated).toBe(true);
+    expect(res.body.meta.deduplicated).toBe(true);
+  });
+
+  test("returns 409 and flags a suspicious replay when fields disagree with the stored donation", async () => {
+    const donorAddress = makePublicKey("D");
+    const transactionHash = makeTxHash("d");
+
+    pool.query.mockResolvedValueOnce(queryResult([{ id: "project-1" }]));
+    execute.mockRejectedValueOnce(
+      new DonationReplayConflictError(transactionHash, [
+        "amount (stored 25.0000000, received 30.0000000)",
+      ]),
+    );
+
+    const { res, next } = await invokeRecordDonation({
+      projectId: "project-1",
+      donorAddress,
+      amountXLM: "30",
+      transactionHash,
+    });
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toMatchObject({
+      code: "DONATION_TX_CONFLICT",
+      message: "Transaction hash already recorded with different details",
+    });
   });
 
   test("propagates command bus failures to the error handler", async () => {

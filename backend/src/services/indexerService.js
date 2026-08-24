@@ -3,11 +3,13 @@
  */
 "use strict";
 
-const { server: stellarServer } = require("./stellar");
+const { server: stellarServer, rpcServer, CONTRACT_ID } = require("./stellar");
 const pool = require("../db/pool");
 const { v4: uuid } = require("uuid");
 const { execute } = require("../eventSourcing/commandBus");
 const { DonationRecordedEvent, MatchAppliedEvent } = require("../eventSourcing/events");
+const { stroopsToXlm, xlmToStroops } = require("../utils/xlm");
+const { SorobanEventIndexer } = require("./sorobanEventIndexer");
 
 let lastProcessedLedger = 0;
 let isRunning = false;
@@ -16,6 +18,7 @@ let projectWallets = new Map(); // wallet_address -> project_id
 let refreshIntervalId = null;
 let closeStream = null;
 let cursorFlushIntervalId = null;
+let sorobanEventIndexer = null;
 
 const CURSOR_KEY = "horizon_operations_cursor";
 const CURSOR_FLUSH_INTERVAL_MS = 30_000;
@@ -134,6 +137,17 @@ async function startIndexer(socketIo) {
       persistCursor(lastProcessedLedger);
     }
   }, CURSOR_FLUSH_INTERVAL_MS);
+
+  if (CONTRACT_ID) {
+    sorobanEventIndexer = new SorobanEventIndexer({
+      rpcServer,
+      contractId: CONTRACT_ID,
+      db: pool,
+      handleDonation,
+      pollIntervalMs: Number(process.env.SOROBAN_EVENT_POLL_INTERVAL_MS) || undefined,
+    });
+    await sorobanEventIndexer.start();
+  }
 }
 
 /**
@@ -151,7 +165,11 @@ async function startIndexer(socketIo) {
 async function handleDonation(projectId, op) {
   const txHash = op.transaction_hash;
   const donorAddress = op.from;
-  const amountXLM = parseFloat(op.amount);
+  const amountStroops = op.amount_stroops !== undefined
+    ? BigInt(op.amount_stroops)
+    : xlmToStroops(op.amount);
+  const amountXLM = stroopsToXlm(amountStroops);
+  const amountXLMNumber = Number.parseFloat(amountXLM);
 
   const client = await pool.connect();
   let inTransaction = false;
@@ -164,7 +182,7 @@ async function handleDonation(projectId, op) {
       [txHash]
     );
     if (existingResult.rows.length > 0) {
-      return;
+      return true;
     }
 
     await client.query("BEGIN");
@@ -183,6 +201,7 @@ async function handleDonation(projectId, op) {
         projectId,
         donorAddress,
         amountXLM,
+        amountStroops: amountStroops.toString(),
         amount: amountXLM,
         currency: "XLM",
         message: null,
@@ -198,7 +217,7 @@ async function handleDonation(projectId, op) {
         const remaining = capXlm - matchedXlm;
 
         if (remaining > 0) {
-          const matchAmount = Math.min(amountXLM * match.multiplier, remaining);
+          const matchAmount = Math.min(amountXLMNumber * match.multiplier, remaining);
 
           await execute(
             new (require("../eventSourcing/commands").ApplyMatchCommand)({
@@ -225,14 +244,16 @@ async function handleDonation(projectId, op) {
       io.emit("donation_event", {
         projectId,
         donorAddress,
-        amountXLM,
+        amountXLM: amountXLMNumber,
         transactionHash: txHash,
         timestamp: new Date().toISOString()
       });
     }
+    return true;
   } catch (err) {
     if (inTransaction) await client.query("ROLLBACK");
     console.error("[Indexer] Failed to process donation:", err.message);
+    return false;
   } finally {
     client.release();
   }
@@ -243,7 +264,7 @@ async function handleDonation(projectId, op) {
  * indexer performs no further work — and no further database queries —
  * once shutdown has begun.
  */
-function stopIndexer() {
+async function stopIndexer() {
   if (!isRunning) return;
 
   if (refreshIntervalId) {
@@ -262,6 +283,10 @@ function stopIndexer() {
   if (lastProcessedLedger) {
     persistCursor(lastProcessedLedger);
   }
+  if (sorobanEventIndexer) {
+    await sorobanEventIndexer.stop();
+    sorobanEventIndexer = null;
+  }
 
   isRunning = false;
   console.log("[Indexer] Stopped");
@@ -275,6 +300,7 @@ function getStatus() {
     isRunning,
     lastProcessedLedger,
     projectWalletsCount: projectWallets.size,
+    soroban: sorobanEventIndexer?.getStatus() || null,
     timestamp: new Date().toISOString()
   };
 }

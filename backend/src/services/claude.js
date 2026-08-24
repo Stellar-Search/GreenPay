@@ -8,14 +8,12 @@
 "use strict";
 
 const Anthropic = require("@anthropic-ai/sdk");
-
-// Pinned model. Change here, not at every call site.
-const SUMMARY_MODEL = process.env.CLAUDE_SUMMARY_MODEL || "claude-opus-4-7";
+const { env } = require("../config/env");
 
 let client = null;
 function getClient() {
   if (client) return client;
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = env.anthropicApiKey;
   if (!apiKey) {
     const err = new Error("ANTHROPIC_API_KEY is not set");
     err.code = "MISSING_API_KEY";
@@ -64,7 +62,7 @@ async function generateProjectSummary(project) {
     `Description:\n${project.description}`;
 
   const response = await anthropic.messages.create({
-    model: SUMMARY_MODEL,
+    model: env.claudeSummaryModel,
     max_tokens: 400,
     // Single-call summarisation: skip thinking, keep effort low so the
     // response stays in the cost/latency budget the UI promises.
@@ -94,4 +92,4 @@ async function generateProjectSummary(project) {
   };
 }
 
-module.exports = { generateProjectSummary, SUMMARY_MODEL };
+module.exports = { generateProjectSummary };

@@ -15,6 +15,12 @@ env:
   RUST_BACKTRACE: 1
   CARGO_TERM_COLOR: always
 
+# Default token to read-only; only build-contract-metadata (pushes the
+# updated testnet manifest on a merge to main) needs more, so it overrides
+# at the job level rather than widening here.
+permissions:
+  contents: read
+
 jobs:
   test-and-verify:
     name: Test & Verify Contracts
@@ -26,7 +32,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           targets: wasm32-unknown-unknown
 
@@ -77,6 +83,9 @@ jobs:
     name: Build Contract Metadata
     needs: test-and-verify
     runs-on: ubuntu-latest
+    # Only this job pushes (the "Commit updated manifest" step below).
+    permissions:
+      contents: write
     defaults:
       run:
         working-directory: contracts
@@ -84,7 +93,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           targets: wasm32-unknown-unknown
 
@@ -146,6 +155,34 @@ jobs:
           name: deployment-manifest
           path: contracts/build-output/deployment-manifest.json
           retention-days: 30
+
+      - name: Generate network manifest
+        run: |
+          cd ../
+          cat > config/networks/testnet.json << EOF
+          {
+            "manifestVersion": "1.0.0",
+            "network": "testnet",
+            "networkPassphrase": "Test SDF Network ; September 2015",
+            "horizonUrl": "https://horizon-testnet.stellar.org",
+            "sorobanRpcUrl": "https://soroban-testnet.stellar.org",
+            "contracts": {
+              "greenPay": "${{ env.GREENPAY_CONTRACT_ID }}",
+              "escrow": "${{ env.ESCROW_CONTRACT_ID }}",
+              "daoGovernance": "${{ env.DAO_GOVERNANCE_CONTRACT_ID }}"
+            },
+            "generatedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+      - name: Commit updated manifest
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          git config user.name "GreenPay Bot"
+          git config user.email "bot@greenpay.app"
+          git add config/networks/testnet.json
+          git commit -m "deploy: update testnet manifest [skip ci]" || echo "No changes to commit"
+          git push
 
   generate-proposal:
     name: Generate Multi-Sig Proposal
@@ -257,7 +294,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
 
       - name: Install cargo-audit
         run: cargo install cargo-audit
