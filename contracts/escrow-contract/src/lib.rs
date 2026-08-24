@@ -204,15 +204,21 @@ impl EscrowContract {
             panic!("Amount exceeds remaining balance");
         }
 
-        let token_client = token::Client::new(&env, &job.token);
-        let contract_addr = env.current_contract_address();
-        token_client.transfer(&contract_addr, &job.freelancer, &amount);
-
+        // Effects: all state writes BEFORE the external token transfer
+        // (Checks-Effects-Interactions to defend against reentrancy from a
+        // malicious token contract passed via `token` in `create_job`).
         job.remaining_amount -= amount;
         if job.remaining_amount == 0 {
             job.status = JobStatus::Released;
         }
-        env.storage().instance().set(&DataKey::Job(job_id), &job);
+        env.storage()
+            .instance()
+            .set(&DataKey::Job(job_id.clone()), &job);
+
+        // Interaction: external call last.
+        let token_client = token::Client::new(&env, &job.token);
+        let contract_addr = env.current_contract_address();
+        token_client.transfer(&contract_addr, &job.freelancer, &amount);
     }
 
     /// Either the client or the freelancer can flag a stalled job as disputed,
@@ -1045,5 +1051,193 @@ mod tests {
         let job = contract.get_job(&job_id).unwrap();
         assert_eq!(job.remaining_amount, 0);
         assert_eq!(job.status, JobStatus::Refunded);
+    }
+
+    // -------------------------------------------------------------------------
+    // Reentrancy regression tests (release_partial CEI ordering)
+    // -------------------------------------------------------------------------
+
+    /// A malicious token stub whose `transfer` re-enters the escrow contract's
+    /// `release_partial` before the outer call has committed its state write.
+    /// It is deliberately lenient: it never rejects a transfer, so the only
+    /// thing that can stop an over-release is the escrow contract's own state
+    /// ordering. It re-enters exactly once to avoid unbounded recursion.
+    #[contract]
+    struct ReentrantToken;
+
+    #[contracttype]
+    #[derive(Clone)]
+    enum ReentrantKey {
+        Balance(Address),
+        /// (escrow contract, client, job id, amount to attempt on re-entry)
+        Target,
+        /// Set once re-entry has already happened for the current call chain.
+        HasReentered,
+    }
+
+    #[contractimpl]
+    impl ReentrantToken {
+        /// Points the token at the escrow job it should try to drain, and the
+        /// amount it should attempt on re-entry.
+        pub fn set_target(
+            env: Env,
+            escrow: Address,
+            client: Address,
+            job_id: String,
+            reentry_amount: i128,
+        ) {
+            env.storage().instance().set(
+                &ReentrantKey::Target,
+                &(escrow, client, job_id, reentry_amount),
+            );
+        }
+
+        pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+            // Re-enter the escrow contract exactly once, before this token does
+            // any of its own bookkeeping — mimicking a token that calls back
+            // into its caller mid-transfer. Re-entry only fires when the escrow
+            // contract itself is the sender (a release transfer); the deposit
+            // transfer inside `create_job` (client → escrow) must pass through
+            // untouched because the job does not exist yet at that point.
+            if env.storage().instance().has(&ReentrantKey::Target) {
+                let (escrow, client, job_id, reentry_amount): (Address, Address, String, i128) =
+                    env.storage()
+                        .instance()
+                        .get(&ReentrantKey::Target)
+                        .expect("target not set");
+                if from == escrow && !env.storage().instance().has(&ReentrantKey::HasReentered) {
+                    env.storage()
+                        .instance()
+                        .set(&ReentrantKey::HasReentered, &true);
+                    let escrow_client = EscrowContractClient::new(&env, &escrow);
+                    escrow_client.release_partial(&client, &job_id, &reentry_amount);
+                }
+            }
+
+            // Lenient bookkeeping: always credit the recipient, never reject.
+            let to_balance: i128 = env
+                .storage()
+                .instance()
+                .get(&ReentrantKey::Balance(to.clone()))
+                .unwrap_or(0);
+            env.storage()
+                .instance()
+                .set(&ReentrantKey::Balance(to), &(to_balance + amount));
+            let _ = from;
+        }
+
+        pub fn balance(env: Env, id: Address) -> i128 {
+            env.storage()
+                .instance()
+                .get(&ReentrantKey::Balance(id))
+                .unwrap_or(0)
+        }
+    }
+
+    /// A token that re-enters `release_partial` from inside `transfer` must not
+    /// be able to release more than the job's remaining balance. With CEI
+    /// ordering the re-entrant call sees the already-decremented `remaining_amount`
+    /// and is rejected; the failed transaction rolls back completely.
+    #[test]
+    fn release_partial_reentrant_token_cannot_over_release() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let escrow_id = env.register_contract(None, EscrowContract);
+        let escrow = EscrowContractClient::new(&env, &escrow_id);
+
+        let admin = Address::generate(&env);
+        escrow.initialize(&admin);
+
+        let client = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+
+        let token_id = env.register_contract(None, ReentrantToken);
+        let token = ReentrantTokenClient::new(&env, &token_id);
+        escrow.allow_token(&admin, &token_id);
+
+        let job_id = String::from_str(&env, "job-reentrant");
+        let expiry_ledger = env.ledger().sequence() + EXPIRY_WINDOW;
+        escrow.create_job(
+            &client,
+            &freelancer,
+            &job_id,
+            &token_id,
+            &100,
+            &expiry_ledger,
+        );
+
+        // The token tries to grab the full 100 by re-entering mid-transfer.
+        token.set_target(&escrow_id, &client, &job_id, &100);
+
+        // The client releases 30; the malicious token attempts to release the
+        // remaining 100 before the outer call's state write lands. If CEI is
+        // violated (the pre-fix ordering), the re-entrant call sees
+        // remaining_amount == 100 and succeeds — the escrow accounting would
+        // then have paid out 130 from a 100-amount job.
+        let result = escrow.try_release_partial(&client, &job_id, &30);
+
+        assert!(
+            result.is_err(),
+            "re-entrant over-release must be rejected by the updated remaining balance"
+        );
+
+        // The whole transaction rolled back: the job is intact and untouched.
+        let job = escrow.get_job(&job_id).unwrap();
+        assert_eq!(job.status, JobStatus::Escrowed);
+        assert_eq!(job.remaining_amount, 100);
+        assert_eq!(token.balance(&freelancer), 0);
+    }
+
+    /// A benign re-entry (an amount within the remaining balance) during a full
+    /// release is also safe: the second release attempt sees `status == Released`
+    /// and is rejected, so funds cannot be double-paid even by a cooperative
+    /// token that happens to call back.
+    #[test]
+    fn release_partial_reentrant_token_cannot_double_release_full() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let escrow_id = env.register_contract(None, EscrowContract);
+        let escrow = EscrowContractClient::new(&env, &escrow_id);
+
+        let admin = Address::generate(&env);
+        escrow.initialize(&admin);
+
+        let client = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+
+        let token_id = env.register_contract(None, ReentrantToken);
+        let token = ReentrantTokenClient::new(&env, &token_id);
+        escrow.allow_token(&admin, &token_id);
+
+        let job_id = String::from_str(&env, "job-reentrant-full");
+        let expiry_ledger = env.ledger().sequence() + EXPIRY_WINDOW;
+        escrow.create_job(
+            &client,
+            &freelancer,
+            &job_id,
+            &token_id,
+            &100,
+            &expiry_ledger,
+        );
+
+        // Re-enter with the full 100 on the first (and only) transfer.
+        token.set_target(&escrow_id, &client, &job_id, &100);
+
+        // Releasing everything in one call: the re-entrant attempt must hit
+        // the "Job is not in escrow" guard because status was already flipped
+        // to Released before the token was ever invoked.
+        let result = escrow.try_release_partial(&client, &job_id, &100);
+
+        assert!(
+            result.is_err(),
+            "re-entrant full release after status flip must be rejected"
+        );
+
+        let job = escrow.get_job(&job_id).unwrap();
+        assert_eq!(job.status, JobStatus::Escrowed);
+        assert_eq!(job.remaining_amount, 100);
+        assert_eq!(token.balance(&freelancer), 0);
     }
 }
