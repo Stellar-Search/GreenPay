@@ -211,7 +211,9 @@ matchProjection.apply = async (client, event) => {
 };
 
 async function applyJobProjection(client, event) {
-  const jobId = event.aggregateId.split(":")[1];
+  // JobReleasedEvent carries no jobId in its `data` payload, so the job being
+  // released is identified only by the event's own (unprefixed) aggregateId.
+  const jobId = event.aggregateId;
   await client.query(
     `UPDATE jobs
      SET status = 'completed',

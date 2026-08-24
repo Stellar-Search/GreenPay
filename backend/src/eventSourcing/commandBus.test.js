@@ -474,7 +474,7 @@ describe("commandBus.js - Event Sourcing Core Engine (Issue #129)", () => {
       const res = await execute(cmd);
       expect(res.events.length).toBe(1);
       expect(res.events[0].eventType).toBe("ProjectStatusChanged");
-      expect(res.data).toEqual({ previousStatus: "paused", newStatus: "paused" });
+      expect(res.data).toEqual({ previousStatus: "active", newStatus: "paused" });
     });
   });
 

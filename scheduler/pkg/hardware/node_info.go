@@ -292,16 +292,21 @@ func containerGPURequest(container corev1.Container) int64 {
 	counts := make(map[corev1.ResourceName]int64)
 
 	for name, quantity := range container.Resources.Requests {
-		if isGPUResourceName(name) {
+		if IsAcceleratorResource(name) {
 			counts[name] = quantity.Value()
 		}
 	}
 	for name, quantity := range container.Resources.Limits {
-		if isGPUResourceName(name) && quantity.Value() > counts[name] {
+		if IsAcceleratorResource(name) && quantity.Value() > counts[name] {
 			counts[name] = quantity.Value()
 		}
 	}
 
+	// Sum across the accelerator resources requested by this container. A
+	// real workload requests exactly one accelerator class (GPUs or TPUs),
+	// so the sum equals that class's count; counting per-vendor classes
+	// separately would be meaningless for the capacity checks that consume
+	// GPUCountReq.
 	var total int64
 	for _, count := range counts {
 		total += count
@@ -309,8 +314,21 @@ func containerGPURequest(container corev1.Container) int64 {
 	return total
 }
 
-func isGPUResourceName(name corev1.ResourceName) bool {
+// IsAcceleratorResource reports whether the resource name identifies a GPU
+// or TPU accelerator that the scheduler accounts for when computing pod
+// accelerator counts and node capacity.
+//
+// This is the single source of truth for accelerator resource names, shared
+// by pkg/plugins and pkg/hardware. Keeping a single predicate prevents the
+// two packages from drifting apart (the old duplicate in pkg/plugins matched
+// `google.com/tpu` while this one did not, silently zeroing TPU pods'
+// GPUCountReq and disabling NUMA locality scoring for exactly the workloads
+// it exists for).
+func IsAcceleratorResource(name corev1.ResourceName) bool {
 	resourceName := strings.ToLower(string(name))
 	return strings.HasSuffix(resourceName, "/gpu") ||
-		strings.HasPrefix(resourceName, "gpu.")
+		strings.HasSuffix(resourceName, "/tpu") ||
+		strings.HasPrefix(resourceName, "gpu.") ||
+		resourceName == "gpu" ||
+		resourceName == "tpu"
 }

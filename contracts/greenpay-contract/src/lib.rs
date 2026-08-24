@@ -1040,11 +1040,26 @@ impl GreenPayContract {
     // ─── Legacy Governance (deprecated — superseded by DAO integration) ───────
     //
     // The functions below implement the original admin-controlled, badge-holder
-    // 1-address-1-vote scheme for project verification. They remain present for
-    // deployments that have not yet registered a DAO contract, and for any
-    // in-flight proposals that were created before the DAO integration was
-    // activated. They will be removed in a future upgrade once the DAO path is
-    // fully operational and all legacy proposals are resolved.
+    // 1-address-1-vote scheme for project verification. They are gated on the
+    // absence of a registered DAO contract (set via `set_dao_contract`): as
+    // soon as a DAO is registered the legacy path retires atomically —
+    // `create_proposal` and `vote_verify_project` panic, so no new legacy
+    // proposals or votes can be created. `resolve_proposal` deliberately stays
+    // callable after cutover so that in-flight legacy proposals created before
+    // registration can still be settled from the votes they already received;
+    // it cannot be used to inject new votes.
+    //
+    // # Cutover / deprecation timeline
+    //
+    // 1. **Pre-DAO deployments**: legacy path is fully functional (as before).
+    // 2. **Cutover**: admin calls `set_dao_contract(admin, Some(addr))`. From
+    //    that ledger on, `create_proposal` and `vote_verify_project` refuse;
+    //    in-flight legacy proposals are resolved via `resolve_proposal` from
+    //    the votes already cast (their resolution path).
+    // 3. **Retirement**: once all in-flight legacy proposals are resolved, the
+    //    legacy functions (and their storage keys) are removed in the next
+    //    upgrade. `resolve_proposal` is the last to go, after the last legacy
+    //    proposal reaches a terminal state.
     //
     // Do NOT use these functions for new integrations — use `verify_project`
     // via a DAO `execute_proposal` call instead.
@@ -1053,12 +1068,18 @@ impl GreenPayContract {
     ///
     /// Admin creates a voting proposal for a project to be community-verified.
     ///
+    /// Refuses to run once a DAO contract is registered (see the section
+    /// comment for the cutover rules).
+    ///
     /// `duration_ledgers` is the length of the voting window in Stellar
     /// ledgers (≈5 s each). Pass `0` to use the default 7-day window;
     /// any other value must be within
     /// [`MIN_VOTING_WINDOW_LEDGERS`, `MAX_VOTING_WINDOW_LEDGERS`].
     pub fn create_proposal(env: Env, admin: Address, project_id: String, duration_ledgers: u32) {
         admin.require_auth();
+        if env.storage().instance().has(&DataKey::DaoContract) {
+            panic!("DAO governance is active; legacy proposals are retired");
+        }
         let stored_admin: Address = env
             .storage()
             .instance()
@@ -1107,6 +1128,9 @@ impl GreenPayContract {
     ///
     /// Casts a **weighted** vote on a project-verification proposal.
     ///
+    /// Refuses to run once a DAO contract is registered (see the section
+    /// comment for the cutover rules).
+    ///
     /// # Sybil resistance
     ///
     /// Vote weight equals the voter's cumulative `total_donated` value in
@@ -1120,6 +1144,9 @@ impl GreenPayContract {
     /// enforced to prevent double-counting.
     pub fn vote_verify_project(env: Env, voter: Address, project_id: String, approve: bool) {
         voter.require_auth();
+        if env.storage().instance().has(&DataKey::DaoContract) {
+            panic!("DAO governance is active; legacy voting is retired");
+        }
 
         let stats: DonorStats = read_persistent(&env, &DataKey::DonorStats(voter.clone()))
             .unwrap_or(DonorStats {
@@ -1172,6 +1199,13 @@ impl GreenPayContract {
     /// Callable by anyone after the deadline. Resolves based on weighted
     /// majority: `votes_for > votes_against` approves the project.
     /// Emits `proj_ver` on approval, `prop_rej` on rejection (including ties).
+    ///
+    /// Unlike `create_proposal` and `vote_verify_project`, this function
+    /// deliberately remains callable after a DAO contract is registered: it is
+    /// the documented resolution path for in-flight legacy proposals across
+    /// the cutover. It only settles votes that were already cast — new votes
+    /// are blocked by the gate on `vote_verify_project` — so it cannot inject
+    /// new participation into a retired proposal.
     ///
     /// Requires that combined weight (`votes_for + votes_against`) is at least
     /// `VOTE_ELIGIBILITY_STROOP` (i.e. at least one eligible vote was cast)
@@ -2181,6 +2215,87 @@ mod tests {
         // Extend again so the second call reaches our panic, not an archive error
         extend_ttl(&env, &cid);
         client.resolve_proposal(&pid);
+    }
+
+    // ─── Legacy-path cutover tests (Issue #317) ──────────────────────────────
+    //
+    // The legacy badge-holder voting path must retire atomically once a DAO
+    // contract is registered: no new legacy proposals or votes, while in-flight
+    // proposals keep a resolution path.
+
+    /// No DAO registered → legacy path works (baseline covered exhaustively by
+    /// the tests above). Once a DAO is registered, creating a new legacy
+    /// proposal must refuse.
+    #[test]
+    #[should_panic(expected = "DAO governance is active; legacy proposals are retired")]
+    fn test_legacy_create_proposal_retired_when_dao_registered() {
+        let (env, _cid, client, admin, pid) = setup();
+        let dao = Address::generate(&env);
+        client.set_dao_contract(&admin, &Some(dao));
+        client.create_proposal(&admin, &pid, &0u32);
+    }
+
+    /// An in-flight legacy proposal cannot receive new votes after the DAO is
+    /// registered — the cutover freezes participation on it.
+    #[test]
+    #[should_panic(expected = "DAO governance is active; legacy voting is retired")]
+    fn test_legacy_vote_retired_when_dao_registered() {
+        let (env, cid, client, admin, pid) = setup();
+        client.create_proposal(&admin, &pid, &0u32);
+        let dao = Address::generate(&env);
+        client.set_dao_contract(&admin, &Some(dao));
+
+        let voter = Address::generate(&env);
+        grant_badge(&env, &cid, &voter);
+        client.vote_verify_project(&voter, &pid, &true);
+    }
+
+    /// In-flight legacy proposals created before the cutover keep their
+    /// resolution path: `resolve_proposal` still settles them from the votes
+    /// already cast, even with a DAO registered.
+    #[test]
+    fn test_legacy_resolve_settles_inflight_proposal_after_dao_registration() {
+        let (env, cid, client, admin, pid) = setup();
+        client.create_proposal(&admin, &pid, &0u32);
+
+        // Two eligible votes cast BEFORE the cutover (2 × 100 XLM for).
+        for _ in 0..2u32 {
+            let voter = Address::generate(&env);
+            grant_badge(&env, &cid, &voter);
+            client.vote_verify_project(&voter, &pid, &true);
+        }
+
+        // Cutover happens mid-flight.
+        let dao = Address::generate(&env);
+        client.set_dao_contract(&admin, &Some(dao));
+
+        extend_ttl(&env, &cid);
+        env.ledger().set_sequence_number(VOTING_WINDOW_LEDGERS + 2);
+        client.resolve_proposal(&pid);
+
+        let p = client.get_proposal(&pid);
+        assert!(p.resolved);
+        assert_eq!(p.votes_for, 200 * STROOP);
+        assert_eq!(p.votes_against, 0);
+    }
+
+    /// Clearing the DAO registration (set_dao_contract None) re-enables the
+    /// legacy path for deployments that need to roll back the cutover.
+    #[test]
+    fn test_legacy_re_enabled_after_dao_cleared() {
+        let (env, _cid, client, admin, pid) = setup();
+        let dao = Address::generate(&env);
+        client.set_dao_contract(&admin, &Some(dao));
+
+        // Retired while registered.
+        let retired = client.try_create_proposal(&admin, &pid, &0u32);
+        assert!(retired.is_err());
+
+        // Re-enabled once cleared.
+        client.set_dao_contract(&admin, &None);
+        client.create_proposal(&admin, &pid, &0u32);
+        let p = client.get_proposal(&pid);
+        assert!(!p.resolved);
     }
 
     // ─── Sybil-resistance tests (Issue #113) ─────────────────────────────────
