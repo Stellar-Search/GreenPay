@@ -4,10 +4,11 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
-import { AppState, Platform } from 'react-native';
+import { AppState, Platform, Alert } from 'react-native';
 import { API_URL, parseApiFetchResponse } from './api';
 
 const PENDING_REGISTRATION_KEY = 'greenpay:pendingPushRegistration';
+const PERMISSION_DECISION_KEY = 'greenpay:notificationPermissionDecision';
 
 type PendingRegistration = {
   token: string;
@@ -71,29 +72,61 @@ async function postJson(url: string, body: Record<string, unknown>): Promise<boo
  * Request notification permissions
  */
 export async function requestNotificationPermissions(): Promise<string | null> {
-  const { status: existingStatus } = await Notifications.getPermissionsAsync();
-  let finalStatus = existingStatus;
+  const { status: existingStatus, canAskAgain } = await Notifications.getPermissionsAsync();
   
-  if (existingStatus !== 'granted') {
-    const { status } = await Notifications.requestPermissionsAsync();
-    finalStatus = status;
+  if (existingStatus === 'granted') {
+    return 'granted';
   }
   
-  if (finalStatus !== 'granted') {
+  const persistedDecision = await AsyncStorage.getItem(PERMISSION_DECISION_KEY);
+  
+  if (persistedDecision === 'declined' || !canAskAgain) {
+    return 'denied';
+  }
+
+  // Pre-permission rationale
+  const userWantsToProceed = await new Promise<boolean>((resolve) => {
+    Alert.alert(
+      'Stay Updated',
+      'Would you like to receive notifications when this project reaches its goals or posts updates?',
+      [
+        {
+          text: 'Not Now',
+          style: 'cancel',
+          onPress: () => resolve(false),
+        },
+        {
+          text: 'Allow',
+          onPress: () => resolve(true),
+        },
+      ]
+    );
+  });
+
+  if (!userWantsToProceed) {
+    await AsyncStorage.setItem(PERMISSION_DECISION_KEY, 'declined');
+    return 'denied';
+  }
+  
+  const { status } = await Notifications.requestPermissionsAsync();
+  
+  if (status !== 'granted') {
+    await AsyncStorage.setItem(PERMISSION_DECISION_KEY, 'declined');
     console.log('Push notification permission denied by user');
-    return null;
+    return 'denied';
   }
   
-  return finalStatus;
+  await AsyncStorage.setItem(PERMISSION_DECISION_KEY, 'granted');
+  return status;
 }
 
 /**
- * Get the device's push token
+ * Get the device's push token (without requesting permission)
  */
 export async function getPushToken(): Promise<string | null> {
   try {
-    const permissionStatus = await requestNotificationPermissions();
-    if (!permissionStatus) return null;
+    const { status } = await Notifications.getPermissionsAsync();
+    if (status !== 'granted') return null;
     
     const token = await Notifications.getExpoPushTokenAsync({
       projectId: process.env.EXPO_PUBLIC_PROJECT_ID || '',
