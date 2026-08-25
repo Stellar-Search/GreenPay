@@ -2500,7 +2500,8 @@ mod tests {
         assert!(snap2 > 0, "voter2 should have snapshot power");
 
         let current = env.ledger().sequence();
-        env.ledger().set_sequence_number(current + VOTING_PERIOD + 1);
+        env.ledger()
+            .set_sequence_number(current + VOTING_PERIOD + 1);
         finalise(&client, pid);
 
         let snap1_after = client.get_snapshot_power(&voter1, &pid);
@@ -2528,7 +2529,10 @@ mod tests {
 
         let snap_power_1 = client.get_snapshot_power(&voter, &pid);
         let snap_power_2 = client.get_snapshot_power(&voter, &pid);
-        assert_eq!(snap_power_1, snap_power_2, "snapshot power should not change on repeated reads");
+        assert_eq!(
+            snap_power_1, snap_power_2,
+            "snapshot power should not change on repeated reads"
+        );
     }
 
     #[test]
@@ -2560,7 +2564,8 @@ mod tests {
         assert!(snap_against > 0);
 
         let current = env.ledger().sequence();
-        env.ledger().set_sequence_number(current + VOTING_PERIOD + 1);
+        env.ledger()
+            .set_sequence_number(current + VOTING_PERIOD + 1);
         finalise(&client, pid);
 
         let proposal = client.get_proposal(&pid);
