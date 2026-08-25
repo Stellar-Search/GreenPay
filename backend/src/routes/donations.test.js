@@ -20,6 +20,7 @@ jest.mock("../eventSourcing/commandBus", () => ({
 
 jest.mock("../middleware/rateLimiter", () => ({
   createRateLimiter: () => (req, res, next) => next(),
+  createLayeredRateLimiter: () => (req, res, next) => next(),
 }));
 
 const pool = require("../db/pool");
@@ -42,7 +43,7 @@ function queryResult(rows = []) {
 
 function makeDonationRecordedEvent({ projectId, donorAddress, amountXlm, transactionHash, currency = "XLM", message = null }) {
   return new DonationRecordedEvent({
-    aggregateId: `Donation:${transactionHash}`,
+    aggregateId: transactionHash,
     version: 1,
     actor: donorAddress,
     projectId,

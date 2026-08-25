@@ -1,6 +1,7 @@
 "use strict";
 
 const { xlmToStroops, stroopsToXlm } = require("../utils/xlm");
+const { computeBadges } = require("../services/store");
 
 const PROJECTION_BATCH_SIZE = 500;
 
@@ -96,23 +97,6 @@ async function applyProjectProjection(client, event) {
 projectProjection.apply = async (client, event) => {
   await applyProjectProjection(client, event);
 };
-
-function computeBadges(totalXLM) {
-  const BADGE_THRESHOLDS = [
-    { tier: "earth", min: 2000 },
-    { tier: "forest", min: 500 },
-    { tier: "tree", min: 100 },
-    { tier: "seedling", min: 10 },
-  ];
-  const earned = [];
-  for (const badge of BADGE_THRESHOLDS) {
-    if (totalXLM >= badge.min) {
-      earned.push({ tier: badge.tier, earnedAt: new Date().toISOString() });
-      break;
-    }
-  }
-  return earned;
-}
 
 async function getExistingDonorStats(client, donorAddress) {
   const result = await client.query(
@@ -227,7 +211,9 @@ matchProjection.apply = async (client, event) => {
 };
 
 async function applyJobProjection(client, event) {
-  const jobId = event.aggregateId.split(":")[1];
+  // JobReleasedEvent carries no jobId in its `data` payload, so the job being
+  // released is identified only by the event's own (unprefixed) aggregateId.
+  const jobId = event.aggregateId;
   await client.query(
     `UPDATE jobs
      SET status = 'completed',

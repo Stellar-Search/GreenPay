@@ -14,7 +14,10 @@ const PROJECT = {
   name: 'Ocean Cleanup',
   description: 'Removing ocean plastic',
   category: 'Ocean Conservation',
-  walletAddress: `G${'B'.repeat(55)}`,
+  // Real checksum-valid Ed25519 public key — required now that isProject()
+  // validates walletAddress with StrKey.isValidEd25519PublicKey rather than
+  // only checking typeof === 'string' (fix for issue #339).
+  walletAddress: 'GDUQ24STT6QESP4QW33O4KDVYMRTBHWZ3ZE6HXX5TCNWUZH6MRT7PADV',
 };
 
 class MemoryStorage implements StorageArea {

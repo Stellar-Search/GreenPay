@@ -17,6 +17,14 @@
 # 3. The Score extension point adds MLWorkloadScore with a weight that makes
 #    it the dominant signal (weight=10) while keeping NodeResourcesFit's
 #    LeastAllocated at a lower weight (weight=2) so we don't fight each other.
+#
+# 4. The PostFilter extension point REPLACES the built-in DefaultPreemption
+#    with MLWorkloadPreemption: DefaultPreemption is disabled explicitly so
+#    the two never compete to nominate a preemption node for the same failed
+#    pod. MLWorkloadPreemption is a full custom implementation (GPU/VRAM-aware
+#    victim selection, PDB-budget tracking, deterministic cost ranking — see
+#    pkg/plugins/preemption.go), not a supplement to the default, so running
+#    both would be a race rather than a combined signal.
 ---
 apiVersion: kubescheduler.config.k8s.io/v1
 kind: KubeSchedulerConfiguration
@@ -47,6 +55,14 @@ profiles:
           - name: NodeUnschedulable
           - name: VolumeBinding
           - name: GPUHardwareFilter   # ← our custom plugin
+
+      # ── PostFilter plugins ──────────────────────────────────────────────────
+      postFilter:
+        disabled:
+          # Replaced by MLWorkloadPreemption — see decision note above.
+          - name: DefaultPreemption
+        enabled:
+          - name: MLWorkloadPreemption
 
       # ── PreScore plugins ───────────────────────────────────────────────────
       preScore:
@@ -86,4 +102,10 @@ profiles:
       # GPUHardwareFilter: no configurable args — all requirements come from
       # pod annotations at scheduling time.
       - name: GPUHardwareFilter
+        args: {}
+
+      # MLWorkloadPreemption: no configurable args — GPU/VRAM targets come
+      # from the preempting pod's annotations/resource requests at
+      # preemption time.
+      - name: MLWorkloadPreemption
         args: {}

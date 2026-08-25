@@ -460,7 +460,7 @@ export default function ProjectAdmin({ publicKey, onConnect }: AdminProps) {
                 className="input-field bg-white"
               />
               <div>
-                <label className="block text-[10px] font-bold text-forest-800 uppercase tracking-widest mb-1 ms-1 opacity-50">Percentage of goal</label>
+                <label className="block text-[10px] font-bold text-forest-800 uppercase tracking-widest mb-1 ms-1 opacity-75">Percentage of goal</label>
                 <div className="flex items-center gap-3">
                   <input
                     type="range"
@@ -577,7 +577,7 @@ export default function ProjectAdmin({ publicKey, onConnect }: AdminProps) {
         {isAdminAuthed ? (
           <div className="space-y-3">
             <div>
-              <label className="block text-xs font-bold text-forest-800 uppercase tracking-widest mb-1 ms-1 opacity-50">
+              <label className="block text-xs font-bold text-forest-800 uppercase tracking-widest mb-1 ms-1 opacity-75">
                 Reason for rejection (required)
               </label>
               <textarea

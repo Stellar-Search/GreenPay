@@ -166,6 +166,15 @@ pub const MAX_CO2_PER_XLM: u32 = STROOP as u32;
 /// Largest single donation exercised in property tests (1 billion XLM).
 pub const MAX_REALISTIC_DONATION_STROOPS: i128 = 1_000_000_000 * STROOP;
 
+// ─── Badge threshold constants (XLM) ──────────────────────────────────────────
+// These constants define the minimum cumulative XLM required to earn each badge tier.
+// Parity with the backend (`backend/src/services/store.js`'s `BADGE_THRESHOLDS`) is
+// cross-checked by automated tests (`backend/src/services/badgeCrossValidation.test.js`).
+pub const BADGE_THRESHOLD_SEEDLING_XLM: i128 = 10;
+pub const BADGE_THRESHOLD_TREE_XLM: i128 = 100;
+pub const BADGE_THRESHOLD_FOREST_XLM: i128 = 500;
+pub const BADGE_THRESHOLD_EARTH_GUARDIAN_XLM: i128 = 2000;
+
 /// Minimum `total_donated` (in stroops) required to participate in
 /// project-verification voting.
 ///
@@ -184,10 +193,11 @@ pub const MAX_REALISTIC_DONATION_STROOPS: i128 = 1_000_000_000 * STROOP;
 ///     20 × 100 × STROOP = 2 000 × STROOP — a tie rather than a win.
 ///
 /// Cost-of-attack at the Tree threshold (100 XLM ≈ $10–30 at typical XLM
-/// prices): to out-vote a single 2 000 XLM donor, an attacker must deploy
-/// > 20 funded addresses, costing > 2 000 XLM — identical to simply being a
-/// large donor, eliminating the asymmetric advantage of Sybil identities.
-pub const VOTE_ELIGIBILITY_STROOP: i128 = 100 * STROOP; // 100 XLM (Tree tier)
+/// prices): to out-vote a single 2 000 XLM donor, an attacker must deploy more
+/// than 20 funded addresses, costing more than 2 000 XLM — identical to simply
+/// being a large donor, eliminating the asymmetric advantage of Sybil
+/// identities.
+pub const VOTE_ELIGIBILITY_STROOP: i128 = BADGE_THRESHOLD_TREE_XLM * STROOP; // 100 XLM (Tree tier)
 
 // 7 days × 24 h × 3600 s ÷ 5 s per ledger ≈ 120_960 ledgers — used as the
 // default when `create_proposal` is called without an explicit duration.
@@ -213,13 +223,13 @@ const PERSISTENT_TTL_EXTEND: u32 = 2_102_400;
 
 fn calculate_badge(total_stroops: i128) -> BadgeTier {
     let xlm = total_stroops / STROOP;
-    if xlm >= 2000 {
+    if xlm >= BADGE_THRESHOLD_EARTH_GUARDIAN_XLM {
         BadgeTier::EarthGuardian
-    } else if xlm >= 500 {
+    } else if xlm >= BADGE_THRESHOLD_FOREST_XLM {
         BadgeTier::Forest
-    } else if xlm >= 100 {
+    } else if xlm >= BADGE_THRESHOLD_TREE_XLM {
         BadgeTier::Tree
-    } else if xlm >= 10 {
+    } else if xlm >= BADGE_THRESHOLD_SEEDLING_XLM {
         BadgeTier::Seedling
     } else {
         BadgeTier::None
@@ -381,11 +391,7 @@ fn mint_badge_token(
         minted_at_ledger,
     };
     write_persistent(env, &DataKey::NftMeta(token_id), &meta);
-    write_persistent(
-        env,
-        &DataKey::ImpactNFT(donor.clone(), tier.clone()),
-        &meta,
-    );
+    write_persistent(env, &DataKey::ImpactNFT(donor.clone(), tier.clone()), &meta);
 
     let mut owned: Vec<u32> = read_persistent(env, &DataKey::NftOwnerTokens(donor.clone()))
         .unwrap_or_else(|| Vec::new(env));
@@ -402,8 +408,7 @@ fn mint_badge_token(
 /// marker (pre-interface layout), it is transparently backfilled into the
 /// token registry and the new token id is returned.
 fn find_token_id(env: &Env, donor: &Address, tier: &BadgeTier) -> Option<u32> {
-    let owned_opt: Option<Vec<u32>> =
-        read_persistent(env, &DataKey::NftOwnerTokens(donor.clone()));
+    let owned_opt: Option<Vec<u32>> = read_persistent(env, &DataKey::NftOwnerTokens(donor.clone()));
     if let Some(owned) = owned_opt {
         for id in owned.iter() {
             let meta: ImpactNFT =
@@ -648,20 +653,21 @@ impl GreenPayContract {
         // mint registers the badge in the NFT token registry so it is
         // discoverable through the standard NFT interface (see
         // `balance_of`/`owner_of`/`transfer`), not just `has_nft`.
-        if donor_stats.badge != BadgeTier::None && donor_stats.badge != prev_badge {
-            if find_token_id(&env, &donor, &donor_stats.badge).is_none() {
-                mint_badge_token(
-                    &env,
-                    &donor,
-                    &donor_stats.badge,
-                    donor_stats.total_donated,
-                    env.ledger().sequence(),
-                );
-                env.events().publish(
-                    (symbol_short!("nft_mint"), donor.clone()),
-                    donor_stats.badge.clone(),
-                );
-            }
+        if donor_stats.badge != BadgeTier::None
+            && donor_stats.badge != prev_badge
+            && find_token_id(&env, &donor, &donor_stats.badge).is_none()
+        {
+            mint_badge_token(
+                &env,
+                &donor,
+                &donor_stats.badge,
+                donor_stats.total_donated,
+                env.ledger().sequence(),
+            );
+            env.events().publish(
+                (symbol_short!("nft_mint"), donor.clone()),
+                donor_stats.badge.clone(),
+            );
         }
 
         let dc: u32 = env
@@ -904,8 +910,9 @@ impl GreenPayContract {
         write_persistent(&env, &DataKey::NftMeta(token_id), &meta);
 
         // Remove the token from the sender's ownership index.
-        let mut from_tokens: Vec<u32> = read_persistent(&env, &DataKey::NftOwnerTokens(from.clone()))
-            .expect("Sender does not own any tokens");
+        let mut from_tokens: Vec<u32> =
+            read_persistent(&env, &DataKey::NftOwnerTokens(from.clone()))
+                .expect("Sender does not own any tokens");
         let mut removed = false;
         for i in 0..from_tokens.len() {
             if from_tokens.get(i) == Some(token_id) {
@@ -924,10 +931,8 @@ impl GreenPayContract {
         }
 
         // Add the token to the recipient's ownership index.
-        let mut to_tokens: Vec<u32> =
-            read_persistent(&env, &DataKey::NftOwnerTokens(to.clone())).unwrap_or_else(|| {
-                Vec::new(&env)
-            });
+        let mut to_tokens: Vec<u32> = read_persistent(&env, &DataKey::NftOwnerTokens(to.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
         to_tokens.push_back(token_id);
         write_persistent(&env, &DataKey::NftOwnerTokens(to.clone()), &to_tokens);
 
@@ -936,13 +941,10 @@ impl GreenPayContract {
         env.storage()
             .persistent()
             .remove(&DataKey::ImpactNFT(from.clone(), tier.clone()));
-        write_persistent(
-            &env,
-            &DataKey::ImpactNFT(to.clone(), tier.clone()),
-            &meta,
-        );
+        write_persistent(&env, &DataKey::ImpactNFT(to.clone(), tier.clone()), &meta);
 
-        env.events().publish((symbol_short!("nft_xfr"), from, to), token_id);
+        env.events()
+            .publish((symbol_short!("nft_xfr"), from, to), token_id);
     }
 
     // ─── DAO Integration ──────────────────────────────────────────────────────
@@ -1038,11 +1040,26 @@ impl GreenPayContract {
     // ─── Legacy Governance (deprecated — superseded by DAO integration) ───────
     //
     // The functions below implement the original admin-controlled, badge-holder
-    // 1-address-1-vote scheme for project verification. They remain present for
-    // deployments that have not yet registered a DAO contract, and for any
-    // in-flight proposals that were created before the DAO integration was
-    // activated. They will be removed in a future upgrade once the DAO path is
-    // fully operational and all legacy proposals are resolved.
+    // 1-address-1-vote scheme for project verification. They are gated on the
+    // absence of a registered DAO contract (set via `set_dao_contract`): as
+    // soon as a DAO is registered the legacy path retires atomically —
+    // `create_proposal` and `vote_verify_project` panic, so no new legacy
+    // proposals or votes can be created. `resolve_proposal` deliberately stays
+    // callable after cutover so that in-flight legacy proposals created before
+    // registration can still be settled from the votes they already received;
+    // it cannot be used to inject new votes.
+    //
+    // # Cutover / deprecation timeline
+    //
+    // 1. **Pre-DAO deployments**: legacy path is fully functional (as before).
+    // 2. **Cutover**: admin calls `set_dao_contract(admin, Some(addr))`. From
+    //    that ledger on, `create_proposal` and `vote_verify_project` refuse;
+    //    in-flight legacy proposals are resolved via `resolve_proposal` from
+    //    the votes already cast (their resolution path).
+    // 3. **Retirement**: once all in-flight legacy proposals are resolved, the
+    //    legacy functions (and their storage keys) are removed in the next
+    //    upgrade. `resolve_proposal` is the last to go, after the last legacy
+    //    proposal reaches a terminal state.
     //
     // Do NOT use these functions for new integrations — use `verify_project`
     // via a DAO `execute_proposal` call instead.
@@ -1051,12 +1068,18 @@ impl GreenPayContract {
     ///
     /// Admin creates a voting proposal for a project to be community-verified.
     ///
+    /// Refuses to run once a DAO contract is registered (see the section
+    /// comment for the cutover rules).
+    ///
     /// `duration_ledgers` is the length of the voting window in Stellar
     /// ledgers (≈5 s each). Pass `0` to use the default 7-day window;
     /// any other value must be within
     /// [`MIN_VOTING_WINDOW_LEDGERS`, `MAX_VOTING_WINDOW_LEDGERS`].
     pub fn create_proposal(env: Env, admin: Address, project_id: String, duration_ledgers: u32) {
         admin.require_auth();
+        if env.storage().instance().has(&DataKey::DaoContract) {
+            panic!("DAO governance is active; legacy proposals are retired");
+        }
         let stored_admin: Address = env
             .storage()
             .instance()
@@ -1105,6 +1128,9 @@ impl GreenPayContract {
     ///
     /// Casts a **weighted** vote on a project-verification proposal.
     ///
+    /// Refuses to run once a DAO contract is registered (see the section
+    /// comment for the cutover rules).
+    ///
     /// # Sybil resistance
     ///
     /// Vote weight equals the voter's cumulative `total_donated` value in
@@ -1118,6 +1144,9 @@ impl GreenPayContract {
     /// enforced to prevent double-counting.
     pub fn vote_verify_project(env: Env, voter: Address, project_id: String, approve: bool) {
         voter.require_auth();
+        if env.storage().instance().has(&DataKey::DaoContract) {
+            panic!("DAO governance is active; legacy voting is retired");
+        }
 
         let stats: DonorStats = read_persistent(&env, &DataKey::DonorStats(voter.clone()))
             .unwrap_or(DonorStats {
@@ -1170,6 +1199,13 @@ impl GreenPayContract {
     /// Callable by anyone after the deadline. Resolves based on weighted
     /// majority: `votes_for > votes_against` approves the project.
     /// Emits `proj_ver` on approval, `prop_rej` on rejection (including ties).
+    ///
+    /// Unlike `create_proposal` and `vote_verify_project`, this function
+    /// deliberately remains callable after a DAO contract is registered: it is
+    /// the documented resolution path for in-flight legacy proposals across
+    /// the cutover. It only settles votes that were already cast — new votes
+    /// are blocked by the gate on `vote_verify_project` — so it cannot inject
+    /// new participation into a retired proposal.
     ///
     /// Requires that combined weight (`votes_for + votes_against`) is at least
     /// `VOTE_ELIGIBILITY_STROOP` (i.e. at least one eligible vote was cast)
@@ -2165,12 +2201,101 @@ mod tests {
     fn test_double_resolve_fails() {
         let (env, cid, client, admin, pid) = setup();
         client.create_proposal(&admin, &pid, &0u32);
+
+        // Cast one eligible vote so the first resolve clears the quorum check
+        // and actually resolves the proposal. Without a vote the first call
+        // panics on quorum and the second call is never reached.
+        let voter = Address::generate(&env);
+        grant_badge_with_amount(&env, &cid, &voter, 100 * STROOP);
+        client.vote_verify_project(&voter, &pid, &true);
+
         extend_ttl(&env, &cid);
         env.ledger().set_sequence_number(VOTING_WINDOW_LEDGERS + 2);
         client.resolve_proposal(&pid);
         // Extend again so the second call reaches our panic, not an archive error
         extend_ttl(&env, &cid);
         client.resolve_proposal(&pid);
+    }
+
+    // ─── Legacy-path cutover tests (Issue #317) ──────────────────────────────
+    //
+    // The legacy badge-holder voting path must retire atomically once a DAO
+    // contract is registered: no new legacy proposals or votes, while in-flight
+    // proposals keep a resolution path.
+
+    /// No DAO registered → legacy path works (baseline covered exhaustively by
+    /// the tests above). Once a DAO is registered, creating a new legacy
+    /// proposal must refuse.
+    #[test]
+    #[should_panic(expected = "DAO governance is active; legacy proposals are retired")]
+    fn test_legacy_create_proposal_retired_when_dao_registered() {
+        let (env, _cid, client, admin, pid) = setup();
+        let dao = Address::generate(&env);
+        client.set_dao_contract(&admin, &Some(dao));
+        client.create_proposal(&admin, &pid, &0u32);
+    }
+
+    /// An in-flight legacy proposal cannot receive new votes after the DAO is
+    /// registered — the cutover freezes participation on it.
+    #[test]
+    #[should_panic(expected = "DAO governance is active; legacy voting is retired")]
+    fn test_legacy_vote_retired_when_dao_registered() {
+        let (env, cid, client, admin, pid) = setup();
+        client.create_proposal(&admin, &pid, &0u32);
+        let dao = Address::generate(&env);
+        client.set_dao_contract(&admin, &Some(dao));
+
+        let voter = Address::generate(&env);
+        grant_badge(&env, &cid, &voter);
+        client.vote_verify_project(&voter, &pid, &true);
+    }
+
+    /// In-flight legacy proposals created before the cutover keep their
+    /// resolution path: `resolve_proposal` still settles them from the votes
+    /// already cast, even with a DAO registered.
+    #[test]
+    fn test_legacy_resolve_settles_inflight_proposal_after_dao_registration() {
+        let (env, cid, client, admin, pid) = setup();
+        client.create_proposal(&admin, &pid, &0u32);
+
+        // Two eligible votes cast BEFORE the cutover (2 × 100 XLM for).
+        for _ in 0..2u32 {
+            let voter = Address::generate(&env);
+            grant_badge(&env, &cid, &voter);
+            client.vote_verify_project(&voter, &pid, &true);
+        }
+
+        // Cutover happens mid-flight.
+        let dao = Address::generate(&env);
+        client.set_dao_contract(&admin, &Some(dao));
+
+        extend_ttl(&env, &cid);
+        env.ledger().set_sequence_number(VOTING_WINDOW_LEDGERS + 2);
+        client.resolve_proposal(&pid);
+
+        let p = client.get_proposal(&pid);
+        assert!(p.resolved);
+        assert_eq!(p.votes_for, 200 * STROOP);
+        assert_eq!(p.votes_against, 0);
+    }
+
+    /// Clearing the DAO registration (set_dao_contract None) re-enables the
+    /// legacy path for deployments that need to roll back the cutover.
+    #[test]
+    fn test_legacy_re_enabled_after_dao_cleared() {
+        let (env, _cid, client, admin, pid) = setup();
+        let dao = Address::generate(&env);
+        client.set_dao_contract(&admin, &Some(dao));
+
+        // Retired while registered.
+        let retired = client.try_create_proposal(&admin, &pid, &0u32);
+        assert!(retired.is_err());
+
+        // Re-enabled once cleared.
+        client.set_dao_contract(&admin, &None);
+        client.create_proposal(&admin, &pid, &0u32);
+        let p = client.get_proposal(&pid);
+        assert!(!p.resolved);
     }
 
     // ─── Sybil-resistance tests (Issue #113) ─────────────────────────────────
@@ -2216,10 +2341,16 @@ mod tests {
 
         let expected_for: i128 = SYBIL_COUNT as i128 * SYBIL_STAKE_XLM * STROOP;
         let expected_against: i128 = WHALE_STAKE_XLM * STROOP;
-        assert_eq!(p.votes_for, expected_for,
-            "FOR weight should equal 20 × 100 XLM = {} stroops", expected_for);
-        assert_eq!(p.votes_against, expected_against,
-            "AGAINST weight should equal 2100 XLM = {} stroops", expected_against);
+        assert_eq!(
+            p.votes_for, expected_for,
+            "FOR weight should equal 20 × 100 XLM = {} stroops",
+            expected_for
+        );
+        assert_eq!(
+            p.votes_against, expected_against,
+            "AGAINST weight should equal 2100 XLM = {} stroops",
+            expected_against
+        );
 
         // The whale outweighs all 20 Sybil addresses combined → proposal rejected.
         assert!(
@@ -2261,8 +2392,10 @@ mod tests {
 
         let p = client.get_proposal(&pid);
         assert!(p.resolved);
-        assert_eq!(p.votes_for, p.votes_against,
-            "stakes are equal so this should be a tie");
+        assert_eq!(
+            p.votes_for, p.votes_against,
+            "stakes are equal so this should be a tie"
+        );
         // Ties resolve as rejection (votes_for <= votes_against).
         assert!(
             p.votes_for <= p.votes_against,
@@ -2469,7 +2602,10 @@ mod tests {
         client.donate(&token, &donor, &pid, &amount, &0u32);
 
         // Collection metadata.
-        assert_eq!(client.name(), String::from_str(&env, "GreenPay Impact Badge"));
+        assert_eq!(
+            client.name(),
+            String::from_str(&env, "GreenPay Impact Badge")
+        );
         assert_eq!(client.symbol(), String::from_str(&env, "GPB"));
         assert_eq!(client.decimals(), 0);
 

@@ -12,21 +12,32 @@ const express = require("express");
 const router  = express.Router();
 const { v4: uuidv4 } = require("uuid");
 const pool = require("../db/pool");
-const { createRateLimiter } = require("../middleware/rateLimiter");
+const { createLayeredRateLimiter } = require("../middleware/rateLimiter");
 const { mapProjectUpdateRow, mapProjectRow } = require("../services/store");
-const { sendUpdateNotifications } = require("../services/email");
+const { enqueueUpdateNotifications } = require("../services/email");
 const { sendUpdatePushNotifications } = require("../services/push");
 
 const { adminRequired } = require("../middleware/auth");
 const { createApiError } = require("../middleware/apiEnvelope");
 
-// Rate limiter for admin update creation
-// Prevents admin update spam: 5 updates per admin per hour
-const updateCreationLimiter = createRateLimiter(5, 60, "update-create");
+// Rate limiter for admin update creation: an IP floor plus the real cap on the
+// authenticated subject, so the same admin account is bounded regardless of
+// which address it logs in from. 5 updates per admin per hour.
+const updateCreationLimiter = createLayeredRateLimiter({
+  name: "update-create",
+  windowMinutes: 60,
+  ip: 30,
+  subject: 5,
+});
 
-// Rate limiter for like operations per donor
-// Prevents like enumeration/spam: 20 likes per donor per hour
-const likeLimiter = createRateLimiter(20, 1, "update-like");
+// Rate limiter for like operations: coarse per-IP floor plus the real
+// per-wallet cap. Prevents like enumeration/spam: 20 likes per donor per hour.
+const likeLimiter = createLayeredRateLimiter({
+  name: "update-like",
+  windowMinutes: 1,
+  ip: 60,
+  wallet: 20,
+});
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -76,20 +87,17 @@ router.post("/", adminRequired, updateCreationLimiter, async (req, res, next) =>
     );
     const update = mapProjectUpdateRow(insertResult.rows[0]);
 
-    // Fetch subscriber emails and send notifications (non-blocking)
-    pool.query(
-      "SELECT email FROM project_subscriptions WHERE project_id = $1",
-      [projectId],
-    ).then(({ rows }) => {
-      const emails = rows.map((r) => r.email);
-      return sendUpdateNotifications({ project, update, emails });
-    }).catch((err) => {
-      console.error("[updates] Failed to send email notifications:", err.message);
+    // Fan out email notifications (non-blocking): reads subscribers in
+    // bounded chunks and enqueues one retryable job per chunk rather than
+    // loading every subscriber into memory and sending inline.
+    enqueueUpdateNotifications({ project, update }).catch((err) => {
+      console.error("[updates] Failed to enqueue email notifications:", err.message);
     });
 
-    // Send push notifications (non-blocking)
+    // Fan out push notifications (non-blocking): same chunked-queue pattern
+    // for followers' device tokens.
     sendUpdatePushNotifications({ project, update }).catch((err) => {
-      console.error("[updates] Failed to send push notifications:", err.message);
+      console.error("[updates] Failed to enqueue push notifications:", err.message);
     });
 
     res.status(201).json(update);

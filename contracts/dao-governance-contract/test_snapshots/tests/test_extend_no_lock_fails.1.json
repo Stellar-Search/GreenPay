@@ -149,7 +149,7 @@
                             },
                             {
                               "key": {
-                                "symbol": "quorum"
+                                "symbol": "quorum_bps"
                               },
                               "val": {
                                 "i128": {
@@ -187,6 +187,21 @@
                         },
                         "val": {
                           "u64": 0
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "TotalLocked"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "i128": {
+                            "hi": 0,
+                            "lo": 0
+                          }
                         }
                       }
                     ]
@@ -532,7 +547,7 @@
                 },
                 {
                   "key": {
-                    "symbol": "quorum"
+                    "symbol": "quorum_bps"
                   },
                   "val": {
                     "i128": {
@@ -633,7 +648,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'no active lock' from contract function 'Symbol(obj#131)'"
+                  "string": "caught panic 'no active lock' from contract function 'Symbol(obj#139)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"

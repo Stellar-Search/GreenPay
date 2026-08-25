@@ -317,6 +317,8 @@ If the cluster already has a `ClusterIssuer`, leave `certManager.enabled: false`
 
 `ALLOWED_ORIGINS` is derived from `ingress.host` and follows `ingress.tls.enabled`, so the backend's CORS origin always matches the scheme actually served. The guard rejects a Mainnet release whose origins are not `https`.
 
+The chart's ConfigMap sets `TRUST_PROXY=true` and `TRUST_PROXY_HOPS=1` because the backend always sits behind the nginx ingress controller. If a cloud load balancer is fronted in front of the ingress (so the request crosses two proxies), set `TRUST_PROXY_HOPS=2` to match; a wrong hop count either collapses every rate-limit bucket onto the proxy address or lets clients forge their address — both are worse than the latency of getting it right. Never set `TRUST_PROXY=true` as a bare boolean: express-rate-limit rejects it as permissive (it would trust any client-supplied `X-Forwarded-For`).
+
 ### Network passphrase
 
 Mainnet uses the public passphrase:

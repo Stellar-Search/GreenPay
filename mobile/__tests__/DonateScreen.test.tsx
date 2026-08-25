@@ -60,7 +60,17 @@ const MOCK_PROJECT = {
   walletAddress: 'GB3SNSNLN74VSNSEL3C7NDHNZLPK7DO5JROSZ5DDS4OWVAJNAKAWWS2S',
 };
 
+import * as SecureStore from 'expo-secure-store';
 import DonateScreen from '../app/donate/[id]';
+
+// The expo-secure-store manual mock keeps one module-level store for the
+// whole file. Without clearing it, a wallet connected by one test stays
+// connected in the next, so WalletConnect renders its connected badge and
+// the 'Connect Wallet' button the helper drives is no longer present.
+beforeEach(() => {
+  const store = (SecureStore as unknown as { __store: Record<string, string> }).__store;
+  Object.keys(store).forEach((k) => delete store[k]);
+});
 
 // app/donate/[id].tsx reads theme colors via useTheme(), which requires a
 // ThemeProvider ancestor.
@@ -137,8 +147,13 @@ const DONOR_PUBLIC_KEY = 'GA4JHZX455IELW533547WFB5LV57LLSUJURFFIIYG7AV4HTQNW4W4F
 /** Drives the "Connect Wallet" flow exactly like a user would. */
 async function connectWallet(getByText: any, getByPlaceholderText: any, publicKey: string) {
   fireEvent.press(getByText('Connect Wallet'));
+  // The address has to be committed in its own act() so WalletConnect
+  // re-renders before the press below. Doing both in one act() leaves
+  // handleConnect closing over the previous (empty) input value.
   await act(async () => {
     fireEvent.changeText(getByPlaceholderText('GABC...XYZ'), publicKey);
+  });
+  await act(async () => {
     fireEvent.press(getByText('Connect'));
   });
 }
@@ -221,7 +236,12 @@ describe('DonateScreen – offline queueing', () => {
 // the real signing path (only `Server` is mocked, per @stellar/stellar-sdk
 // jest.mock above), unlike the offline-queueing tests which never reach
 // Keypair.fromSecret().
-const REAL_KEYPAIR = Keypair.fromSecret('SBI47VVMEHV2IC6NKD6RYGOURFGZK5CN7ARSODC4VDKGJZM7DYAQLJIB');
+//
+// Derived from a fixed all-zero seed rather than a literal secret string, so
+// the suite stays deterministic without committing a usable Stellar secret to
+// the repository. Anyone can reproduce it: Keypair.fromRawEd25519Seed of 32
+// zero bytes.
+const REAL_KEYPAIR = Keypair.fromRawEd25519Seed(Buffer.alloc(32));
 const REAL_PUBLIC_KEY = REAL_KEYPAIR.publicKey();
 
 describe('DonateScreen – completing a queued donation ("Complete now")', () => {
@@ -491,18 +511,3 @@ describe('DonateScreen – issue #359: online donation Horizon-success / backend
     expect(finalQueue).toHaveLength(0);
   });
 });
-
- i m p o r t   *   a s   S e c u r e S t o r e   f r o m   ' e x p o - s e c u r e - s t o r e ' ; 
- 
- d e s c r i b e ( ' D o n a t e S c r e e n      r e a d s   f r o m   s h a r e d   w a l l e t   h o o k ' ,   ( )   = >   { 
-     i t ( ' a s s e r t s   t h e   d o n a t e   s c r e e n   r e a d s   i t s   a d d r e s s   f r o m   t h e   s h a r e d   w a l l e t   h o o k ' ,   a s y n c   ( )   = >   { 
-         ( S e c u r e S t o r e . g e t I t e m A s y n c   a s   j e s t . M o c k ) . m o c k R e s o l v e d V a l u e ( D O N O R _ P U B L I C _ K E Y ) ; 
-         c o n s t   {   g e t B y T e x t   }   =   r e n d e r D o n a t e S c r e e n ( ) ; 
-         c o n s t   e x p e c t e d T r u n c a t e d   =   \ \ & \ \ ; 
-         a w a i t   w a i t F o r ( ( )   = >   { 
-             e x p e c t ( g e t B y T e x t ( e x p e c t e d T r u n c a t e d ) ) . t o B e T r u t h y ( ) ; 
-         } ) ; 
-     } ) ; 
- } ) ; 
- 
- 

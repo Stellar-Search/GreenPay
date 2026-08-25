@@ -29,4 +29,5 @@ paths = [
 ]
 regexes = [
   '''(?i)(mock|dummy|fixture|example|test|aaaaaaaa|bbbbbbbb|cccccccc)''',
+  '''^G[A-Z2-7]{55}$''',  # Stellar public keys (G followed by 55 base32 chars)
 ]

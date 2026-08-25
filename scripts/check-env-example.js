@@ -152,14 +152,16 @@ function parseEnvExample(filePath) {
 
   const vars = new Set();
 
-  for (const line of lines) {
-    // Skip empty lines and comments
-    if (!line.trim() || line.trim().startsWith("#")) {
-      continue;
-    }
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
 
-    // Extract variable name (everything before '=')
-    const match = line.match(/^([A-Z_][A-Z0-9_]*)\s*=/);
+    // A commented assignment (`# VAR=default`) is how this file documents
+    // optional settings: it names the variable and shows its default without
+    // forcing a value. Treat it as documented. A prose comment is skipped.
+    const candidate = line.startsWith("#") ? line.replace(/^#+\s*/, "") : line;
+
+    const match = candidate.match(/^([A-Z_][A-Z0-9_]*)\s*=/);
     if (match) {
       vars.add(match[1]);
     }

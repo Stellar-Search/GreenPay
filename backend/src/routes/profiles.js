@@ -6,7 +6,7 @@ const express = require("express");
 const router  = express.Router();
 const pool = require("../db/pool");
 const { mapProfileRow } = require("../services/store");
-const { createRateLimiter } = require("../middleware/rateLimiter");
+const { createLayeredRateLimiter } = require("../middleware/rateLimiter");
 const { createApiError } = require("../middleware/apiEnvelope");
 
 function validateKey(k) {
@@ -15,7 +15,14 @@ function validateKey(k) {
   }
 }
 
-const profilePostLimiter = createRateLimiter(20, 1, "profile-post");
+// Layered: per-IP floor (shared egresses don't starve each other) + per-wallet
+// cap so profile writes are bounded per identity, not per address.
+const profilePostLimiter = createLayeredRateLimiter({
+  name: "profile-post",
+  windowMinutes: 1,
+  ip: 60,
+  wallet: 20,
+});
 
 router.get("/:publicKey", async (req, res, next) => {
   try {

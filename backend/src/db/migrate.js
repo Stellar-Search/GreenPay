@@ -5,8 +5,25 @@ const path = require("path");
 const pool = require("./pool");
 const { seedProjects, seedProjectUpdates, seedJobs } = require("../services/store");
 
+/**
+ * Demo projects exist so a fresh local database has something to render. They
+ * are not real fundraising projects, and their wallet addresses belong to
+ * nobody, so inserting them into a production database would publish
+ * donatable projects that can never receive funds.
+ *
+ * Seeding is therefore opt-out in development and opt-in anywhere else: set
+ * SEED_DEMO_DATA=true to force it on, or false to suppress it locally.
+ */
+function shouldSeedDemoData() {
+  const explicit = (process.env.SEED_DEMO_DATA || "").trim().toLowerCase();
+  if (explicit === "true" || explicit === "1") return true;
+  if (explicit === "false" || explicit === "0") return false;
+  return process.env.NODE_ENV !== "production";
+}
+
 async function runMigrations() {
   const client = await pool.connect();
+  const seedDemoData = shouldSeedDemoData();
 
   try {
     await client.query("BEGIN");
@@ -15,7 +32,7 @@ async function runMigrations() {
     const schemaSql = fs.readFileSync(schemaPath, "utf8");
     await client.query(schemaSql);
 
-    for (const project of seedProjects) {
+    for (const project of seedDemoData ? seedProjects : []) {
       await client.query(
         `INSERT INTO projects (
           id, name, description, category, location, wallet_address, goal_xlm,
@@ -48,7 +65,7 @@ async function runMigrations() {
       );
     }
 
-    for (const update of seedProjectUpdates) {
+    for (const update of seedDemoData ? seedProjectUpdates : []) {
       await client.query(
         `INSERT INTO project_updates (id, project_id, title, body, created_at)
          VALUES ($1, $2, $3, $4, $5)
@@ -57,7 +74,7 @@ async function runMigrations() {
       );
     }
 
-    for (const job of seedJobs) {
+    for (const job of seedDemoData ? seedJobs : []) {
       await client.query(
         `INSERT INTO jobs (
           id, title, description, client_public_key, freelancer_public_key,
@@ -79,7 +96,11 @@ async function runMigrations() {
     }
 
     await client.query("COMMIT");
-    console.log("[DB] Migration and seeding complete");
+    console.log(
+      seedDemoData
+        ? "[DB] Migration complete (demo data seeded)"
+        : "[DB] Migration complete (demo data skipped)",
+    );
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;
@@ -88,4 +109,4 @@ async function runMigrations() {
   }
 }
 
-module.exports = { runMigrations };
+module.exports = { runMigrations, shouldSeedDemoData };

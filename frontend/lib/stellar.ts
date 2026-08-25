@@ -1,9 +1,9 @@
 /**
  * lib/stellar.ts — Stellar SDK helpers for GreenPay
  */
-import { Horizon, Networks, Asset, Operation, TransactionBuilder, Transaction, Memo, rpc, Contract, scValToNative, Address, nativeToScVal, Account, xdr } from "@stellar/stellar-sdk";
+import { Horizon, Networks, Asset, Operation, TransactionBuilder, Transaction, Memo, rpc, Contract, scValToNative, Address, nativeToScVal, Account, xdr, StrKey } from "@stellar/stellar-sdk";
 import { parseToStroops, stroopsToXLM } from "@/utils/amount";
-import { getActiveManifest } from "@/config/networks";
+import { getActiveManifest } from "@greenpay/config/networks";
 
 // Load manifest once at module init — throws if misconfigured
 const manifest = getActiveManifest();
@@ -503,7 +503,7 @@ export async function submitAndConfirmDonation(signedXDR: string): Promise<{ has
   );
 }
 
-export function isValidStellarAddress(a: string): boolean {
+export function isValidStellarAddress(address: string): boolean {
   if (!address || typeof address !== "string") {
     return false;
   }

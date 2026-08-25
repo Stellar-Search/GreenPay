@@ -14,9 +14,9 @@
  */
 import { render, type RenderResult } from "@testing-library/react";
 import type { ReactElement } from "react";
-import { I18nProvider, type Locale } from "@/lib/i18n";
+import { I18nProvider, STORAGE_KEY, type Locale } from "@/lib/i18n";
 
 export function renderWithLocale(ui: ReactElement, locale: Locale = "en"): RenderResult {
-  window.localStorage.setItem("locale", locale);
+  window.localStorage.setItem(STORAGE_KEY, locale);
   return render(<I18nProvider>{ui}</I18nProvider>);
 }

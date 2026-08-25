@@ -8,6 +8,7 @@ const router = express.Router();
 const { v4: uuid } = require("uuid");
 const pool = require("../db/pool");
 const { adminRequired } = require("../middleware/auth");
+const { createLayeredRateLimiter } = require("../middleware/rateLimiter");
 const { logAdminAction } = require("../services/audit");
 const { mapProjectRow, mapProjectMilestoneRow } = require("../services/store");
 const { getOnChainProject, CONTRACT_ID, server, NETWORK_PASSPHRASE } = require("../services/stellar");
@@ -16,6 +17,49 @@ const { Contract, TransactionBuilder } = require("@stellar/stellar-sdk");
 const { validate } = require("../middleware/validate");
 const { createApiError } = require("../middleware/apiEnvelope");
 const { ProjectStatusUpdateSchema } = require("../schemas/projects");
+
+// Layered rate limiters — see middleware/rateLimiter.js for the dimensions.
+// Every project mutation is wallet-identity-tied (adminAddress / matcherAddress)
+// or authenticated, so IP alone is never the only thing constraining it.
+
+// Generic admin project writes (campaigns, milestones, matches): a coarse
+// per-IP floor plus a per-wallet cap keyed on the acting admin/matcher address.
+const projectMutationLimiter = createLayeredRateLimiter({
+  name: "project-mutation",
+  windowMinutes: 1,
+  ip: 60,
+  wallet: 20,
+});
+
+// On-chain admin ops (register / confirm) hit Horizon RPC per call.
+const onChainAdminLimiter = createLayeredRateLimiter({
+  name: "project-onchain-admin",
+  windowMinutes: 1,
+  ip: 30,
+  wallet: 10,
+});
+
+// AI summary generation spends paid Anthropic API credits, so it gets the
+// tightest treatment: an IP floor, a per-wallet cap on the project owner, and
+// a global cap that no distributed client (each under its own limits) can
+// exceed — the expensive-endpoint backpressure the audit called for.
+const aiSummaryLimiter = createLayeredRateLimiter({
+  name: "project-summary",
+  windowMinutes: 1,
+  ip: 10,
+  wallet: 2,
+  global: 20,
+});
+
+// Authenticated platform-admin status changes: per-subject cap keyed on the
+// verified JWT subject (set by adminRequired), not on any client-supplied
+// address.
+const statusLimiter = createLayeredRateLimiter({
+  name: "project-status",
+  windowMinutes: 1,
+  ip: 30,
+  subject: 10,
+});
 
 const VALID_STATUSES = ["active", "completed", "paused"];
 const VALID_CATEGORIES = [
@@ -197,7 +241,7 @@ router.get("/:id/verify", async (req, res) => {
   }
 });
 
-router.post("/:id/campaigns", async (req, res, next) => {
+router.post("/:id/campaigns", projectMutationLimiter, async (req, res, next) => {
   try {
     const { title, goalXLM, deadline, description } = req.body || {};
     const trimmedTitle = typeof title === "string" ? title.trim() : "";
@@ -273,7 +317,7 @@ router.get("/:id/milestones", async (req, res, next) => {
   }
 });
 
-router.post("/:id/milestones", async (req, res, next) => {
+router.post("/:id/milestones", projectMutationLimiter, async (req, res, next) => {
   try {
     const { title, percentage } = req.body;
     if (!title || typeof percentage !== "number") {
@@ -301,7 +345,7 @@ router.post("/:id/milestones", async (req, res, next) => {
   }
 });
 
-router.post("/:id/milestones/:milestoneId/reach", async (req, res, next) => {
+router.post("/:id/milestones/:milestoneId/reach", projectMutationLimiter, async (req, res, next) => {
   try {
     const { transactionHash } = req.body;
     const result = await pool.query(
@@ -335,7 +379,7 @@ router.post("/:id/milestones/:milestoneId/reach", async (req, res, next) => {
  * Builds a Soroban transaction to register a project on-chain.
  * Returns the XDR for the admin to sign.
  */
-router.post("/admin/register", async (req, res, next) => {
+router.post("/admin/register", onChainAdminLimiter, async (req, res, next) => {
   try {
     const { projectId, name, wallet, co2PerXLM, adminAddress } = req.body;
     
@@ -376,7 +420,7 @@ router.post("/admin/register", async (req, res, next) => {
  * POST /api/projects/admin/confirm
  * Verifies a registration transaction and updates the local store.
  */
-router.post("/admin/confirm", async (req, res, next) => {
+router.post("/admin/confirm", onChainAdminLimiter, async (req, res, next) => {
   try {
     const { transactionHash, projectId } = req.body;
     
@@ -478,7 +522,7 @@ router.get("/:id", async (req, res, next) => {
  * Response data: { aiSummary, aiSummaryGeneratedAt, aiSummaryModel,
  *                  aiSummarySourceHash }
  */
-router.post("/:id/generate-summary", async (req, res, next) => {
+router.post("/:id/generate-summary", aiSummaryLimiter, async (req, res, next) => {
   try {
     const { adminAddress } = req.body || {};
     if (!adminAddress || typeof adminAddress !== "string") {
@@ -519,7 +563,7 @@ router.post("/:id/generate-summary", async (req, res, next) => {
   }
 });
 
-router.post("/:id/matching", async (req, res, next) => {
+router.post("/:id/matching", projectMutationLimiter, async (req, res, next) => {
   try {
     const { matcherAddress, capXLM, multiplier, expiresAt } = req.body || {};
 
@@ -614,8 +658,10 @@ router.patch(
   "/:id/status",
   // adminRequired runs before validate so an unauthenticated caller is turned
   // away with a 401 rather than being told, via a 400, whether their body was
-  // well-formed.
+  // well-formed. It also sets req.admin so the subject-keyed limiter can
+  // constrain the authenticated identity regardless of source address.
   adminRequired,
+  statusLimiter,
   validate(ProjectStatusUpdateSchema),
   async (req, res, next) => {
     try {

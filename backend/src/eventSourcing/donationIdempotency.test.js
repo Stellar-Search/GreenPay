@@ -172,7 +172,9 @@ describe("donation record idempotency", () => {
     expect(db.rows).toHaveLength(1);
     expect(db.insertCalls).toHaveLength(N);
     expect(db.rows[0].event_type).toBe("DonationRecorded");
-    expect(db.rows[0].aggregate_id).toBe(`Donation:${makeTxHash("a")}`);
+    // aggregateId is stored unprefixed — see events.js's buildStreamId.
+    expect(db.rows[0].aggregate_id).toBe(makeTxHash("a"));
+    expect(db.rows[0].stream_id).toBe(`Donation:${makeTxHash("a")}`);
 
     // ...and every caller observed it: same identity, same amount, success.
     const winnerEventId = db.rows[0].event_id;

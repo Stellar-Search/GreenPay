@@ -272,6 +272,29 @@ CREATE INDEX IF NOT EXISTS idx_ai_summary_job_failures_status
 CREATE INDEX IF NOT EXISTS idx_ai_summary_job_failures_created_at
   ON ai_summary_job_failures (created_at);
 
+-- Permanently-failed update-notification batches (pg-boss retries exhausted
+-- on either the email or push fan-out queue). Populated from each queue's
+-- dead-letter queue so a batch that never got delivered is distinctly
+-- visible instead of silently swallowed by a fire-and-forget .catch().
+CREATE TABLE IF NOT EXISTS notification_job_failures (
+  id UUID PRIMARY KEY,
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  update_id UUID REFERENCES project_updates(id) ON DELETE CASCADE,
+  channel TEXT NOT NULL, -- 'email' | 'push'
+  payload JSONB NOT NULL DEFAULT '{}'::JSONB,
+  error_message TEXT,
+  error_stack TEXT,
+  status TEXT NOT NULL DEFAULT 'failed',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  resolved_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_job_failures_status
+  ON notification_job_failures (status);
+
+CREATE INDEX IF NOT EXISTS idx_notification_job_failures_created_at
+  ON notification_job_failures (created_at);
+
 -- Indexer cursor: durable resume point so the Horizon operations stream
 -- can pick up where it left off after a deploy, crash, or restart.
 CREATE TABLE IF NOT EXISTS indexer_state (

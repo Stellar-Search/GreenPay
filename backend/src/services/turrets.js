@@ -37,6 +37,10 @@ const { env } = require("../config/env");
 const NETWORK = env.stellarNetwork;
 const NETWORK_PASSPHRASE = NETWORK === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
 const HORIZON_URL = env.horizonUrl;
+
+// Postgres unique_violation SQLSTATE, used to detect a concurrent retry that
+// already committed the same match.
+const PG_UNIQUE_VIOLATION = "23505";
 let server;
 function getServer() {
   if (!server) {
