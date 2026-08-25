@@ -21,19 +21,38 @@ const DEFAULT_HORIZON_URL = 'https://horizon-testnet.stellar.org';
  * 'public'. Defaults to 'testnet' when unset.
  */
 export function getExpectedNetworkLabel(): StellarNetworkLabel {
-  const raw = (process.env.EXPO_PUBLIC_STELLAR_NETWORK || '').trim().toLowerCase();
-  if (raw === 'public' || raw === 'mainnet') return 'public';
+  // babel-preset-expo replaces `process.env.EXPO_PUBLIC_*` with a literal at
+  // transform time, so this reflects the value present when the bundle was
+  // built and cannot be changed at runtime. Assigning to process.env in a test
+  // has no effect here — exercise resolveNetworkLabel directly instead.
+  return resolveNetworkLabel(process.env.EXPO_PUBLIC_STELLAR_NETWORK);
+}
+
+/** Pure form of the label rule, independent of how the value was obtained. */
+export function resolveNetworkLabel(raw: string | null | undefined): StellarNetworkLabel {
+  const value = (raw || '').trim().toLowerCase();
+  if (value === 'public' || value === 'mainnet') return 'public';
   return 'testnet';
+}
+
+/** Passphrase for an explicit label. */
+export function passphraseForLabel(label: StellarNetworkLabel): string {
+  return label === 'public' ? Networks.PUBLIC : Networks.TESTNET;
+}
+
+/** User-facing network name for an explicit label. */
+export function displayNameForLabel(label: StellarNetworkLabel): string {
+  return label === 'public' ? 'mainnet' : 'testnet';
 }
 
 /** Returns the Stellar network passphrase this app build expects. */
 export function getExpectedNetworkPassphrase(): string {
-  return getExpectedNetworkLabel() === 'public' ? Networks.PUBLIC : Networks.TESTNET;
+  return passphraseForLabel(getExpectedNetworkLabel());
 }
 
 /** User-facing network name for UI copy (never hardcodes a single network). */
 export function getExpectedNetworkDisplayName(): string {
-  return getExpectedNetworkLabel() === 'public' ? 'mainnet' : 'testnet';
+  return displayNameForLabel(getExpectedNetworkLabel());
 }
 
 /** Horizon URL this build submits against (mirrors donate / sync defaults). */
@@ -67,11 +86,11 @@ export function inferNetworkLabelFromHorizonUrl(horizonUrl: string): StellarNetw
  */
 export function assertStellarNetworkConfigConsistency(
   horizonUrl: string = getConfiguredHorizonUrl(),
+  expected: StellarNetworkLabel = getExpectedNetworkLabel(),
 ): void {
   const fromUrl = inferNetworkLabelFromHorizonUrl(horizonUrl);
   if (!fromUrl) return;
 
-  const expected = getExpectedNetworkLabel();
   if (fromUrl === expected) return;
 
   throw new Error(

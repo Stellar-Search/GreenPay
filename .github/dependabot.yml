@@ -69,3 +69,16 @@ updates:
     labels:
       - "dependencies"
       - "docker"
+
+  # Bumps the pinned commit SHAs on third-party actions in .github/workflows
+  # (and this file's own action references, if any) — a tag repoint on a
+  # SHA-pinned action can't run arbitrary new code, but the pin still needs
+  # to move forward to pick up fixes and security patches.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "ci"

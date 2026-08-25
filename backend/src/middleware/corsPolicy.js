@@ -2,6 +2,7 @@
 
 const cors = require("cors");
 const { createApiError } = require("./apiEnvelope");
+const { env } = require("../config/env");
 
 const DEFAULT_ALLOWED_ORIGINS = Object.freeze([
   "https://greenpay.app",

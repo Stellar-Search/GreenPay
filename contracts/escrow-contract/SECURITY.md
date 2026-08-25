@@ -95,6 +95,8 @@ token_client.transfer(…);
 | `test_release_escrow_cannot_double_release_after_cei_reorder` | A second call to `release_escrow` panics with `"Job is not in escrow"`. |
 | `test_resolve_dispute_cannot_double_resolve_after_cei_reorder` | A second `resolve_dispute` panics with `"Job is not disputed"`. |
 | `test_cancel_job_cannot_double_cancel_after_cei_reorder` | A second `cancel_job` panics with `"Job is not in escrow"`. |
+| `release_partial_reentrant_token_cannot_over_release` | A token whose `transfer` re-enters `release_partial` with the full remaining balance is rejected: the re-entrant call sees the already-decremented `remaining_amount` and panics with `"Amount exceeds remaining balance"`; the failed transaction rolls back with the job untouched. |
+| `release_partial_reentrant_token_cannot_double_release_full` | A re-entering token during a full release hits the `"Job is not in escrow"` guard, because `status` was flipped to `Released` before the token was ever invoked; funds cannot be double-paid. |
 
 ---
 
@@ -212,5 +214,7 @@ cargo test --lib
 ```
 
 All pre-existing tests pass unchanged. 11 new dispute-timeout regression
-tests added (H-02). 7 CEI regression tests from H-01 fix also present.
-Total: 36 tests, 0 failures.
+tests added (H-02). 9 CEI regression tests from H-01 fix also present,
+including two reentrancy regression tests added when `release_partial` was
+brought into line with the CEI ordering (issue 307).
+Total: 32 tests, 0 failures.

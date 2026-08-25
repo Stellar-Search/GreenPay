@@ -1,13 +1,114 @@
 /**
  * src/services/email.js — Transactional email via Resend
+ *
+ * Update-notification fan-out runs through a dedicated pg-boss queue instead
+ * of being sent inline from the request that created the update: subscriber
+ * lists are read from the database in bounded chunks (never "SELECT * and
+ * hold it all in memory") and each chunk becomes one retryable, observable
+ * job rather than one giant fire-and-forget promise.
  */
 "use strict";
 
+const PgBoss = require("pg-boss");
+const pool = require("../db/pool");
 const { env } = require("../config/env");
+const { logger: rootLogger } = require("../utils/logger");
+const { recordNotificationFailure } = require("./notificationFailures");
+
+const logger = rootLogger.child({ service: "email-notify-queue" });
+
+const QUEUE = "update-email-notify";
+const DEAD_LETTER_QUEUE = "update-email-notify-dlq";
+const RETRY_LIMIT = 3;
+const RETRY_DELAY = 30;
+// Resend accepts at most 50 "to" recipients per call — chunking the DB read
+// at the same size means each queued job maps to exactly one Resend request,
+// so a retry can't re-send a batch that already partially succeeded.
+const EMAIL_CHUNK_SIZE = 50;
+
+let boss = null;
 
 /**
- * Send a project update notification to a list of subscriber emails.
- * Silently skips if RESEND_API_KEY is not configured.
+ * Start the pg-boss scheduler and register the update-email-notify worker.
+ * Must be called once before enqueueUpdateNotifications can queue jobs.
+ */
+async function start() {
+  boss = new PgBoss(env.databaseUrl);
+  boss.on("error", (err) => logger.error({ msg: "pg-boss error", error: err.message }));
+
+  await boss.start();
+  await boss.createQueue(DEAD_LETTER_QUEUE);
+  await boss.createQueue(QUEUE, { retryLimit: RETRY_LIMIT, retryDelay: RETRY_DELAY, deadLetter: DEAD_LETTER_QUEUE });
+
+  // pg-boss v10 always invokes a work() callback with an array of jobs (the
+  // fetched batch), even when exactly one job was fetched — never a bare job.
+  await boss.work(QUEUE, { teamSize: 2, teamConcurrency: 1 }, async (jobs) => {
+    for (const job of jobs) {
+      await sendUpdateNotifications(job.data);
+    }
+  });
+  await boss.work(DEAD_LETTER_QUEUE, { includeMetadata: true }, async (jobs) => {
+    for (const job of jobs) {
+      const { project, update, emails } = job.data || {};
+      await recordNotificationFailure({
+        projectId: project?.id,
+        updateId: update?.id,
+        channel: "email",
+        payload: { emailCount: emails?.length || 0 },
+        error: job.output,
+      });
+    }
+  });
+
+  logger.info({ msg: "pg-boss started, worker registered", queue: QUEUE });
+}
+
+/**
+ * Reads subscriber emails for a project in bounded chunks (keyset pagination
+ * on id — never a single unbounded SELECT) and enqueues one retryable job per
+ * chunk on the update-email-notify queue.
+ *
+ * @param {{project:object, update:object}} opts
+ */
+async function enqueueUpdateNotifications({ project, update }) {
+  if (!boss) {
+    throw new Error("email notification queue not started — call start() first");
+  }
+
+  let lastId = "00000000-0000-0000-0000-000000000000";
+  for (;;) {
+    const { rows } = await pool.query(
+      `SELECT id, email FROM project_subscriptions
+       WHERE project_id = $1 AND id > $2
+       ORDER BY id
+       LIMIT $3`,
+      [project.id, lastId, EMAIL_CHUNK_SIZE],
+    );
+    if (rows.length === 0) break;
+
+    const emails = rows.map((r) => r.email);
+    await boss.send(
+      QUEUE,
+      { project, update, emails },
+      { retryLimit: RETRY_LIMIT, retryDelay: RETRY_DELAY, deadLetter: DEAD_LETTER_QUEUE },
+    );
+
+    lastId = rows[rows.length - 1].id;
+    if (rows.length < EMAIL_CHUNK_SIZE) break;
+  }
+}
+
+/**
+ * Send one chunk of update notification emails via Resend. Called by the
+ * update-email-notify worker — throws on a Resend failure so pg-boss retries
+ * the batch rather than silently dropping it.
+ *
+ * @param {{project:object,update:object,emails:string[]}} opts
+ * @param {object} opts.project - Project object with at least `id` and `name`.
+ * @param {object} opts.update - Update object with `title` and `body`.
+ * @param {string[]} opts.emails - Recipient email addresses (already chunked to <=50).
+ * @returns {Promise<void>}
+ * @throws {Error} When the Resend API returns an unexpected failure.
  */
 async function sendUpdateNotifications({ project, update, emails }) {
   if (!env.resendApiKey) {
@@ -18,43 +119,26 @@ async function sendUpdateNotifications({ project, update, emails }) {
 
   const projectUrl = `${env.appUrl}/projects/${project.id}`;
 
-  // Resend supports up to 50 recipients per call — batch if needed
-  const BATCH = 50;
-  for (let i = 0; i < emails.length; i += BATCH) {
-    const batch = emails.slice(i, i + BATCH);
-    const res = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.resendApiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from: env.emailFrom,
-        to: batch,
-        subject: `Update from ${project.name}: ${update.title}`,
-        html: buildHtml({ project, update, projectUrl }),
-        text: buildText({ project, update, projectUrl }),
-      }),
-    });
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.resendApiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: env.emailFrom,
+      to: emails,
+      subject: `Update from ${project.name}: ${update.title}`,
+      html: buildHtml({ project, update, projectUrl }),
+      text: buildText({ project, update, projectUrl }),
+    }),
+  });
 
-    if (!res.ok) {
-      const body = await res.text();
-      console.error(`[email] Resend error (batch ${i / BATCH + 1}):`, body);
-    }
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Resend error (${res.status}): ${body}`);
   }
 }
-
-/**
- * Send update notification emails for a project using Resend.
- *
- * @param {{project:object,update:object,emails:string[]}} opts
- * @param {object} opts.project - Project object with at least `id` and `name`.
- * @param {object} opts.update - Update object with `title` and `body`.
- * @param {string[]} opts.emails - Array of recipient email addresses.
- * @returns {Promise<void>} Resolves when all batches have been attempted.
- * @throws {Error} When the Resend API returns an unexpected failure (logged and not rethrown here).
- */
-// exported as `sendUpdateNotifications`
 
 function buildHtml({ project, update, projectUrl }) {
   return `<!DOCTYPE html>
@@ -106,4 +190,4 @@ function escHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
-module.exports = { sendUpdateNotifications };
+module.exports = { start, enqueueUpdateNotifications, sendUpdateNotifications };

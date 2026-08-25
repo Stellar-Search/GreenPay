@@ -160,13 +160,13 @@ let refreshPromise: Promise<string | null> | null = null;
 async function refreshAdminSession(): Promise<string | null> {
   if (!adminRefreshToken) return null;
   try {
-    const { data } = await api.post<{
-      success: boolean;
-      data: { token: string; refreshToken: string; expiresIn: number };
-    }>("/api/admin/refresh", { refreshToken: adminRefreshToken });
-    
-    setAdminToken(data.data.token, data.data.refreshToken);
-    return data.data.token;
+    const { data } = await api.post<{ token: string; expiresIn: number }>(
+      "/api/admin/refresh",
+      { refreshToken: adminRefreshToken },
+    );
+
+    setAdminToken(data.token, adminRefreshToken);
+    return data.token;
   } catch (err) {
     logoutAdmin();
     return null;
@@ -500,8 +500,8 @@ export async function adminLogin(username: string, password: string) {
     refreshToken: string;
     expiresIn: number;
   }>("/api/admin/login", { username, password });
-  setAdminToken(data.data.token, data.data.refreshToken);
-  return data.data;
+  setAdminToken(data.token, data.refreshToken);
+  return data;
 }
 
 export async function updateProjectStatus(
@@ -554,14 +554,14 @@ export interface AISummaryJobFailure {
 }
 
 export async function fetchAISummaryFailures() {
-  const { data } = await api.get<{ success: boolean; data: AISummaryJobFailure[] }>(
+  const { data } = await api.get<AISummaryJobFailure[]>(
     "/api/admin/ai-summary-failures",
   );
   return data;
 }
 
 export async function retryAISummaryFailure(failureId: string) {
-  const { data } = await api.post<{ success: boolean; data: { status: string } }>(
+  const { data } = await api.post<{ status: string }>(
     `/api/admin/ai-summary-failures/${failureId}/retry`,
     {},
   );

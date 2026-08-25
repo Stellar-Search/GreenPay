@@ -1,4 +1,5 @@
-import { getActiveManifest } from '../../config/networks';
+import { StrKey } from '@stellar/stellar-sdk';
+import { activeManifest } from './network-config';
 
 export const SESSION_SCHEMA_VERSION = 1;
 export const WALLET_SESSION_TTL_MS = 15 * 60 * 1000;
@@ -11,7 +12,7 @@ export const STORAGE_KEYS = {
 } as const;
 
 // Load manifest once at module init
-const manifest = getActiveManifest();
+const manifest = activeManifest;
 
 export interface WalletSession {
   publicKey: string;
@@ -56,6 +57,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+/**
+ * Returns true if `address` is a well-formed, checksum-valid Stellar
+ * Ed25519 public key (G… 56-character StrKey encoding).
+ *
+ * Uses the SDK's StrKey decoder rather than a length/character regex so that
+ * addresses with an invalid checksum — which pass a regex check but would
+ * cause the Horizon payment operation to reject or route to the wrong account
+ * — are caught at validation time.
+ *
+ * Muxed (M…) and contract (C…) addresses are intentionally excluded: the
+ * extension only supports direct G… destination keys.  Accepting a muxed
+ * address would silently truncate the sub-account identifier when Freighter
+ * normalises it, potentially directing funds to the wrong sub-account.
+ */
+export function isValidStellarAddress(address: unknown): address is string {
+  if (typeof address !== 'string') return false;
+  try {
+    return StrKey.isValidEd25519PublicKey(address);
+  } catch {
+    return false;
+  }
+}
+
 function isWalletSession(value: unknown): value is WalletSession {
   return (
     isRecord(value) &&
@@ -74,13 +98,24 @@ function isProject(value: unknown): value is ProjectSummary {
     typeof value.name === 'string' &&
     typeof value.description === 'string' &&
     typeof value.category === 'string' &&
-    typeof value.walletAddress === 'string'
+    // walletAddress is the payment destination — validate the full StrKey
+    // checksum here so a poisoned chrome.storage.local cache entry cannot
+    // supply an address that passes the type guard but fails at Horizon.
+    isValidStellarAddress(value.walletAddress)
   );
 }
 
 /**
  * Owns the state that may be cached in the MV3 worker. Every mutation is
  * persisted before it is exposed so a terminated worker can reconstruct it.
+ *
+ * Trust boundary:
+ * Session mutations (`setWallet`, `clearWallet`) and worker snapshots represent
+ * privileged operations. The background listener strictly restricts these
+ * messages to extension-page origins (`sender.id === chrome.runtime.id` and
+ * `sender.tab === undefined`, e.g. popup). Untrusted content scripts injected
+ * into arbitrary host web pages are unprivileged and rejected at the messaging
+ * boundary, preventing wallet session poisoning or unauthorized session clearing.
  */
 export class WorkerSessionState {
   private wallet: WalletSession | null = null;

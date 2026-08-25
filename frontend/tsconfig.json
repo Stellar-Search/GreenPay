@@ -15,6 +15,10 @@
     "plugins": [{ "name": "next" }],
     "paths": {
       "@/*": ["./*"],
+      // Two candidates: the repo layout puts config/ beside frontend/, while
+      // the container image copies it to /app/config next to the app root.
+      // TypeScript tries each in order and uses the first that exists.
+      "@greenpay/config/*": ["../config/*", "./config/*"],
       "@greenpay/i18n": ["../shared/i18n"],
       "@greenpay/i18n/*": ["../shared/i18n/*"]
     }

@@ -20,17 +20,30 @@ export type BuildDonationPaymentParams = {
   amount: string;
   projectId: string;
   fee?: string;
+  /**
+   * Defaults to the network this build targets. Overridable because
+   * babel-preset-expo inlines EXPO_PUBLIC_* at transform time, so a test
+   * cannot select a network by assigning to process.env.
+   */
+  networkPassphrase?: string;
 };
 
 /** Build an unsigned native-XLM donation payment for the configured network. */
 export function buildDonationPaymentTransaction(
   params: BuildDonationPaymentParams,
 ): Transaction {
-  const { sourceAccount, destination, amount, projectId, fee = '100' } = params;
+  const {
+    sourceAccount,
+    destination,
+    amount,
+    projectId,
+    fee = '100',
+    networkPassphrase = getExpectedNetworkPassphrase(),
+  } = params;
 
   return new TransactionBuilder(sourceAccount, {
     fee,
-    networkPassphrase: getExpectedNetworkPassphrase(),
+    networkPassphrase,
   })
     .addOperation(
       Operation.payment({

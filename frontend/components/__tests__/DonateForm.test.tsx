@@ -5,6 +5,7 @@ import * as stellarApi from "@/lib/stellar";
 import * as walletApi from "@/lib/wallet";
 import * as serverApi from "@/lib/api";
 import { renderWithLocale } from "./renderWithLocale";
+import type { ClimateProject } from "@/utils/types";
 
 // Mock dependencies
 jest.mock("@/lib/stellar", () => ({
@@ -24,12 +25,23 @@ jest.mock("@/lib/api", () => ({
 }));
 
 describe("DonateForm", () => {
-  const mockProject = {
+  const mockProject: ClimateProject = {
     id: "proj-123",
     name: "Test Project",
     walletAddress: "GBX...",
     description: "Test desc",
     co2_per_xlm: 100,
+    category: "Reforestation",
+    location: "Test Location",
+    goalXLM: "1000",
+    raisedXLM: "250",
+    donorCount: 3,
+    co2OffsetKg: 500,
+    status: "active",
+    verified: true,
+    tags: ["test"],
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
   };
 
   const publicKey = "GAX...";

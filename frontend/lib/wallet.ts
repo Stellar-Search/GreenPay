@@ -3,12 +3,12 @@
  */
 import { isConnected, getPublicKey, signTransaction, requestAccess, isAllowed } from "@stellar/freighter-api";
 import { NETWORK_PASSPHRASE } from "./stellar";
+import { extractBoolean, extractString } from "./freighterResult";
 
 export async function isFreighterInstalled(): Promise<boolean> {
   try {
-    const result: any = await isConnected();
-    // Handle both boolean and object return types
-    return typeof result === 'boolean' ? result : result.isConnected;
+    const result: unknown = await isConnected();
+    return extractBoolean("isConnected", result, "isConnected");
   }
   catch { return false; }
 }
@@ -18,9 +18,8 @@ export async function connectWallet(): Promise<{ publicKey: string | null; error
   if (!installed) return { publicKey: null, error: "Freighter not installed. Visit https://freighter.app" };
   try {
     await requestAccess();
-    const result: any = await getPublicKey();
-    // Handle both string and object return types
-    const publicKey = typeof result === 'string' ? result : result?.publicKey || result?.address;
+    const result: unknown = await getPublicKey();
+    const publicKey = extractString("getPublicKey", result, ["publicKey", "address"]);
     return { publicKey: publicKey || null, error: null };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -31,14 +30,12 @@ export async function connectWallet(): Promise<{ publicKey: string | null; error
 
 export async function getConnectedPublicKey(): Promise<string | null> {
   try {
-    const allowedResult: any = await isAllowed();
-    // Handle both boolean and object return types
-    const isUserAllowed = typeof allowedResult === 'boolean' ? allowedResult : allowedResult.isAllowed;
+    const allowedResult: unknown = await isAllowed();
+    const isUserAllowed = extractBoolean("isAllowed", allowedResult, "isAllowed");
     if (!isUserAllowed) return null;
 
-    const result: any = await getPublicKey();
-    // Handle both string and object return types
-    const publicKey = typeof result === 'string' ? result : result?.publicKey || result?.address;
+    const result: unknown = await getPublicKey();
+    const publicKey = extractString("getPublicKey", result, ["publicKey", "address"]);
     return publicKey || null;
   } catch { return null; }
 }
@@ -70,10 +67,9 @@ export async function signTransactionWithWallet(xdr: string): Promise<SignTransa
 
   try {
     const network = process.env.NEXT_PUBLIC_STELLAR_NETWORK === "mainnet" ? "MAINNET" : "TESTNET";
-    const result: any = await signTransaction(xdr, { networkPassphrase: NETWORK_PASSPHRASE, network });
-    // Handle both string and object return types
-    const signedXDR = typeof result === 'string' ? result : result?.signedTransaction;
-    return { signedXDR: signedXDR, error: null };
+    const result: unknown = await signTransaction(xdr, { networkPassphrase: NETWORK_PASSPHRASE, network });
+    const signedXDR = extractString("signTransaction", result, ["signedTransaction"]);
+    return { signedXDR: signedXDR || null, error: null };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes("User declined") || msg.includes("rejected")) {

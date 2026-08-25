@@ -29,7 +29,7 @@ interface I18nContextValue {
 
 const I18nContext = createContext<I18nContextValue | undefined>(undefined);
 
-const STORAGE_KEY = "greenpay-locale";
+export const STORAGE_KEY = "greenpay-locale";
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>("en");
@@ -44,6 +44,15 @@ export function I18nProvider({ children }: { children: ReactNode }) {
       console.warn("Failed to load locale from localStorage:", err);
     }
   }, []);
+
+  // The provider computes `dir` for context consumers, but the document itself
+  // also has to carry it: logical CSS properties (start/end) and the browser's
+  // own bidi algorithm key off the element's dir attribute, not off React
+  // context. Without this an RTL locale renders left-to-right.
+  useEffect(() => {
+    document.documentElement.dir = getDir(locale);
+    document.documentElement.lang = LOCALE_TAGS[locale];
+  }, [locale]);
 
   const setLocale = useCallback((newLocale: Locale) => {
     setLocaleState(newLocale);

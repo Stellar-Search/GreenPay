@@ -17,7 +17,7 @@ import type { Page } from "@playwright/test";
  */
 export async function mockFreighter(
   page: Page,
-  publicKey = "GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGLEWZE5BGYTG2XTGQBC3VP",
+  publicKey = "GDNNXUMEULKSN4PL3VOAN7NNSNM3EKDVTNGX66OWM2E7UJKKVWCUN3GZ",
 ) {
   await page.addInitScript((pk) => {
     (window as unknown as Record<string, unknown>).__test_publicKey__ = pk;

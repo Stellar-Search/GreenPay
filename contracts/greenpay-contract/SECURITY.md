@@ -283,33 +283,46 @@ both `require_auth` checks. Out of scope for this audit pass.
 | `donate` | `donor.require_auth` | n/a (open) | OK |
 | `mint_impact_nft` | `donor.require_auth` | tier == current badge | Logic bug (M-02) |
 | `transfer` | `from.require_auth` | `from == meta.owner`; token exists | OK (Issue #114) |
-| `create_proposal` | `admin.require_auth` | `stored_admin == admin` | OK |
-| `vote_verify_project` | `voter.require_auth` | badge ≥ Seedling, no double-vote, deadline alive | OK |
-| `resolve_proposal` | none | deadline passed, not yet resolved | OK (idempotent) |
+| `create_proposal` | `admin.require_auth` | `stored_admin == admin`; refuses when a DAO contract is registered | OK (legacy, gated — Issue #317) |
+| `vote_verify_project` | `voter.require_auth` | badge ≥ Seedling, no double-vote, deadline alive; refuses when a DAO contract is registered | OK (legacy, gated — Issue #317) |
+| `resolve_proposal` | none | deadline passed, not yet resolved | OK (idempotent; stays callable across the DAO cutover to settle in-flight legacy proposals — Issue #317) |
 | getter functions | none | n/a | OK |
 
 ## Badge boundary edge cases
 
 `calculate_badge` is called with `total_stroops` and uses integer
-division `total_stroops / STROOP` then `>=` comparisons. The boundary
-behavior is exact:
+division `total_stroops / STROOP` then `>=` comparisons against the named
+constants (`BADGE_THRESHOLD_*_XLM`):
 
-| Stroops | XLM (truncated) | Tier |
-| --- | --- | --- |
-| `9 * STROOP` | 9 | None |
-| `10 * STROOP` | 10 | Seedling |
-| `99 * STROOP` | 99 | Seedling |
-| `100 * STROOP` | 100 | Tree |
-| `499 * STROOP` | 499 | Tree |
-| `500 * STROOP` | 500 | Forest |
-| `1999 * STROOP` | 1999 | Forest |
-| `2000 * STROOP` | 2000 | EarthGuardian |
+| Constant | Stroops | XLM (truncated) | Tier |
+| --- | --- | --- | --- |
+| *None* | `9 * STROOP` | 9 | None |
+| `BADGE_THRESHOLD_SEEDLING_XLM` | `10 * STROOP` | 10 | Seedling |
+| | `99 * STROOP` | 99 | Seedling |
+| `BADGE_THRESHOLD_TREE_XLM` | `100 * STROOP` | 100 | Tree |
+| | `499 * STROOP` | 499 | Tree |
+| `BADGE_THRESHOLD_FOREST_XLM` | `500 * STROOP` | 500 | Forest |
+| | `1999 * STROOP` | 1999 | Forest |
+| `BADGE_THRESHOLD_EARTH_GUARDIAN_XLM` | `2000 * STROOP` | 2000 | EarthGuardian |
 
 This is locked in by `test_calculate_badge_thresholds` in
-[`src/lib.rs`](src/lib.rs#L491). The integer truncation means
+[`src/lib.rs`](src/lib.rs). The integer truncation means
 sub-1-XLM donations contribute zero to CO2 offset; this is by design
 and documented here so it is not "fixed" by an unrelated rounding
 change later.
+
+### Cross-Validation & Drift Prevention (Contract <-> Backend)
+
+To ensure on-chain badge logic (`get_badge`, NFT auto-minting) and off-chain
+indexing/projections never disagree:
+- The contract defines authoritative public constants `BADGE_THRESHOLD_*_XLM`
+  in `contracts/greenpay-contract/src/lib.rs`.
+- The backend consolidates all threshold definitions in `backend/src/services/store.js`
+  under `BADGE_THRESHOLDS` and `computeBadges`.
+- An automated cross-validation test (`backend/src/services/badgeCrossValidation.test.js`)
+  reads the contract source at test time, parses the contract constants, and asserts
+  exact parity with backend thresholds. Any drift between contract and backend
+  fails CI immediately.
 
 ## Test results
 

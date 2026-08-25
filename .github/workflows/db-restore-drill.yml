@@ -6,6 +6,11 @@ on:
     - cron: '0 3 1 1,4,7,10 *'
   workflow_dispatch: {}
 
+# Default token to read-only; only notify-on-failure (files an issue) needs
+# more, so it overrides at the job level rather than widening here.
+permissions:
+  contents: read
+
 jobs:
   restore-drill:
     name: Run disaster-recovery restore drill
@@ -128,6 +133,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: restore-drill
     if: failure()
+    # The "Create issue on drill failure" step below files a repo issue.
+    permissions:
+      contents: read
+      issues: write
 
     steps:
       - name: Checkout code
@@ -190,41 +199,41 @@ jobs:
             const title = `${severity} ${failureType}`;
             const body = `## Quarterly Database Restore Drill Failed
             
-Date: ${new Date().toISOString()}
-Severity: ${severity}
+            Date: ${new Date().toISOString()}
+            Severity: ${severity}
 
-### Summary
+            ### Summary
 
-The quarterly disaster-recovery restore drill failed.
+            The quarterly disaster-recovery restore drill failed.
 
-${details}
+            ${details}
 
-### What This Means
+            ### What This Means
 
-The backup mechanism may not be restorable, OR:
-- The restore process is broken
-- Database performance has degraded
-- Data integrity checks are failing
+            The backup mechanism may not be restorable, OR:
+            - The restore process is broken
+            - Database performance has degraded
+            - Data integrity checks are failing
 
-This is treated as high priority because it's the last line of defense against data loss.
+            This is treated as high priority because it's the last line of defense against data loss.
 
-### Next Steps
+            ### Next Steps
 
-1. Check the workflow run: [View Full Log](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
-2. See the drill report artifacts (CSV/JSON with detailed metrics)
-3. Review [Restore Drill Runbook](../../docs/runbooks/db-restore-drill.md)
-4. If verification failed: investigate data integrity immediately
-5. If regression detected: investigate performance degradation
-6. File a post-drill report documenting findings
+            1. Check the workflow run: [View Full Log](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            2. See the drill report artifacts (CSV/JSON with detailed metrics)
+            3. Review [Restore Drill Runbook](../../docs/runbooks/db-restore-drill.md)
+            4. If verification failed: investigate data integrity immediately
+            5. If regression detected: investigate performance degradation
+            6. File a post-drill report documenting findings
 
-### References
+            ### References
 
-- Runbook: \`docs/runbooks/db-restore-drill.md\`
-- Drill reports: \`docs/runbooks/drills/\`
-- Backup script: \`scripts/backup-db.sh\`
-- Restore script: \`scripts/restore-db.sh\`
-- Verification script: \`scripts/verify-restore.sh\`
-- Workflow: \`.github/workflows/db-restore-drill.yml\``;
+            - Runbook: \`docs/runbooks/db-restore-drill.md\`
+            - Drill reports: \`docs/runbooks/drills/\`
+            - Backup script: \`scripts/backup-db.sh\`
+            - Restore script: \`scripts/restore-db.sh\`
+            - Verification script: \`scripts/verify-restore.sh\`
+            - Workflow: \`.github/workflows/db-restore-drill.yml\``;
 
             github.rest.issues.create({
               owner: context.repo.owner,

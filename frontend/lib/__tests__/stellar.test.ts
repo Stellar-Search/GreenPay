@@ -2,8 +2,11 @@ import { isValidStellarAddress } from "../stellar";
 
 describe("isValidStellarAddress", () => {
     it("should return true for a valid Stellar public key with a correct checksum", () => {
-        // Standard valid public key
-        const validAddress = "GCKN22I7433B3PFFAM3A45C33SCSXHVEO2CUKXOO6S3J52OQOADMEPHZ";
+        // A genuinely checksum-valid key, derived deterministically so it can
+        // be re-verified: Keypair.fromRawEd25519Seed(Buffer.alloc(32)).
+        // A hand-written 56-character string will not do here — that is the
+        // exact failure mode this function exists to catch.
+        const validAddress = "GA5WUJ54Z23KILLCUOUNAKTPBVZWKMQVO4O6EQ5GHLAERIMLLHNCSKYH";
         expect(isValidStellarAddress(validAddress)).toBe(true);
     });
 

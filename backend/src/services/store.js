@@ -33,7 +33,7 @@ const seedProjects = [
       "Installing solar microgrids in 50 off-grid villages in rural Kenya, providing clean electricity to 10,000 people and replacing diesel generators that emit over 500 tonnes of CO2 per year.",
     category: "Solar Energy",
     location: "Kenya, East Africa",
-    walletAddress: "GBVNQON4MFVGJXK5WT7VQJJZXFVHZJB6BHFWJCW7OF5BLNGOLZJQHIY",
+    walletAddress: "GBVXTRL6NIEVEOJIFQCIDDUWCEXT6A5EAAN2S6SWJQRYKKR7D2S7YLBA",
     goalXLM: "75000",
     raisedXLM: "52310",
     donorCount: 312,
@@ -52,7 +52,7 @@ const seedProjects = [
       "Deploying autonomous ocean cleanup vessels in the North Pacific Gyre to remove plastic pollution. Collected plastic is recycled into construction materials for low-income housing.",
     category: "Ocean Conservation",
     location: "North Pacific Ocean",
-    walletAddress: "GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGLEWZE5BGYTG2XTGQBC3VP",
+    walletAddress: "GDNNXUMEULKSN4PL3VOAN7NNSNM3EKDVTNGX66OWM2E7UJKKVWCUN3GZ",
     goalXLM: "100000",
     raisedXLM: "31800",
     donorCount: 208,
@@ -71,7 +71,7 @@ const seedProjects = [
       "Drilling and maintaining clean water wells for rural communities in Mali and Niger, reducing the need to boil water over wood fires - saving forests and preventing CO2 emissions.",
     category: "Clean Water",
     location: "Mali & Niger, West Africa",
-    walletAddress: "GBSJ7KFU2NXACVHVN2VWIMFZQMQM4NJJ7NKFRRL2GWWI5EKWGYNIFZ7",
+    walletAddress: "GCN6GKDXSWIHQCKAPYKEHH7RTDK37R644343Y5B4WNURI33BBNEAC5VI",
     goalXLM: "30000",
     raisedXLM: "24100",
     donorCount: 186,
@@ -102,8 +102,8 @@ const seedJobs = [
     title: "Climate dashboard UI",
     description:
       "Build a responsive analytics dashboard for our NGO. Funds are held in escrow until you approve the delivered work.",
-    clientPublicKey: "GBVNQON4MFVGJXK5WT7VQJJZXFVHZJB6BHFWJCW7OF5BLNGOLZJQHIY",
-    freelancerPublicKey: "GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGLEWZE5BGYTG2XTGQBC3VP",
+    clientPublicKey: "GBVXTRL6NIEVEOJIFQCIDDUWCEXT6A5EAAN2S6SWJQRYKKR7D2S7YLBA",
+    freelancerPublicKey: "GDNNXUMEULKSN4PL3VOAN7NNSNM3EKDVTNGX66OWM2E7UJKKVWCUN3GZ",
     amountEscrowXlm: "50.0000000",
     status: "in_escrow",
     createdAt: new Date(now - 3 * 86400000).toISOString(),
@@ -111,6 +111,14 @@ const seedJobs = [
   },
 ];
 
+/**
+ * Badge thresholds in descending order of minimum XLM.
+ * Single source of truth for all backend services, projections, and aggregates.
+ *
+ * Parity with the Soroban smart contract constants in
+ * `contracts/greenpay-contract/src/lib.rs` (BADGE_THRESHOLD_*_XLM) is
+ * cross-validated by automated tests in `src/services/badgeCrossValidation.test.js`.
+ */
 const BADGE_THRESHOLDS = [
   { tier: "earth", min: 2000 },
   { tier: "forest", min: 500 },
@@ -118,6 +126,12 @@ const BADGE_THRESHOLDS = [
   { tier: "seedling", min: 10 },
 ];
 
+/**
+ * Compute badge tiers for a donor based on cumulative donated XLM.
+ *
+ * @param {number} totalXLM - Total donated XLM for the donor.
+ * @returns {Array<{tier:string,earnedAt:string}>} Array of earned badge objects (may be empty).
+ */
 function computeBadges(totalXLM) {
   const earned = [];
   for (const badge of BADGE_THRESHOLDS) {
@@ -128,14 +142,6 @@ function computeBadges(totalXLM) {
   }
   return earned;
 }
-
-/**
- * Compute badge tiers for a donor based on cumulative donated XLM.
- *
- * @param {number} totalXLM - Total donated XLM for the donor.
- * @returns {Array<{tier:string,earnedAt:string}>} Array of earned badge objects (may be empty).
- */
-// exported as `computeBadges`
 
 /**
  * Convert a value (date-like) to an ISO timestamp string or null.

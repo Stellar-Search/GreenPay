@@ -607,6 +607,17 @@
                     },
                     {
                       "key": {
+                        "symbol": "quorum_requirement"
+                      },
+                      "val": {
+                        "i128": {
+                          "hi": 0,
+                          "lo": 0
+                        }
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "snapshot_ledger"
                       },
                       "val": {
@@ -731,7 +742,7 @@
                             },
                             {
                               "key": {
-                                "symbol": "quorum"
+                                "symbol": "quorum_bps"
                               },
                               "val": {
                                 "i128": {
@@ -784,6 +795,21 @@
                         },
                         "val": {
                           "u64": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "TotalLocked"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "i128": {
+                            "hi": 0,
+                            "lo": 500000
+                          }
                         }
                       }
                     ]
@@ -1341,7 +1367,7 @@
                 },
                 {
                   "key": {
-                    "symbol": "quorum"
+                    "symbol": "quorum_bps"
                   },
                   "val": {
                     "i128": {
@@ -1727,7 +1753,7 @@
                 },
                 {
                   "key": {
-                    "symbol": "quorum"
+                    "symbol": "quorum_bps"
                   },
                   "val": {
                     "i128": {
@@ -1973,7 +1999,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'proposal not executable' from contract function 'Symbol(obj#509)'"
+                  "string": "caught panic 'proposal not executable' from contract function 'Symbol(obj#553)'"
                 },
                 {
                   "u64": 1

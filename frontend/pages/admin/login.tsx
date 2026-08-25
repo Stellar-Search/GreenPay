@@ -40,7 +40,7 @@ export default function AdminLogin() {
           <div>
             <label
               htmlFor="admin-username"
-              className="block text-xs font-bold text-forest-800 uppercase tracking-widest mb-1 ms-1 opacity-50"
+              className="block text-xs font-bold text-forest-800 uppercase tracking-widest mb-1 ms-1 opacity-75"
             >
               Username
             </label>
@@ -57,7 +57,7 @@ export default function AdminLogin() {
           <div>
             <label
               htmlFor="admin-password"
-              className="block text-xs font-bold text-forest-800 uppercase tracking-widest mb-1 ms-1 opacity-50"
+              className="block text-xs font-bold text-forest-800 uppercase tracking-widest mb-1 ms-1 opacity-75"
             >
               Password
             </label>

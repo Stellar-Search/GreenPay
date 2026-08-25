@@ -215,7 +215,7 @@ describe("env.js — Environment Variable Validation", () => {
       const fs = require("fs");
       const path = require("path");
 
-      const scriptPath = path.join(__dirname, "../../scripts/check-env-example.js");
+      const scriptPath = path.join(__dirname, "../../../scripts/check-env-example.js");
       expect(fs.existsSync(scriptPath)).toBe(true);
 
       const content = fs.readFileSync(scriptPath, "utf8");

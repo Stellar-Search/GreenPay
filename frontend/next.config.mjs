@@ -48,6 +48,11 @@ function buildStaticCsp(allowFraming = false) {
 
 const nextConfig = {
   reactStrictMode: true,
+  // Emit a self-contained `.next/standalone` server so the production image
+  // copies build artifacts instead of reinstalling dependencies, and so the
+  // container runs `node server.js` directly as PID 1 (SIGTERM from `docker
+  // stop` reaches the server, enabling a graceful shutdown).
+  output: 'standalone',
   // `intl-messageformat` (ICU plural/number formatting used by lib/i18n.tsx)
   // and its `@formatjs/*` dependencies ship ESM-only packages with no CJS
   // entry point. Next.js needs to know to run these through its own

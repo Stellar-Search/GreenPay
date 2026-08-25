@@ -12,9 +12,16 @@ const { createApiError } = require("../middleware/apiEnvelope");
 /**
  * POST /api/ratings
  * Submits a rating for a project.
- * Rate-limited per donor address to prevent review-bombing a single project.
+ * Rate-limited per donor address to prevent review-bombing a single project:
+ * a coarse per-IP floor plus the real per-wallet cap (a review bomb must now
+ * burn a new wallet per rating burst instead of just rotating IPs).
  */
-const ratingLimiter = require("../middleware/rateLimiter").createRateLimiter(5, 1, "rating-post");
+const ratingLimiter = require("../middleware/rateLimiter").createLayeredRateLimiter({
+  name: "rating-post",
+  windowMinutes: 1,
+  ip: 20,
+  wallet: 5,
+});
 
 router.post("/", ratingLimiter, async (req, res, next) => {
   try {

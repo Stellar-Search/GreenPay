@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const { randomBytes } = require("crypto");
 const {
+  Account,
   Address,
   Asset,
   Contract,
@@ -77,12 +78,37 @@ function isTransientRpcError(err) {
   );
 }
 
+// beforeAll submits several operations back-to-back from the same `admin`
+// keypair. Reloading the account from Horizon before every operation used to
+// race Horizon's own ledger ingestion: RPC (core) confirms a transaction as
+// final well before Horizon's separate ingestion pipeline reflects the
+// bumped sequence number in its account endpoint, so the very next
+// loadAccount() call could still return the *pre-submission* sequence and
+// build a transaction the network then rejects with txBadSeq. Tracking the
+// sequence locally per account — loaded from Horizon once, advanced only
+// after the network confirms each submission — sidesteps that lag entirely.
+const trackedAccounts = new Map();
+
+async function getTrackedAccount(source, horizon) {
+  const publicKey = source.publicKey();
+  if (!trackedAccounts.has(publicKey)) {
+    trackedAccounts.set(publicKey, await horizon.loadAccount(publicKey));
+  }
+  return trackedAccounts.get(publicKey);
+}
+
 async function submitContractOperation({ source, operation, horizon, rpcServer }, { maxAttempts = 5 } = {}) {
   let lastError;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
-      const account = await horizon.loadAccount(source.publicKey());
-      const transaction = new TransactionBuilder(account, {
+      const trackedAccount = await getTrackedAccount(source, horizon);
+      // Build from a snapshot of the tracked sequence rather than the
+      // tracked Account itself: TransactionBuilder.build() advances
+      // whatever account it's given, and a failed/retried attempt must not
+      // advance the persistent tracker — only a confirmed submission does,
+      // via trackedAccount.incrementSequenceNumber() below.
+      const attemptAccount = new Account(trackedAccount.accountId(), trackedAccount.sequenceNumber());
+      const transaction = new TransactionBuilder(attemptAccount, {
         fee: "100",
         networkPassphrase: NETWORK_PASSPHRASE,
       })
@@ -94,7 +120,12 @@ async function submitContractOperation({ source, operation, horizon, rpcServer }
       prepared.sign(source);
       const submission = await rpcServer.sendTransaction(prepared);
       if (submission.status === "ERROR") {
-        throw new Error(`[contract submission] RPC rejected ${submission.hash}: ${submission.errorResult?.toXDR("base64") || "unknown error"}`);
+        // errorResult is a parsed xdr.TransactionResult — decode its result
+        // code (e.g. "txBadSeq") rather than surfacing opaque base64, both
+        // for readable failures and so the retry check below can act on it.
+        const code = submission.errorResult?.result().switch().name;
+        const detail = code || submission.errorResult?.toXDR("base64") || "unknown error";
+        throw new Error(`[contract submission] RPC rejected ${submission.hash}: ${detail}`);
       }
 
       const result = await converge(
@@ -104,14 +135,24 @@ async function submitContractOperation({ source, operation, horizon, rpcServer }
         { timeoutMs: 20_000, intervalMs: 100 }
       );
       result.txHash = submission.hash;
+      trackedAccount.incrementSequenceNumber();
       return result;
     } catch (err) {
       lastError = err;
-      // Only retry on transient connectivity/availability errors — never on
-      // contract-logic rejections (those will fail identically on every retry).
-      if (!isTransientRpcError(err) || attempt === maxAttempts - 1) throw err;
+      const badSeq = /txBadSeq/i.test(err.message);
+      // A bad-sequence rejection means the tracked sequence itself has
+      // drifted from the network's view (e.g. an account was funded/used
+      // outside this helper) — the only way back in sync is to drop the
+      // cached account and reload it from Horizon on the next attempt.
+      if (badSeq) trackedAccounts.delete(source.publicKey());
+
+      // Only retry on transient connectivity/availability errors, or a bad
+      // sequence (self-correcting via the reload above) — never on genuine
+      // contract-logic rejections, which fail identically on every retry.
+      const retryable = isTransientRpcError(err) || badSeq;
+      if (!retryable || attempt === maxAttempts - 1) throw err;
       const delayMs = 1_000 * 2 ** attempt; // 1 s, 2 s, 4 s, 8 s
-      console.warn(`[contract submission] transient error on attempt ${attempt + 1}/${maxAttempts}, retrying in ${delayMs}ms: ${err.message}`);
+      console.warn(`[contract submission] ${badSeq ? "bad-seq" : "transient"} error on attempt ${attempt + 1}/${maxAttempts}, retrying in ${delayMs}ms: ${err.message}`);
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
   }
