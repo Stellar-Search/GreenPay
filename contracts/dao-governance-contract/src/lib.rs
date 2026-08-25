@@ -2510,9 +2510,11 @@ mod tests {
         assert!(snap1 > 0, "voter1 should have snapshot power");
         assert!(snap2 > 0, "voter2 should have snapshot power");
 
-        // Advance past voting period and finalize
-        let current = env.ledger().sequence();
-        env.ledger().set_sequence_number(current + VOTING_PERIOD + 1);
+        // Advance past the proposal's actual vote_end_ledger.
+        // Using the stored boundary avoids sequence drift assumptions in tests.
+        let voting_window = client.get_proposal(&pid);
+        env.ledger()
+            .set_sequence_number(voting_window.vote_end_ledger + 1);
         finalise(&client, pid);
 
         // After finalization, reading snapshot power should still work
@@ -2581,9 +2583,10 @@ mod tests {
         assert!(snap_for > 0);
         assert!(snap_against > 0);
 
-        // Advance and finalize (defeated because votes_against > votes_for)
-        let current = env.ledger().sequence();
-        env.ledger().set_sequence_number(current + VOTING_PERIOD + 1);
+        // Advance past the proposal's recorded voting boundary, then finalize.
+        let voting_window = client.get_proposal(&pid);
+        env.ledger()
+            .set_sequence_number(voting_window.vote_end_ledger + 1);
         finalise(&client, pid);
 
         // Verify proposal is defeated
