@@ -133,6 +133,40 @@ async function recordDonation(req, res, next) {
 
 router.post("/", donationLimiter, recordDonation);
 
+// GET /api/donations - fetch donations for backfill after reconnect
+router.get("/", async (req, res, next) => {
+  try {
+    const { since, projectId } = req.query;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
+
+    if (!since) {
+      throw createApiError(400, "SINCE_REQUIRED", "Query parameter 'since' is required");
+    }
+
+    if (!projectId) {
+      throw createApiError(400, "PROJECT_ID_REQUIRED", "Query parameter 'projectId' is required");
+    }
+
+    const sinceDate = new Date(since);
+    if (isNaN(sinceDate.getTime())) {
+      throw createApiError(400, "INVALID_TIMESTAMP", "Query parameter 'since' must be a valid ISO timestamp");
+    }
+
+    const result = await pool.query(
+      `SELECT * FROM donations
+       WHERE project_id = $1
+         AND created_at > $2::timestamptz
+       ORDER BY created_at ASC
+       LIMIT $3`,
+      [projectId, sinceDate.toISOString(), limit],
+    );
+
+    res.json(result.rows.map(publicDonationData));
+  } catch (e) {
+    next(e);
+  }
+});
+
 // GET /api/donations/project/:id
 router.get("/project/:projectId/messages", async (req, res, next) => {
   try {

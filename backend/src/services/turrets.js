@@ -32,6 +32,7 @@ const { Server, TransactionBuilder, Networks, Memo, Operation, Asset } = require
 const { v4: uuidv4 } = require("uuid");
 const pool = require("../db/pool");
 const { env } = require("../config/env");
+const {CircuitBreaker} = require("./circuitBreaker");
 
 // Network configuration
 const NETWORK = env.stellarNetwork;
@@ -172,14 +173,11 @@ async function matchDonationTxFunction(payment) {
         projectWallet: to,
         amount: matchAmount,
         originalTxHash: transaction_hash,
-        matchId: match.id,
-        projectId: project.id,
+        _matchId: match.id,
       });
 
       if (!matchResult.success) {
-        console.warn(
-          `Matching payment failed for match ${match.id}: ${matchResult.reason || matchResult.error}`
-        );
+        console.error(`Failed to submit matching payment for match ${match.id}: ${matchResult.error || matchResult.reason}`);
         continue;
       }
 
