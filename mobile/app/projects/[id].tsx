@@ -5,6 +5,7 @@
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
+import { useTheme } from '../theme';
 import { apiGet, API_URL, parseApiFetchResponse } from '../../utils/api';
 import { getPushToken, followProject, unfollowProject } from '../../utils/notifications';
 
