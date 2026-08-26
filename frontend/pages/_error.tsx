@@ -1,4 +1,5 @@
 import { NextPageContext } from "next";
+import Link from "next/link";
 
 function ErrorPage({ statusCode }: { statusCode?: number }) {
   return (
@@ -11,12 +12,12 @@ function ErrorPage({ statusCode }: { statusCode?: number }) {
           ? "The page you are looking for could not be found."
           : "A server-side error occurred while rendering this page."}
       </p>
-      <a
+      <Link
         href="/"
         className="px-6 py-3 bg-[#10B981] hover:bg-emerald-600 text-white font-semibold rounded-lg transition-colors"
       >
         Return to Home
-      </a>
+      </Link>
     </div>
   );
 }
