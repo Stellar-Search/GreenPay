@@ -1,4 +1,4 @@
-import { renderHook } from "@testing-library/react<<<<<<<";
+import { renderHook } from "@testing-library/react";
 import { EventEmitter } from "events";
 import { useDonationSocket, type DonationSocketPayload } from "../useDonationSocket";
 import { getSocket } from "@/lib/socket";
