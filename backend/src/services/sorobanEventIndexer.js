@@ -1,6 +1,7 @@
 "use strict";
 
 const { nativeToScVal, scValToNative } = require("@stellar/stellar-sdk");
+const { timeChainCall } = require("../utils/metrics");
 
 const DEFAULT_POLL_INTERVAL_MS = 500;
 const DONATED_TOPIC = nativeToScVal("donated", { type: "symbol" }).toXDR("base64");
@@ -81,7 +82,7 @@ class SorobanEventIndexer {
   }
 
   async pollOnce() {
-    const response = await this.rpcServer.getEvents(this.request());
+    const response = await timeChainCall("rpc_get_events", () => this.rpcServer.getEvents(this.request()));
     for (const event of response.events) {
       const donation = decodeDonationEvent(event);
       const handled = await this.handleDonation(donation.projectId, {
@@ -126,7 +127,7 @@ class SorobanEventIndexer {
     if (this.running) return;
     this.cursor = await this.loadCursor();
     if (!this.cursor) {
-      const latest = await this.rpcServer.getLatestLedger();
+      const latest = await timeChainCall("rpc_get_latest_ledger", () => this.rpcServer.getLatestLedger());
       this.startLedger = latest.sequence;
     }
     this.running = true;

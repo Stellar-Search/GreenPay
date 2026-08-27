@@ -11,6 +11,7 @@ const { DonationRecordedEvent, MatchAppliedEvent } = require("../eventSourcing/e
 const { stroopsToXlm, xlmToStroops } = require("../utils/xlm");
 const { SorobanEventIndexer } = require("./sorobanEventIndexer");
 const { publish } = require("../realtime");
+const { recordDonationOutcome, recordChainError } = require("../utils/metrics");
 
 let lastProcessedLedger = 0;
 let isRunning = false;
@@ -130,6 +131,7 @@ async function startIndexer(socketIo) {
       },
       onerror: (err) => {
         console.error("[Indexer] Stream error:", err);
+        recordChainError("horizon_stream");
       }
     });
 
@@ -183,6 +185,7 @@ async function handleDonation(projectId, op) {
       [txHash]
     );
     if (existingResult.rows.length > 0) {
+      recordDonationOutcome("duplicate");
       return true;
     }
 
@@ -255,10 +258,12 @@ async function handleDonation(projectId, op) {
         timestamp: new Date().toISOString()
       });
     }
+    recordDonationOutcome("success");
     return true;
   } catch (err) {
     if (inTransaction) await client.query("ROLLBACK");
     console.error("[Indexer] Failed to process donation:", err.message);
+    recordDonationOutcome("failure", "internal_error");
     return false;
   } finally {
     client.release();

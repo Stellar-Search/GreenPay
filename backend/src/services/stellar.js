@@ -6,6 +6,7 @@
 
 const { Horizon, Networks, rpc, Contract, TransactionBuilder, scValToNative } = require("@stellar/stellar-sdk");
 const { env } = require("../config/env");
+const { timeChainCall } = require("../utils/metrics");
 
 const NETWORK = env.stellarNetwork;
 const HORIZON_URL = env.horizonUrl;
@@ -29,7 +30,7 @@ async function getOnChainProject(projectId) {
 
   let result;
   try {
-    result = await rpcServer.simulateTransaction(tx);
+    result = await timeChainCall("rpc_simulate_transaction", () => rpcServer.simulateTransaction(tx));
   } catch {
     return null;
   }

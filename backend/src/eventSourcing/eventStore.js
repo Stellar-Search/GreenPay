@@ -4,6 +4,7 @@ const pool = require("../db/pool");
 const { dispatchToProjections } = require("./projections");
 const { buildStreamId } = require("./events");
 const { logger: rootLogger } = require("../utils/logger");
+const { setProjectionLagSeconds, setEventStoreBatchStats } = require("../utils/metrics");
 
 const logger = rootLogger.child({ service: "event-store" });
 
@@ -211,7 +212,13 @@ class EventStoreService {
 
     try {
       const batch = await this.getUnprocessed(limit);
-      if (batch.length === 0) return { processed: 0, failed: 0, total: 0, limit };
+      if (batch.length === 0) {
+        setProjectionLagSeconds(0);
+        return { processed: 0, failed: 0, total: 0, limit };
+      }
+      // Batch is ordered by occurred_at ASC, so the first row is the oldest
+      // unprocessed event — how far the read models are behind the write side.
+      setProjectionLagSeconds((Date.now() - new Date(batch[0].occurred_at).getTime()) / 1000);
 
       const { fromPayload } = require("./events");
       const processedIds = [];
@@ -276,6 +283,10 @@ class EventStoreService {
     }
 
     this.stats.currentBatchSize = this.batchSize;
+    setEventStoreBatchStats({
+      batchSize: this.batchSize,
+      consecutiveSaturated: this.stats.consecutiveSaturated,
+    });
     return this.batchSize;
   }
 

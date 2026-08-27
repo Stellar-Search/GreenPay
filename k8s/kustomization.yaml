@@ -31,3 +31,7 @@ components:
   # Deploy the custom scheduler infrastructure.
   # Apply separately with: kubectl apply -k k8s/scheduler/
   # Listed here for documentation; exclude from base apply if not yet deployed.
+  #
+  # ServiceMonitors and alert rules for the backend's /metrics endpoint.
+  # Requires the Prometheus Operator CRDs. Apply separately with:
+  # kubectl apply -k k8s/monitoring/

@@ -1,0 +1,58 @@
+# Requires the Prometheus Operator CRDs (ServiceMonitor, PrometheusRule) to
+# already be installed in-cluster — the same kube-prometheus-stack that backs
+# http://prometheus.monitoring.svc.cluster.local:9090, which k8s/backend.yaml's
+# Argo Rollout AnalysisTemplates (backend-error-rate, backend-latency) already
+# query. Kept out of the base kustomization.yaml (same convention as
+# k8s/scheduler/) so a cluster without the operator installed can still
+# `kubectl apply -k k8s/` cleanly. Apply with: kubectl apply -k k8s/monitoring/
+#
+# Two ServiceMonitors, not one, because the canary AnalysisTemplates key their
+# queries on a `service` label carrying the full Service DNS name
+# (e.g. "backend-canary.greenpay.svc.cluster.local") to tell stable and canary
+# traffic apart. The application has no way to know which Service a request
+# arrived through, so that label is injected here, at scrape time, per target.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: backend-stable
+  namespace: greenpay
+  labels:
+    app: backend
+spec:
+  selector:
+    matchLabels:
+      app: backend
+      role: stable
+  namespaceSelector:
+    matchNames: ["greenpay"]
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+      relabelings:
+        - targetLabel: service
+          replacement: backend-stable.greenpay.svc.cluster.local
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: backend-canary
+  namespace: greenpay
+  labels:
+    app: backend
+spec:
+  selector:
+    matchLabels:
+      app: backend
+      role: canary
+  namespaceSelector:
+    matchNames: ["greenpay"]
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+      relabelings:
+        - targetLabel: service
+          replacement: backend-canary.greenpay.svc.cluster.local

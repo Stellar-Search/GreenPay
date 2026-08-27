@@ -24,6 +24,7 @@ const { initializeEventSourcing, shutdownEventSourcing } = require("./eventSourc
 const pool = require("./db/pool");
 const { createShutdownHandler } = require("./shutdown");
 const { logger } = require("./utils/logger");
+const metrics = require("./utils/metrics");
 
 const app = express();
 const server = http.createServer(app);
@@ -73,6 +74,7 @@ app.use((req, _res, next) => {
   logger.info({ msg: "request", method: req.method, path: req.path });
   next();
 });
+app.use(metrics.httpMetricsMiddleware);
 
 app.use(express.json({ limit: "20kb" }));
 app.use(cookieParser());
@@ -122,6 +124,10 @@ app.get(`${API_V1}/csrf-token`, (req, res) => {
 });
 
 app.get("/livez", (req, res) => res.json({ status: "ok" }));
+app.get("/metrics", async (req, res) => {
+  res.set("Content-Type", metrics.register.contentType);
+  res.end(await metrics.register.metrics());
+});
 app.use("/health",                  require("./routes/health"));
 app.use(`${API_V1}/projects`,       require("./routes/projects"));
 app.use(`${API_V1}/donations`,      require("./routes/donations"));
