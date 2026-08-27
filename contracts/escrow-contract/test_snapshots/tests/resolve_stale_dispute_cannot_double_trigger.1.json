@@ -384,7 +384,7 @@
                               "val": {
                                 "vec": [
                                   {
-                                    "symbol": "Refunded"
+                                    "symbol": "SplitResolved"
                                   }
                                 ]
                               }
@@ -1959,7 +1959,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Job is not disputed' from contract function 'Symbol(obj#637)'"
+                  "string": "caught panic 'Job is not disputed' from contract function 'Symbol(obj#639)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"

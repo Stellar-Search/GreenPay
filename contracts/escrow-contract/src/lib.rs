@@ -36,6 +36,7 @@ pub enum JobStatus {
     Released,
     Disputed,
     Refunded,
+    SplitResolved,
 }
 
 #[contracttype]
@@ -371,7 +372,7 @@ impl EscrowContract {
             .get(&DataKey::Job(job_id.clone()))
             .expect("Job not found");
 
-        // Checks
+        // 1. Checks
         if caller != job.client && caller != job.freelancer {
             panic!("Only the client or freelancer can trigger the fallback");
         }
@@ -382,23 +383,28 @@ impl EscrowContract {
             panic!("Dispute has not timed out yet");
         }
 
-        // Effects: commit all state before any token transfer (CEI).
+        // 2. Effects
         let remaining = job.remaining_amount;
         let freelancer_share = remaining / 2;
         let client_share = remaining
             .checked_sub(freelancer_share)
             .expect("Share arithmetic underflow");
+
         job.remaining_amount = 0;
-        job.status = JobStatus::Refunded;
+        job.status = JobStatus::SplitResolved;
+
         let client_addr = job.client.clone();
         let freelancer_addr = job.freelancer.clone();
+        let token_addr = job.token.clone();
+
         env.storage()
             .instance()
             .set(&DataKey::Job(job_id.clone()), &job);
 
-        // Interaction: token transfers last.
-        let token_client = token::Client::new(&env, &job.token);
+        // 3. Interactions
+        let token_client = token::Client::new(&env, &token_addr);
         let contract_addr = env.current_contract_address();
+
         if freelancer_share > 0 {
             token_client.transfer(&contract_addr, &freelancer_addr, &freelancer_share);
         }
@@ -406,6 +412,7 @@ impl EscrowContract {
             token_client.transfer(&contract_addr, &client_addr, &client_share);
         }
 
+        // 4. Events
         env.events().publish(
             (symbol_short!("stale_res"), caller),
             (job_id, freelancer_share, client_share),
@@ -1051,7 +1058,7 @@ mod tests {
         contract.resolve_stale_dispute(&client, &job_id);
 
         let job = contract.get_job(&job_id).unwrap();
-        assert_eq!(job.status, JobStatus::Refunded);
+        assert_eq!(job.status, JobStatus::SplitResolved);
         assert_eq!(job.remaining_amount, 0);
 
         let token_client = token::Client::new(&env, &token);
@@ -1074,7 +1081,7 @@ mod tests {
         contract.resolve_stale_dispute(&freelancer, &job_id);
 
         let job = contract.get_job(&job_id).unwrap();
-        assert_eq!(job.status, JobStatus::Refunded);
+        assert_eq!(job.status, JobStatus::SplitResolved);
         assert_eq!(job.remaining_amount, 0);
 
         let token_client = token::Client::new(&env, &token);
@@ -1213,7 +1220,7 @@ mod tests {
 
         let job = contract.get_job(&job_id).unwrap();
         assert_eq!(job.remaining_amount, 0);
-        assert_eq!(job.status, JobStatus::Refunded);
+        assert_eq!(job.status, JobStatus::SplitResolved);
     }
 
     // -------------------------------------------------------------------------
