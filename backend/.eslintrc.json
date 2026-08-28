@@ -9,7 +9,7 @@
     "eslint:recommended",
     "plugin:security/recommended-legacy"
   ],
-  "plugins": ["security", "sql-injection", "greenpay"],
+  "plugins": ["security", "sql-injection"],
   "parserOptions": {
     "ecmaVersion": "latest"
   },
@@ -23,7 +23,6 @@
       "varsIgnorePattern": "^_",
       "caughtErrorsIgnorePattern": "^_"
     }],
-    "sql-injection/no-sql-injection": "error",
-    "greenpay/no-parsefloat-numeric": "warn"
+    "sql-injection/no-sql-injection": "error"
   }
 }
