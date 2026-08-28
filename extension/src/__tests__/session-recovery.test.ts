@@ -8,7 +8,7 @@ import {
   type StorageArea,
 } from '../session-state';
 
-const PUBLIC_KEY = `G${'A'.repeat(55)}`;
+const PUBLIC_KEY = 'GCFANSV7I32AGAS5N4EJEZRZCRGNDH32QDHP3A3BWFV66A7BK5PYTUUS';
 const PROJECT = {
   id: 'project-1',
   name: 'Ocean Cleanup',
@@ -175,8 +175,8 @@ describe('MV3 session recovery', () => {
     const localStorage = new DelayedStorage(5);
     const worker = new WorkerSessionState(sessionStorage, localStorage, () => 50_000, 'worker-concurrent');
 
-    const keyA = `G${'A'.repeat(55)}`;
-    const keyB = `G${'B'.repeat(55)}`;
+    const keyA = 'GAWKY7ZX22TL2W76ZKQZB3ZEY45TGX5IIJ6J5NRXMJUSBIMGJ5XA7A7E';
+    const keyB = 'GD6WVRNDXCRGCYWEAZA2QJ333Y2U6NUKRCHV64NIDQJKSJOP655F5Z2C';
 
     // Interleave setWallet(A) then clearWallet() concurrently
     const [walletA] = await Promise.all([
