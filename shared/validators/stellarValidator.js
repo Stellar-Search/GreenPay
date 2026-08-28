@@ -5,6 +5,7 @@ const { StrKey } = require('@stellar/stellar-sdk');
  * Derived from shared/rules/validation.json definitions.
  */
 function isValidStellarAddress(address) {
+  if (typeof address !== 'string') return false;
   try {
     return StrKey.isValidEd25519PublicKey(address);
   } catch (err) {
