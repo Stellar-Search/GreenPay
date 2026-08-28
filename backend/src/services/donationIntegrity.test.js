@@ -11,9 +11,10 @@ const {
   _test,
 } = require("./donationIntegrity");
 
+const { Keypair } = require("@stellar/stellar-sdk");
 const PROJECT_ID = "11111111-1111-4111-8111-111111111111";
-const DONOR = "G" + "A".repeat(55);
-const DESTINATION = "G" + "B".repeat(55);
+const DONOR = Keypair.random().publicKey();
+const DESTINATION = Keypair.random().publicKey();
 
 function observation(overrides = {}) {
   return {
@@ -102,7 +103,7 @@ describe("donation integrity scoring", () => {
   test("scores a bounded circular path with depth in its review evidence", async () => {
     const { db } = scoringDb({
       circular: {
-        path: [DESTINATION, "G" + "C".repeat(55), DONOR],
+        path: [DESTINATION, Keypair.random().publicKey(), DONOR],
         depth: 2,
         first_seen: new Date("2026-08-28T09:00:00Z"),
         last_seen: new Date("2026-08-28T09:05:00Z"),
