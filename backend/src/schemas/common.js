@@ -10,7 +10,7 @@
 
 const { z } = require("zod");
 
-const { isValidStellarAddress } = require('../../../shared/validators/stellarValidator');
+const { isValidStellarAddress } = require("../../../shared/validators/stellarValidator");
 
 const STELLAR_PUBLIC_KEY = /^G[A-Z0-9]{55}$/; // Legacy export maintained for compatibility
 const TRANSACTION_HASH = /^[a-fA-F0-9]{64}$/;
