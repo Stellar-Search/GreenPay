@@ -7,7 +7,8 @@
   },
   "extends": [
     "eslint:recommended",
-    "plugin:security/recommended-legacy"
+    "plugin:security/recommended-legacy",
+    "plugin:greenpay/recommended"
   ],
   "plugins": ["security", "sql-injection", "greenpay"],
   "parserOptions": {
@@ -23,7 +24,6 @@
       "varsIgnorePattern": "^_",
       "caughtErrorsIgnorePattern": "^_"
     }],
-    "sql-injection/no-sql-injection": "error",
-    "greenpay/no-parsefloat-numeric": "warn"
+    "sql-injection/no-sql-injection": "error"
   }
 }

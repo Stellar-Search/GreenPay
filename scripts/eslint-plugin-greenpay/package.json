@@ -2,5 +2,11 @@
   "name": "eslint-plugin-greenpay",
   "version": "1.0.0",
   "main": "index.js",
-  "dependencies": {}
+  "scripts": {
+    "test": "node --test tests/"
+  },
+  "dependencies": {},
+  "peerDependencies": {
+    "eslint": ">=8.0.0"
+  }
 }
