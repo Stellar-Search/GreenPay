@@ -21,6 +21,7 @@ const {
   ReleaseEscrowCommand,
   CreateMatchOfferCommand,
 } = require("./commands");
+const { Keypair } = require("@stellar/stellar-sdk");
 const { ProjectAggregate } = require("./aggregates");
 
 const _keys = Array.from({ length: 26 }, () => Keypair.random().publicKey());
