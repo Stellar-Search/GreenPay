@@ -128,6 +128,9 @@ jobs:
       - uses: ./.github/actions/setup-node-install
         with:
           working-directory: backend
+      - name: Install shared dependencies
+        run: npm install
+        working-directory: shared
       - name: npm audit (fail on high/critical)
         run: npx --yes audit-ci@7.1.0 --high --package-manager npm
       - name: OpenAPI compatibility (published v1 baseline)
