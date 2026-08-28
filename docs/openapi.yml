@@ -58,6 +58,7 @@ tags:
   - name: Jobs
   - name: Stats
   - name: Impact
+  - name: Integrity
   - name: Ratings
   - name: Admin
   - name: Onboarding
@@ -706,6 +707,52 @@ components:
             cursor-paginated endpoints.
           deprecated: true
 
+    IntegritySignal:
+      type: object
+      required: [type, confidence, evidence]
+      properties:
+        type:
+          type: string
+          enum: [self_donation, circular_flow, rapid_repeat_pair]
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        evidence:
+          type: object
+          additionalProperties: true
+
+    IntegrityAssessment:
+      type: object
+      required: [id, transaction_hash, project_id, donor_address, confidence_score, review_status]
+      properties:
+        id: { type: string, format: uuid }
+        transaction_hash: { type: string }
+        project_id: { type: string, format: uuid }
+        donor_address: { type: string }
+        amount_xlm: { type: string }
+        observed_source:
+          type: string
+          enum: [api, indexer_horizon, indexer_soroban, historical_replay]
+        confidence_score: { type: number, minimum: 0, maximum: 1 }
+        review_status:
+          type: string
+          enum: [monitoring, pending_review, confirmed, dismissed, appealed]
+        exclude_from_leaderboard: { type: boolean }
+        exclude_from_displayed_totals: { type: boolean }
+        exclude_from_impact_figures: { type: boolean }
+        signals:
+          type: array
+          items: { $ref: '#/components/schemas/IntegritySignal' }
+
+    IntegrityEvaluation:
+      type: object
+      required: [totalLabels, falsePositiveRate, recall, enforcementReady]
+      properties:
+        totalLabels: { type: integer }
+        positiveLabels: { type: integer }
+        negativeLabels: { type: integer }
+        falsePositiveRate: { type: number, nullable: true }
+        recall: { type: number, nullable: true }
+        enforcementReady: { type: boolean }
+
   securitySchemes:
     bearerAuth:
       type: http
@@ -811,6 +858,12 @@ components:
             $ref: '#/components/schemas/Error'
     Unauthorized:
       description: Authentication is missing, expired, or invalid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: The requested resource was not found.
       content:
         application/json:
           schema:
@@ -3486,3 +3539,256 @@ paths:
           description: One of the two signatures did not verify
         '409':
           description: The challenge expired or is already closed
+
+  /api/v1/integrity/policy:
+    get:
+      tags: [Integrity]
+      summary: Public donation-integrity policy position
+      responses:
+        '200':
+          description: Signal categories, disclosure position, enforcement surfaces, and appeal process
+
+  /api/v1/integrity/status:
+    get:
+      tags: [Integrity]
+      summary: Read detector worker, queue, and enforcement status
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Current integrity pipeline status }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/integrity/relationships:
+    post:
+      tags: [Integrity]
+      summary: Record an evidence-backed project wallet relationship
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [projectId, walletAddress, relationshipType, evidenceSummary]
+              properties:
+                projectId: { type: string, format: uuid }
+                walletAddress: { type: string }
+                relationshipType:
+                  type: string
+                  enum: [owner, operator, treasury, beneficiary, declared_related]
+                confidence: { type: number, minimum: 0.5, maximum: 1 }
+                evidenceSummary: { type: string, minLength: 10, maxLength: 1000 }
+      responses:
+        '201': { description: Relationship recorded with reviewer provenance }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/integrity/reviews:
+    get:
+      tags: [Integrity]
+      summary: List the private human-review queue
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [monitoring, pending_review, confirmed, dismissed, appealed]
+            default: pending_review
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        '200':
+          description: Confidence-ordered assessments with signal evidence
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/integrity/reviews/{reviewId}:
+    get:
+      tags: [Integrity]
+      summary: Read an assessment, signals, immutable events, and appeals
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: reviewId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: Full private review record }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/integrity/reviews/{reviewId}/decision:
+    post:
+      tags: [Integrity]
+      summary: Confirm or dismiss an integrity review
+      description: A confirmation applies exclusions only when the labelled-set enforcement gate is enabled.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: reviewId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action, reason]
+              properties:
+                action: { type: string, enum: [confirm, dismiss] }
+                reason: { type: string, minLength: 20, maxLength: 2000 }
+      responses:
+        '200':
+          description: Reasoned human decision and separate surface flags
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IntegrityAssessment' }
+        '409': { description: Review already decided }
+
+  /api/v1/integrity/reviews/{reviewId}/appeal-challenge:
+    post:
+      tags: [Integrity]
+      summary: Request a one-time appeal challenge for an affected wallet
+      parameters:
+        - in: path
+          name: reviewId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [walletAddress]
+              properties:
+                walletAddress: { type: string }
+      responses:
+        '201': { description: Ten-minute challenge text to sign }
+        '403': { description: Wallet is not an affected party }
+
+  /api/v1/integrity/reviews/{reviewId}/appeals:
+    post:
+      tags: [Integrity]
+      summary: Submit a signed appeal and suspend exclusions
+      parameters:
+        - in: path
+          name: reviewId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challengeId, signature, reason]
+              properties:
+                challengeId: { type: string, format: uuid }
+                signature: { type: string }
+                reason: { type: string, minLength: 20, maxLength: 2000 }
+      responses:
+        '201': { description: Appeal queued for an independent reviewer }
+        '403': { description: Wallet signature did not verify }
+        '409': { description: 'Challenge expired, used, or case not appealable' }
+
+  /api/v1/integrity/appeals:
+    get:
+      tags: [Integrity]
+      summary: List pending integrity appeals
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Oldest pending appeals first }
+
+  /api/v1/integrity/appeals/{appealId}/decision:
+    post:
+      tags: [Integrity]
+      summary: Grant or deny an appeal as an independent reviewer
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: appealId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [outcome, reason]
+              properties:
+                outcome: { type: string, enum: [grant, deny] }
+                reason: { type: string, minLength: 20, maxLength: 2000 }
+      responses:
+        '200': { description: Independent appeal decision recorded }
+        '409': { description: Original reviewer attempted to decide the appeal }
+
+  /api/v1/integrity/reviews/{reviewId}/label:
+    post:
+      tags: [Integrity]
+      summary: Add an independently reviewed labelled-set value
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: reviewId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label, rationale]
+              properties:
+                label: { type: string, enum: [legitimate, confirmed_abuse, uncertain] }
+                rationale: { type: string, minLength: 20, maxLength: 2000 }
+      responses:
+        '200': { description: Label recorded for evaluation }
+
+  /api/v1/integrity/evaluation:
+    get:
+      tags: [Integrity]
+      summary: Measure false-positive rate and recall against the labelled set
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Current evaluation and enforcement-readiness result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IntegrityEvaluation' }
+
+  /api/v1/integrity/enforcement/enable:
+    post:
+      tags: [Integrity]
+      summary: Enable confirmed-case exclusions after the evaluation gate passes
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 20, maxLength: 2000 }
+      responses:
+        '200': { description: Enforcement enabled with evaluation snapshot }
+        '409': { description: Labelled-set gate not met }
+
+  /api/v1/integrity/enforcement/disable:
+    post:
+      tags: [Integrity]
+      summary: Immediately disable confirmed-case exclusions
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 20, maxLength: 2000 }
+      responses:
+        '200': { description: Enforcement disabled without deleting cases or gross accounting }

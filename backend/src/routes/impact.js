@@ -25,6 +25,7 @@ const {
   hashAttestationPayload,
   mapClaimRow,
 } = require("../services/impactClaims");
+const { observedDonationsCte } = require("../services/donationIntegrity");
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const HASH_PATTERN = /^[0-9a-f]{64}$/;
@@ -107,7 +108,7 @@ function clearImpactCache() {
   cache.clear();
 }
 
-const PUBLIC_CLAIMS_QUERY = `
+const PUBLIC_CLAIMS_QUERY = `WITH ${observedDonationsCte("impactFigures")}
   SELECT
     c.*,
     c.status AS claim_status,
@@ -162,10 +163,9 @@ const PUBLIC_CLAIMS_QUERY = `
   WHERE ($1::uuid IS NULL OR c.project_id = $1::uuid)
     AND ($2::text IS NULL OR EXISTS (
       SELECT 1
-      FROM donations d
+      FROM surface_donations d
       WHERE d.project_id = c.project_id
         AND d.donor_address = $2::text
-        AND d.status = 'committed'
     ))
     AND ($3::uuid IS NULL OR c.id = $3::uuid)
   ORDER BY c.asserted_at DESC, c.id ASC`;
@@ -257,11 +257,11 @@ router.get("/project/:id", async (req, res, next) => {
       throw createApiError(404, "PROJECT_NOT_FOUND", "Project not found");
     }
     const donationsResult = await pool.query(
-      `SELECT COALESCE(SUM(d.amount_xlm), 0) AS "totalDonationsXLM",
+      `WITH ${observedDonationsCte("displayedTotals")}
+       SELECT COALESCE(SUM(d.amount_xlm), 0) AS "totalDonationsXLM",
               COUNT(DISTINCT d.donor_address)::int AS "donorCount"
-         FROM donations d
+         FROM surface_donations d
         WHERE d.project_id = $1
-          AND d.status = 'committed'
           AND (d.currency = 'XLM' OR d.currency IS NULL)`,
       [req.params.id],
     );
@@ -288,20 +288,20 @@ router.get("/global", async (_req, res, next) => {
     if (hit) return res.json(hit);
 
     const totalsResult = await pool.query(
-      `SELECT COALESCE(SUM(d.amount_xlm), 0) AS "totalDonationsXLM",
+      `WITH ${observedDonationsCte("displayedTotals")}
+       SELECT COALESCE(SUM(d.amount_xlm), 0) AS "totalDonationsXLM",
               COUNT(DISTINCT d.donor_address)::int AS "donorCount"
-         FROM donations d
-        WHERE d.status = 'committed'
-          AND (d.currency = 'XLM' OR d.currency IS NULL)`,
+         FROM surface_donations d
+        WHERE (d.currency = 'XLM' OR d.currency IS NULL)`,
     );
     const breakdownResult = await pool.query(
-      `SELECT p.category,
+      `WITH ${observedDonationsCte("displayedTotals")}
+       SELECT p.category,
               COALESCE(SUM(d.amount_xlm), 0) AS "totalDonationsXLM",
               COUNT(DISTINCT d.donor_address)::int AS "donorCount"
-         FROM donations d
+         FROM surface_donations d
          JOIN projects p ON p.id = d.project_id
-        WHERE d.status = 'committed'
-          AND (d.currency = 'XLM' OR d.currency IS NULL)
+        WHERE (d.currency = 'XLM' OR d.currency IS NULL)
         GROUP BY p.category
         ORDER BY "totalDonationsXLM" DESC, p.category ASC`,
     );
@@ -343,20 +343,20 @@ router.get("/donor/:publicKey", async (req, res, next) => {
     if (hit) return res.json(hit);
 
     const totalsResult = await pool.query(
-      `SELECT COALESCE(SUM(d.amount_xlm), 0) AS "totalDonatedXLM",
+      `WITH ${observedDonationsCte("impactFigures")}
+       SELECT COALESCE(SUM(d.amount_xlm), 0) AS "totalDonatedXLM",
               COUNT(DISTINCT d.project_id)::int AS "projectsSupported"
-         FROM donations d
+         FROM surface_donations d
         WHERE d.donor_address = $1
-          AND d.status = 'committed'
           AND (d.currency = 'XLM' OR d.currency IS NULL)`,
       [req.params.publicKey],
     );
     const topCategoryResult = await pool.query(
-      `SELECT p.category, COALESCE(SUM(d.amount_xlm), 0) AS total
-         FROM donations d
+      `WITH ${observedDonationsCte("impactFigures")}
+       SELECT p.category, COALESCE(SUM(d.amount_xlm), 0) AS total
+         FROM surface_donations d
          JOIN projects p ON p.id = d.project_id
         WHERE d.donor_address = $1
-          AND d.status = 'committed'
           AND (d.currency = 'XLM' OR d.currency IS NULL)
         GROUP BY p.category
         ORDER BY total DESC

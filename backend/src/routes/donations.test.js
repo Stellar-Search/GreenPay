@@ -22,6 +22,9 @@ jest.mock("../middleware/rateLimiter", () => ({
   createRateLimiter: () => (req, res, next) => next(),
   createLayeredRateLimiter: () => (req, res, next) => next(),
 }));
+jest.mock("../services/donationIntegrity", () => ({
+  queueDonationAssessment: jest.fn().mockResolvedValue({}),
+}));
 
 const pool = require("../db/pool");
 const { execute, DonationReplayConflictError } = require("../eventSourcing/commandBus");

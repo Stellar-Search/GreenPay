@@ -33,6 +33,7 @@ const donationLimiter = createLayeredRateLimiter({
 const { execute, DonationReplayConflictError } = require("../eventSourcing/commandBus");
 const { DonationRecordedEvent, MatchAppliedEvent } = require("../eventSourcing/events"); // 10 requests per minute
 const { logger: rootLogger } = require("../utils/logger");
+const { queueDonationAssessment } = require("../services/donationIntegrity");
 
 const logger = rootLogger.child({ service: "donations-route" });
 
@@ -122,7 +123,7 @@ async function recordDonation(req, res, next) {
     });
 
     const projectResult = await pool.query(
-      "SELECT id, verified FROM projects WHERE id = $1",
+      "SELECT id, verified, wallet_address FROM projects WHERE id = $1",
       [projectId],
     );
     if (!projectResult.rows[0]) {
@@ -170,6 +171,17 @@ async function recordDonation(req, res, next) {
       }
       throw err;
     }
+
+    await queueDonationAssessment(pool, {
+      transactionHash,
+      projectId,
+      donorAddress,
+      destinationAddress: projectResult.rows[0].wallet_address,
+      amountXlm: amountXLM ?? amount,
+      observedSource: "api",
+    }).catch((error) => {
+      logger.warn({ msg: "integrity assessment enqueue failed", transactionHash, error: error.message });
+    });
 
     if (result.deduplicated) {
       logger.info({ msg: "donation deduplicated", transactionHash });

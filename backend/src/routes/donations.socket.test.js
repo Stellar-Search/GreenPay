@@ -18,6 +18,9 @@ jest.mock("../middleware/rateLimiter", () => ({
   createRateLimiter: () => (req, res, next) => next(),
   createLayeredRateLimiter: () => (req, res, next) => next(),
 }));
+jest.mock("../services/donationIntegrity", () => ({
+  queueDonationAssessment: jest.fn().mockResolvedValue({}),
+}));
 
 const http = require("http");
 const express = require("express");
