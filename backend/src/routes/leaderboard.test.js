@@ -85,7 +85,8 @@ describe("GET /api/leaderboard", () => {
 
       const [sql, params] = pool.query.mock.calls[0];
       expect(sql).toMatch(/FROM donor_stats/);
-      expect(sql).toMatch(/ROW_NUMBER\(\) OVER \(ORDER BY ds\.total_donated_xlm DESC, ds\.public_key ASC\)/);
+      expect(sql).toMatch(/GREATEST\(ds\.total_donated_xlm - COALESCE\(ia\.excluded_xlm, 0\), 0\)/);
+      expect(sql).toMatch(/exclude_from_leaderboard = TRUE/);
       expect(params).toEqual([11]);
       expect(pool.query.mock.calls[1][0]).toMatch(/FROM donor_stats/);
     });
@@ -139,7 +140,8 @@ describe("GET /api/leaderboard", () => {
       expect(res.body.data[0]).toMatchObject({ rank: 2, publicKey: "GDONOR2AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" });
 
       const [sql, params] = pool.query.mock.calls[0];
-      expect(sql).toMatch(/LEFT JOIN donations d/);
+      expect(sql).toMatch(/LEFT JOIN surface_donations d/);
+      expect(sql).toMatch(/event_type = 'DonationRecorded'/);
       expect(sql).toMatch(/ROW_NUMBER\(\) OVER \(\s*ORDER BY COALESCE\(SUM\(d\.amount_xlm\), 0\) DESC, p\.public_key ASC\s*\)/);
       // The window is bound as a parameter rather than interpolated, so the
       // interval literal appears in the values array, not the SQL text.

@@ -11,6 +11,14 @@ const { DonationRecordedEvent, MatchAppliedEvent } = require("../eventSourcing/e
 const { stroopsToXlm, xlmToStroops } = require("../utils/xlm");
 const { SorobanEventIndexer } = require("./sorobanEventIndexer");
 const { publish } = require("../realtime");
+const {
+  queueDonationAssessment,
+  observeNativePayment,
+  refreshIntegrityWatchlist,
+  startIntegrityWorker,
+  stopIntegrityWorker,
+  getIntegrityWorkerStatus,
+} = require("./donationIntegrity");
 
 let lastProcessedLedger = 0;
 let isRunning = false;
@@ -94,6 +102,8 @@ async function startIndexer(socketIo) {
   io = socketIo;
 
   await updateProjectWallets();
+  await refreshIntegrityWatchlist();
+  startIntegrityWorker();
   // Refresh cache every 10 minutes
   refreshIntervalId = setInterval(updateProjectWallets, 10 * 60 * 1000);
 
@@ -117,8 +127,13 @@ async function startIndexer(socketIo) {
         try {
           lastProcessedLedger = op.ledger_attr;
 
-          // We only care about XLM payments
+          // Integrity flow observation runs for every native payment adjacent
+          // to a controlled or watched address. Donation handling remains
+          // limited to transfers whose destination is an active project.
           if (op.type === "payment" && op.asset_type === "native") {
+            await observeNativePayment(op).catch((error) => {
+              console.error("[Indexer] Failed to record integrity flow:", error.message);
+            });
             const projectId = projectWallets.get(op.to);
             if (projectId) {
               await handleDonation(projectId, op);
@@ -177,12 +192,22 @@ async function handleDonation(projectId, op) {
 
   try {
     const existingResult = await client.query(
-      `SELECT event_id FROM event_stream
+      `SELECT event_id, payload, occurred_at FROM event_stream
        WHERE event_type = 'DonationRecorded'
          AND payload->'data'->>'transactionHash' = $1`,
       [txHash]
     );
     if (existingResult.rows.length > 0) {
+      await queueDonationAssessment(client, {
+        transactionHash: txHash,
+        projectId,
+        donorAddress,
+        destinationAddress: op.to || null,
+        amountXlm: amountXLM,
+        observedSource: op.integrity_source || "indexer_horizon",
+        ledger: op.ledger_attr || null,
+        observedAt: op.created_at || existingResult.rows[0].occurred_at || null,
+      });
       return true;
     }
 
@@ -235,6 +260,17 @@ async function handleDonation(projectId, op) {
         }
       }
     }
+
+    await queueDonationAssessment(client, {
+      transactionHash: txHash,
+      projectId,
+      donorAddress,
+      destinationAddress: op.to || null,
+      amountXlm: amountXLM,
+      observedSource: op.integrity_source || "indexer_horizon",
+      ledger: op.ledger_attr || null,
+      observedAt: op.created_at || null,
+    });
 
     await client.query("COMMIT");
     inTransaction = false;
@@ -293,6 +329,7 @@ async function stopIndexer() {
     await sorobanEventIndexer.stop();
     sorobanEventIndexer = null;
   }
+  stopIntegrityWorker();
 
   isRunning = false;
   console.log("[Indexer] Stopped");
@@ -306,6 +343,7 @@ function getStatus() {
     isRunning,
     lastProcessedLedger,
     projectWalletsCount: projectWallets.size,
+    integrity: getIntegrityWorkerStatus(),
     soroban: sorobanEventIndexer?.getStatus() || null,
     timestamp: new Date().toISOString()
   };

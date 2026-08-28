@@ -150,6 +150,7 @@ mountApiVersion(app, "v1", [
   { path: "/jobs", router: require("./routes/jobs") },
   { path: "/stats", router: require("./routes/stats") },
   { path: "/impact", router: require("./routes/impact") },
+  { path: "/integrity", router: require("./routes/integrity") },
   { path: "/ratings", router: require("./routes/ratings") },
   { path: "/notifications", router: require("./routes/notifications") },
   { path: "/admin", router: require("./routes/admin") },

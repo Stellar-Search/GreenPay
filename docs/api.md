@@ -117,6 +117,9 @@ Donations are **deduplicated by transactionHash** — safe to retry.
 |--------|----------|-------------|
 | GET | `/api/v1/leaderboard` | Top donors by total XLM (`?limit=20`) |
 
+Leaderboard totals and displayed badges use the confirmed-only integrity
+surface. A detector signal alone does not change rank or account state.
+
 ### Leaderboard entry
 ```json
 {
@@ -154,6 +157,38 @@ An impact claim includes a quantity range, unit, claim type, methodology,
 measurement period, vintage, baseline, uncertainty/confidence, asserting party,
 evidence and provenance. `avoided_emissions`, `sequestration` and `offset` are
 never combined. See [impact accounting](impact-accounting.md).
+
+Confirmed integrity cases are excluded separately from displayed funding totals
+and impact-supporting donation facts. Gross event-store accounting remains
+immutable.
+
+---
+
+## Donation integrity
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/integrity/policy` | Public signal, disclosure, enforcement, and appeal position |
+| GET | `/api/v1/integrity/status` | Admin: worker, queue, and enforcement state |
+| POST | `/api/v1/integrity/relationships` | Admin: record an evidence-backed related wallet |
+| GET | `/api/v1/integrity/reviews` | Admin: list the human-review queue |
+| GET | `/api/v1/integrity/reviews/:id` | Admin: assessment, signals, events, and appeals |
+| POST | `/api/v1/integrity/reviews/:id/decision` | Admin: confirm or dismiss with a reason |
+| POST | `/api/v1/integrity/reviews/:id/appeal-challenge` | Affected wallet: request a one-time signing challenge |
+| POST | `/api/v1/integrity/reviews/:id/appeals` | Affected wallet: submit a signed appeal |
+| GET | `/api/v1/integrity/appeals` | Admin: list pending appeals |
+| POST | `/api/v1/integrity/appeals/:id/decision` | Independent admin: grant or deny an appeal |
+| POST | `/api/v1/integrity/reviews/:id/label` | Admin: add an independently reviewed evaluation label |
+| GET | `/api/v1/integrity/evaluation` | Admin: false-positive, recall, and enablement-gate report |
+| POST | `/api/v1/integrity/enforcement/enable` | Admin: enable confirmed-case exclusions after the gate passes |
+| POST | `/api/v1/integrity/enforcement/disable` | Admin: immediately stop exclusions |
+
+Detection scores behaviour rather than identity. Significant signals enter a
+private review queue and leave all enforcement flags off. Enforcement requires a
+human confirmation and a separately enabled labelled-set gate. Appeals require a
+signature by the affected donor or project wallet and are decided by someone
+other than the original reviewer. See the full
+[donation integrity policy](donation-integrity.md).
 
 ---
 

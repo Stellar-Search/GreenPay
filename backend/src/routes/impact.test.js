@@ -19,8 +19,9 @@ function buildApp() {
   return app;
 }
 
+const { Keypair } = require("@stellar/stellar-sdk");
 const PROJECT_ID = "11111111-1111-1111-1111-111111111111";
-const DONOR_KEY = "G" + "A".repeat(55);
+const DONOR_KEY = Keypair.random().publicKey();
 
 describe("GET /api/impact", () => {
   let app;

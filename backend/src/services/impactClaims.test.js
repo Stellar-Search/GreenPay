@@ -1,5 +1,6 @@
 "use strict";
 
+const { Keypair } = require("@stellar/stellar-sdk");
 const {
   buildAttestationPayload,
   canonicalJson,
@@ -74,7 +75,7 @@ describe("impact claim provenance", () => {
       attestation_expires_at: "2027-01-01T00:00:00.000Z",
       attestation_hash: "b".repeat(64),
       verifier_name: "Independent verifier",
-      verifier_address: "G" + "A".repeat(55),
+      verifier_address: Keypair.random().publicKey(),
     }, new Date("2026-02-01T00:00:00Z").getTime());
     expect(claim.provenance.status).toBe("verified");
     expect(claimSummary([claim]).verified).toBe(1);
@@ -90,7 +91,7 @@ describe("impact claim provenance", () => {
       attestation_revocation_reason: "Measurement error",
       attestation_hash: "b".repeat(64),
       verifier_name: "Independent verifier",
-      verifier_address: "G" + "A".repeat(55),
+      verifier_address: Keypair.random().publicKey(),
     }, new Date("2026-03-01T00:00:00Z").getTime());
 
     expect(claim.provenance.status).toBe("revoked");

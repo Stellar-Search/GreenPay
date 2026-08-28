@@ -37,6 +37,14 @@ jest.mock("../eventSourcing/commands", () => ({
   RecordDonationCommand: jest.fn(),
   ApplyMatchCommand: jest.fn(),
 }));
+jest.mock("./donationIntegrity", () => ({
+  queueDonationAssessment: jest.fn().mockResolvedValue({}),
+  observeNativePayment: jest.fn().mockResolvedValue(false),
+  refreshIntegrityWatchlist: jest.fn().mockResolvedValue({ controlled: 0, watched: 0 }),
+  startIntegrityWorker: jest.fn(),
+  stopIntegrityWorker: jest.fn(),
+  getIntegrityWorkerStatus: jest.fn(() => ({ isRunning: false })),
+}));
 
 const pool = require("../db/pool");
 const indexerService = require("./indexerService");

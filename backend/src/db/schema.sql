@@ -339,6 +339,229 @@ ALTER TABLE donations ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL D
 -- per-donation timestamp, so that path can't read from the aggregate table).
 CREATE INDEX IF NOT EXISTS idx_donations_donor_address ON donations(donor_address);
 
+-- ============================================================
+-- Donation integrity: behavioural signals, human review, appeals
+-- ============================================================
+-- Relationships are assertions with provenance, not identity claims. They
+-- make exact self-donation detectable while preserving the distinction
+-- between a verified relationship and a probabilistic graph signal.
+CREATE TABLE IF NOT EXISTS project_wallet_relationships (
+  id UUID PRIMARY KEY,
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  wallet_address TEXT NOT NULL,
+  relationship_type TEXT NOT NULL
+    CHECK (relationship_type IN (
+      'recipient', 'owner', 'operator', 'treasury', 'beneficiary', 'declared_related'
+    )),
+  source TEXT NOT NULL
+    CHECK (source IN ('project_record', 'wallet_proof', 'admin_evidence', 'on_chain_analysis')),
+  confidence NUMERIC(5, 4) NOT NULL DEFAULT 1
+    CHECK (confidence >= 0 AND confidence <= 1),
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  valid_from TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  valid_until TIMESTAMPTZ,
+  recorded_by TEXT NOT NULL DEFAULT 'system',
+  evidence JSONB NOT NULL DEFAULT '{}'::JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(project_id, wallet_address, relationship_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_wallet_relationships_address
+  ON project_wallet_relationships (wallet_address, project_id)
+  WHERE active = TRUE;
+
+INSERT INTO project_wallet_relationships (
+  id, project_id, wallet_address, relationship_type, source,
+  confidence, active, recorded_by, evidence
+)
+SELECT
+  md5('project-recipient-wallet:' || p.id::text || ':' || p.wallet_address)::uuid,
+  p.id,
+  p.wallet_address,
+  'recipient',
+  'project_record',
+  1,
+  TRUE,
+  'schema_backfill',
+  jsonb_build_object('field', 'projects.wallet_address')
+FROM projects p
+ON CONFLICT (project_id, wallet_address, relationship_type) DO UPDATE
+SET active = TRUE,
+    confidence = 1,
+    updated_at = NOW();
+
+-- Every donation observed by either API or indexer is queued transactionally.
+-- Scoring is deliberately outside the donation commit path so a detector
+-- outage never blocks or reverses a valid on-chain donation.
+CREATE TABLE IF NOT EXISTS donation_integrity_queue (
+  transaction_hash TEXT PRIMARY KEY,
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  donor_address TEXT NOT NULL,
+  destination_address TEXT,
+  amount_xlm NUMERIC(20, 7) NOT NULL,
+  observed_source TEXT NOT NULL
+    CHECK (observed_source IN ('api', 'indexer_horizon', 'indexer_soroban', 'historical_replay')),
+  ledger BIGINT,
+  observed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_donation_integrity_queue_ready
+  ON donation_integrity_queue (next_attempt_at, observed_at);
+
+CREATE TABLE IF NOT EXISTS donation_integrity_assessments (
+  id UUID PRIMARY KEY,
+  transaction_hash TEXT NOT NULL UNIQUE,
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  donor_address TEXT NOT NULL,
+  destination_address TEXT,
+  amount_xlm NUMERIC(20, 7) NOT NULL,
+  observed_source TEXT NOT NULL
+    CHECK (observed_source IN ('api', 'indexer_horizon', 'indexer_soroban', 'historical_replay')),
+  ledger BIGINT,
+  observed_at TIMESTAMPTZ NOT NULL,
+  confidence_score NUMERIC(5, 4) NOT NULL DEFAULT 0
+    CHECK (confidence_score >= 0 AND confidence_score <= 1),
+  review_status TEXT NOT NULL DEFAULT 'monitoring'
+    CHECK (review_status IN ('monitoring', 'pending_review', 'confirmed', 'dismissed', 'appealed')),
+  exclude_from_leaderboard BOOLEAN NOT NULL DEFAULT FALSE,
+  exclude_from_displayed_totals BOOLEAN NOT NULL DEFAULT FALSE,
+  exclude_from_impact_figures BOOLEAN NOT NULL DEFAULT FALSE,
+  assigned_to TEXT,
+  decision_reason TEXT,
+  decided_by TEXT,
+  decided_at TIMESTAMPTZ,
+  last_scored_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_integrity_assessments_review_queue
+  ON donation_integrity_assessments (review_status, confidence_score DESC, observed_at ASC);
+CREATE INDEX IF NOT EXISTS idx_integrity_assessments_pair
+  ON donation_integrity_assessments (project_id, donor_address, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_integrity_assessments_leaderboard
+  ON donation_integrity_assessments (donor_address)
+  WHERE review_status = 'confirmed' AND exclude_from_leaderboard = TRUE;
+CREATE INDEX IF NOT EXISTS idx_integrity_assessments_project_totals
+  ON donation_integrity_assessments (project_id)
+  WHERE review_status = 'confirmed' AND exclude_from_displayed_totals = TRUE;
+
+CREATE TABLE IF NOT EXISTS donation_integrity_signals (
+  id UUID PRIMARY KEY,
+  assessment_id UUID NOT NULL REFERENCES donation_integrity_assessments(id) ON DELETE CASCADE,
+  signal_type TEXT NOT NULL
+    CHECK (signal_type IN ('self_donation', 'circular_flow', 'rapid_repeat_pair')),
+  confidence NUMERIC(5, 4) NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+  fingerprint TEXT NOT NULL,
+  evidence JSONB NOT NULL DEFAULT '{}'::JSONB,
+  detected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(assessment_id, signal_type, fingerprint)
+);
+
+CREATE INDEX IF NOT EXISTS idx_integrity_signals_assessment
+  ON donation_integrity_signals (assessment_id, confidence DESC);
+
+-- Only flow edges adjacent to project-controlled or detector-watched wallets
+-- are retained. project_id carries the bounded propagation context used by
+-- the depth-three recursive cycle check.
+CREATE TABLE IF NOT EXISTS donation_integrity_flow_edges (
+  id UUID PRIMARY KEY,
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  transaction_hash TEXT NOT NULL,
+  operation_id TEXT NOT NULL,
+  source_address TEXT NOT NULL,
+  destination_address TEXT NOT NULL,
+  amount_xlm NUMERIC(20, 7) NOT NULL,
+  ledger BIGINT,
+  observed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '72 hours'),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(project_id, operation_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_integrity_flow_edges_graph
+  ON donation_integrity_flow_edges (project_id, source_address, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_integrity_flow_edges_destination
+  ON donation_integrity_flow_edges (project_id, destination_address, observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_integrity_flow_edges_expiry
+  ON donation_integrity_flow_edges (expires_at);
+
+CREATE TABLE IF NOT EXISTS donation_integrity_events (
+  id UUID PRIMARY KEY,
+  assessment_id UUID NOT NULL REFERENCES donation_integrity_assessments(id) ON DELETE CASCADE,
+  actor TEXT NOT NULL,
+  actor_type TEXT NOT NULL
+    CHECK (actor_type IN ('system', 'reviewer', 'appellant')),
+  action TEXT NOT NULL,
+  from_status TEXT,
+  to_status TEXT,
+  reason TEXT,
+  metadata JSONB NOT NULL DEFAULT '{}'::JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_integrity_events_assessment
+  ON donation_integrity_events (assessment_id, created_at ASC);
+
+CREATE TABLE IF NOT EXISTS donation_integrity_appeal_challenges (
+  id UUID PRIMARY KEY,
+  assessment_id UUID NOT NULL REFERENCES donation_integrity_assessments(id) ON DELETE CASCADE,
+  wallet_address TEXT NOT NULL,
+  challenge TEXT NOT NULL UNIQUE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  used_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_integrity_appeal_challenges_open
+  ON donation_integrity_appeal_challenges (assessment_id, wallet_address, expires_at)
+  WHERE used_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS donation_integrity_appeals (
+  id UUID PRIMARY KEY,
+  assessment_id UUID NOT NULL REFERENCES donation_integrity_assessments(id) ON DELETE CASCADE,
+  appellant_wallet TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'granted', 'denied')),
+  submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  decided_by TEXT,
+  decision_reason TEXT,
+  decided_at TIMESTAMPTZ
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_integrity_appeals_one_pending
+  ON donation_integrity_appeals (assessment_id)
+  WHERE status = 'pending';
+
+CREATE TABLE IF NOT EXISTS donation_integrity_labels (
+  assessment_id UUID PRIMARY KEY REFERENCES donation_integrity_assessments(id) ON DELETE CASCADE,
+  label TEXT NOT NULL CHECK (label IN ('legitimate', 'confirmed_abuse', 'uncertain')),
+  labelled_by TEXT NOT NULL,
+  rationale TEXT NOT NULL,
+  labelled_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS donation_integrity_settings (
+  id TEXT PRIMARY KEY CHECK (id = 'global'),
+  enforcement_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  enabled_by TEXT,
+  enabled_at TIMESTAMPTZ,
+  evaluation_snapshot JSONB,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO donation_integrity_settings (id, enforcement_enabled)
+VALUES ('global', FALSE)
+ON CONFLICT (id) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS profiles (
   public_key TEXT PRIMARY KEY,
   display_name TEXT,
