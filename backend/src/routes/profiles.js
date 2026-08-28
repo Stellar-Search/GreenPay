@@ -8,9 +8,10 @@ const pool = require("../db/pool");
 const { mapProfileRow } = require("../services/store");
 const { createLayeredRateLimiter } = require("../middleware/rateLimiter");
 const { createApiError } = require("../middleware/apiEnvelope");
+const { isValidStellarAddress } = require("../../../shared/validators/stellarValidator");
 
 function validateKey(k) {
-  if (!k || !/^G[A-Z0-9]{55}$/.test(k)) {
+  if (!k || !isValidStellarAddress(k)) {
     throw createApiError(400, "INVALID_PUBLIC_KEY", "Invalid public key");
   }
 }

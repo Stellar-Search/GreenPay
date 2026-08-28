@@ -15,6 +15,7 @@ const cache = require("../services/cache");
 const { UUID } = require("../schemas/common");
 const { adminRequired } = require("../middleware/auth");
 const { createApiError } = require("../middleware/apiEnvelope");
+const { isValidStellarAddress } = require("../../../shared/validators/stellarValidator");
 const {
   CLAIM_TYPES,
   EVIDENCE_TYPES,
@@ -32,7 +33,7 @@ const HASH_PATTERN = /^[0-9a-f]{64}$/;
 const PARTY_TYPES = ["project_operator", "data_provider"];
 
 function validateKey(key) {
-  if (!key || !/^G[A-Z0-9]{55}$/.test(key)) {
+  if (!key || !isValidStellarAddress(key)) {
     throw createApiError(400, "INVALID_PUBLIC_KEY", "Invalid Stellar public key");
   }
 }

@@ -12,7 +12,6 @@ const { z } = require("zod");
 
 const { isValidStellarAddress } = require("../../../shared/validators/stellarValidator");
 
-const STELLAR_PUBLIC_KEY = /^G[A-Z0-9]{55}$/; // Legacy export maintained for compatibility
 const TRANSACTION_HASH = /^[a-fA-F0-9]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -29,7 +28,6 @@ const uuid = z
   .regex(UUID, "Invalid identifier");
 
 module.exports = {
-  STELLAR_PUBLIC_KEY,
   TRANSACTION_HASH,
   UUID,
   stellarPublicKey,
