@@ -1,0 +1,19 @@
+{
+  "stellar": {
+    "address": {
+      "type": "string",
+      "description": "Valid Stellar public key (ed25519) with CRC16 checksum validation",
+      "contractAuthoritative": true,
+      "rejectMuxed": true,
+      "rejectContract": true
+    },
+    "amount": {
+      "type": "number",
+      "precision": "NUMERIC(20, 7)",
+      "min": 0
+    },
+    "projectStatus": {
+      "enum": ["proposed", "active", "funded", "completed", "cancelled"]
+    }
+  }
+}
