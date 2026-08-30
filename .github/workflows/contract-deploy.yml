@@ -54,6 +54,17 @@ jobs:
       - name: Run unit tests
         run: cargo test --workspace --lib
 
+      # Enforces the per-entrypoint resource budgets recorded in
+      # contracts/resource-budgets.json (issue #512). A change that materially
+      # increases the host CPU/memory or ledger-touch cost of a contract call
+      # fails here with a readable report instead of silently shipping a
+      # donation path that starts failing once enough state accumulates.
+      # Restricted to the `resource_budget` filter because the full
+      # `testutils` suite (property/fuzz) is heavy and runs with its own
+      # PROPTEST_CASES profile in ci.yml.
+      - name: Enforce resource budgets
+        run: cargo test -p greenpay-contract --lib --features testutils resource_budget
+
       - name: Build WASM release
         run: cargo build --workspace --target wasm32-unknown-unknown --release
 

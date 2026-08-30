@@ -319,24 +319,22 @@ fn setup_test_env() -> (Env, Address, Address) {
 
 ## Performance Testing
 
-Test gas costs and ledger size limits:
+Resource consumption is measured through the host environment (CPU
+instructions, memory, ledger reads/writes) per entrypoint, run against
+realistic accumulated state, and enforced against recorded budgets in CI.
+See [`docs/resource-budgeting.md`](../docs/resource-budgeting.md) for the
+report, the headroom table, and how to measure the resource impact of a
+contract change.
 
-```rust
-#[test]
-fn test_gas_costs() {
-    let env = Env::default();
-    env.budget().reset_unlimited();
-    
-    // Expensive operation should still be reasonable
-    for i in 0..1000 {
-        env.invoke_contract_fn(contract.donate(...));
-    }
-    
-    let budget = env.budget().get_tracker();
-    assert!(budget.cpu() < MAX_CPU_BUDGET);
-    assert!(budget.memory() < MAX_MEMORY_BUDGET);
-}
+Run the suite:
+
+```sh
+cargo test -p greenpay-contract --lib --features testutils resource_budget -- --nocapture
 ```
+
+The suite also asserts the NFT hot paths stay flat (O(1)) as a donor
+accumulates tokens, so a change that re-introduces cost that grows with state
+fails the build.
 
 ## Test Execution Pipeline
 

@@ -1,4 +1,4 @@
-import { isValidStellarAddress } from "../stellar";
+import { formatSimulationFailure, isResourceBudgetFailure, isValidStellarAddress } from "../stellar";
 
 describe("isValidStellarAddress", () => {
     it("should return true for a valid Stellar public key with a correct checksum", () => {
@@ -21,5 +21,50 @@ describe("isValidStellarAddress", () => {
         expect(isValidStellarAddress("")).toBe(false);
         expect(isValidStellarAddress("invalid_address")).toBe(false);
         expect(isValidStellarAddress("G12345")).toBe(false);
+    });
+});
+
+describe("isResourceBudgetFailure", () => {
+    it("detects Soroban budget errors that grow with accumulated state", () => {
+        expect(isResourceBudgetFailure('InsufficientCpuInstructions')).toBe(true);
+        expect(isResourceBudgetFailure("CheckpointError: InsufficientMemory")).toBe(true);
+        expect(
+            isResourceBudgetFailure(
+                "Budget failure. Cost of contract execution exceeds the provided budget.",
+            ),
+        ).toBe(true);
+        expect(isResourceBudgetFailure('{"error":"txn_too_expensive"}')).toBe(true);
+    });
+
+    it("does not flag funding, address, or plain host errors as budget failures", () => {
+        expect(isResourceBudgetFailure("Insufficient XLM to pay Soroban fees")).toBe(false);
+        expect(isResourceBudgetFailure("Contract not found on testnet")).toBe(false);
+        expect(
+            isResourceBudgetFailure('HostError: Error(WasmVm, InvalidAction)'),
+        ).toBe(false);
+    });
+});
+
+describe("formatSimulationFailure", () => {
+    it("surfaces a donation resource-budget failure as an actionable message", () => {
+        const err = formatSimulationFailure(
+            { error: "vm", vmError: "InsufficientCpuInstructions" },
+            { contractId: "C…", op: "donation" },
+        );
+        expect(err.message).toContain("resource");
+        expect(err.message).toContain("Nothing was sent");
+    });
+
+    it("names the escrow operation when the failing call is a release", () => {
+        const err = formatSimulationFailure(
+            { message: "Budget failure. Cost exceeds the provided budget." },
+            { contractId: "C…", op: "escrow" },
+        );
+        expect(err.message).toContain("escrow release");
+    });
+
+    it("keeps the generic donation fallback specific to the donation path", () => {
+        const err = formatSimulationFailure({ error: "vm" }, { op: "donation" });
+        expect(err.message).toContain("NEXT_PUBLIC_CONTRACT_ID");
     });
 });

@@ -20,7 +20,7 @@ import {
   QueuedDonation,
 } from '../../utils/donationQueue';
 import { apiGet, apiPost } from '../../utils/api';
-import { buildDonationPaymentTransaction } from '../../utils/donationTransaction';
+import { buildDonationPaymentTransaction, derivePaymentFee } from '../../utils/donationTransaction';
 import {
   getConfiguredHorizonUrl,
   getExpectedNetworkDisplayName,
@@ -257,6 +257,13 @@ export default function DonateScreen() {
       const server = new StellarServer(HORIZON_URL);
       const sourceAccount = await server.loadAccount(publicKey);
 
+      // The fee is derived from the network's live fee statistics rather than
+      // a fixed constant, so a congested network doesn't silently drop
+      // donations paying the historical floor (issue #512). A failed stats
+      // fetch falls back to the minimum fee instead of blocking the donation.
+      const feeStats = await server.feeStats().catch(() => null);
+      const fee = derivePaymentFee(feeStats);
+
       // Built by utils/donationTransaction so the network passphrase comes from
       // one place. The previous inline builder referenced TransactionBuilder,
       // Operation, Asset, Memo and NETWORK_PASSPHRASE, none of which are imported
@@ -266,6 +273,7 @@ export default function DonateScreen() {
         destination: selectedProject.walletAddress,
         amount: formattedAmount,
         projectId: selectedProject.id,
+        fee,
       });
 
       transaction.sign(keypair);

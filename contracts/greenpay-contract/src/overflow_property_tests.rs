@@ -110,7 +110,7 @@ mod overflow {
     }
 
     #[test]
-    #[should_panic(expected = "donation amount must be positive")]
+    #[should_panic(expected = "Donation amount must be positive")]
     fn regression_zero_donation_rejected() {
         let (env, client, _admin, token, token_client, project_id) = setup(1_000);
         let donor = Address::generate(&env);
