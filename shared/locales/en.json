@@ -83,7 +83,10 @@
     "milestones": "Project Milestones",
     "proof": "Proof ↗",
     "loadMore": "Load more",
-    "noUpdatesYet": "No updates posted yet."
+    "noUpdatesYet": "No updates posted yet.",
+    "contentLanguage": "Content shown in {language}.",
+    "fallbackContent": "Requested translation unavailable. Showing the original in {language}.",
+    "machineTranslatedContent": "Machine-translated content in {language}. Review the original before relying on impact claims."
   },
   "admin": {
     "title": "Project Admin",

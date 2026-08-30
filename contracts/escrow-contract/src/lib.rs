@@ -11,6 +11,9 @@
 //! either party (client or freelancer) may call `resolve_stale_dispute` to
 //! trigger an automatic 50/50 split of the remaining escrowed funds.
 
+#[cfg(all(test, feature = "testutils"))]
+mod property_tests;
+
 /// Number of ledgers the admin has to resolve a dispute before the 50/50
 /// fallback becomes available. At ~5 s per ledger this is roughly 30 days.
 /// Adjust at deploy time by changing this constant.

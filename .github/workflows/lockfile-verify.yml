@@ -2,9 +2,9 @@ name: Lockfile Verification
 
 on:
   push:
-    branches: [main, develop]
+    branches: ['**']
   pull_request:
-    branches: [main]
+    branches: [main, develop]
   schedule:
     # Run daily at midnight UTC
     - cron: '0 0 * * *'

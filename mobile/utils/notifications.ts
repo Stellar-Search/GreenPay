@@ -5,7 +5,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import { AppState, Platform } from 'react-native';
-import { API_URL, parseApiFetchResponse } from './api';
+import { apiFetch, parseApiFetchResponse } from './api';
 
 const PENDING_REGISTRATION_KEY = 'greenpay:pendingPushRegistration';
 
@@ -48,8 +48,8 @@ async function retryPendingRegistration() {
   }
 }
 
-async function postJson(url: string, body: Record<string, unknown>): Promise<boolean> {
-  const response = await fetch(url, {
+async function postJson(path: string, body: Record<string, unknown>): Promise<boolean> {
+  const response = await apiFetch(path, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -116,7 +116,7 @@ export async function registerDeviceToken(
   try {
     const platform = Platform.OS;
     
-    const registered = await postJson(`${API_URL}/api/notifications/register`, {
+    const registered = await postJson('/api/notifications/register', {
       token,
       platform,
       walletAddress,
@@ -146,7 +146,7 @@ export async function followProject(
   walletAddress?: string
 ): Promise<boolean> {
   try {
-    const followed = await postJson(`${API_URL}/api/notifications/follow`, {
+    const followed = await postJson('/api/notifications/follow', {
       projectId,
       token,
       walletAddress,
@@ -170,7 +170,7 @@ export async function unfollowProject(
   token: string
 ): Promise<boolean> {
   try {
-    const unfollowed = await postJson(`${API_URL}/api/notifications/unfollow`, {
+    const unfollowed = await postJson('/api/notifications/unfollow', {
       projectId,
       token,
     });
@@ -190,7 +190,7 @@ export async function unfollowProject(
  */
 export async function getFollowedProjects(token: string): Promise<any[]> {
   try {
-    const response = await fetch(`${API_URL}/api/notifications/follows?token=${token}`);
+    const response = await apiFetch(`/api/notifications/follows?token=${encodeURIComponent(token)}`);
     return await parseApiFetchResponse<any[]>(response);
   } catch (error) {
     console.error('Error getting followed projects:', error);

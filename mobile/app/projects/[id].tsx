@@ -5,8 +5,10 @@
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { apiGet, API_URL, parseApiFetchResponse } from '../../utils/api';
+import { apiFetch, apiGet, parseApiFetchResponse } from '../../utils/api';
 import { getPushToken, followProject, unfollowProject } from '../../utils/notifications';
+import { parseProjectUpdates, type MobileProjectUpdate } from '../../utils/projectUpdates';
+import { useTheme } from '../theme';
 
 interface ClimateProject {
   id: string;
@@ -28,6 +30,7 @@ export default function ProjectDetailScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams();
   const [project, setProject] = useState<ClimateProject | null>(null);
+  const [projectUpdates, setProjectUpdates] = useState<MobileProjectUpdate[]>([]);
   const [loading, setLoading] = useState(true);
   const [isFollowing, setIsFollowing] = useState(false);
   const [pushToken, setPushToken] = useState<string | null>(null);
@@ -55,7 +58,7 @@ export default function ProjectDetailScreen() {
 
   const checkFollowStatus = async (projectId: string, token: string) => {
     try {
-      const response = await fetch(`${API_URL}/api/notifications/follows?token=${token}`);
+      const response = await apiFetch(`/api/notifications/follows?token=${encodeURIComponent(token)}`);
       const followedProjects = await parseApiFetchResponse<Array<{ id: string }>>(response);
       const isFollowed = followedProjects.some((p) => p.id === projectId);
       setIsFollowing(isFollowed);
@@ -66,8 +69,12 @@ export default function ProjectDetailScreen() {
 
   const loadProject = async (projectId: string) => {
     try {
-      const data = await apiGet<ClimateProject>(`/api/projects/${projectId}`);
-      setProject(data);
+      const [projectData, updatesData] = await Promise.all([
+        apiGet<ClimateProject>(`/api/projects/${projectId}`),
+        apiGet<unknown>(`/api/updates/${projectId}`).catch(() => []),
+      ]);
+      setProject(projectData);
+      setProjectUpdates(parseProjectUpdates(updatesData));
     } catch (error) {
       console.error('Error loading project:', error);
     } finally {
@@ -160,9 +167,21 @@ export default function ProjectDetailScreen() {
         </Text>
       </View>
 
-      <View style={[styles.descriptionCard, { backgroundColor: colors.surface, shadowColor: colors.cardShadow, borderColor: colors.cardBorder }]}> 
+      <View style={[styles.descriptionCard, { backgroundColor: colors.surface, shadowColor: colors.cardShadow, borderColor: colors.cardBorder }]}>
         <Text style={[styles.sectionTitle, { color: colors.primaryText }]}>About this project</Text>
         <Text style={[styles.description, { color: colors.secondaryText }]}>{project.description}</Text>
+      </View>
+
+      <View style={[styles.descriptionCard, { backgroundColor: colors.surface, shadowColor: colors.cardShadow, borderColor: colors.cardBorder }]}>
+        <Text style={[styles.sectionTitle, { color: colors.primaryText }]}>Project updates</Text>
+        {projectUpdates.length === 0 ? (
+          <Text style={[styles.description, { color: colors.secondaryText }]}>No published updates yet.</Text>
+        ) : projectUpdates.map((update) => (
+          <View key={update.id} style={styles.updateItem}>
+            <Text style={[styles.updateTitle, { color: colors.primaryText }]}>{update.title}</Text>
+            <Text style={[styles.description, { color: colors.secondaryText }]}>{update.body}</Text>
+          </View>
+        ))}
       </View>
 
       {pushToken && (
@@ -304,6 +323,17 @@ const styles = StyleSheet.create({
   description: {
     fontSize: 14,
     lineHeight: 20,
+  },
+  updateItem: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#c8d8c8',
+  },
+  updateTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    marginBottom: 4,
   },
   followButton: {
     backgroundColor: '#fff',

@@ -8,14 +8,28 @@ import type {
   DonorProfile,
   FreelancerProfile,
   ProjectUpdate,
+  ProjectUpdateHistory,
+  ProjectUpdateReportReason,
+  ProjectVerificationApplication,
+  ProjectVerificationStatus,
+  ProjectVerificationStatusResponse,
   LeaderboardEntry,
   EscrowJob,
   ProjectCampaign,
 } from "@/utils/types";
 
+export const API_CLIENT_HEADERS = Object.freeze({
+  "X-Client-Name": "web",
+  "X-Client-Version": process.env.NEXT_PUBLIC_APP_VERSION || "1.0.0",
+  "X-Client-API-Version": "1",
+});
+
 const api = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000",
-  headers: { "Content-Type": "application/json" },
+  headers: {
+    "Content-Type": "application/json",
+    ...API_CLIENT_HEADERS,
+  },
   timeout: 10000,
   withCredentials: true,
 });
@@ -79,13 +93,19 @@ function responseMeta(response: unknown): Record<string, unknown> | undefined {
   return (response as { apiMeta?: Record<string, unknown> }).apiMeta;
 }
 
-// All API routes are served under the versioned `/api/v1` prefix (issue #204).
-// Rewrite `/api/*` request paths to `/api/v1/*` from a single place so every
-// helper below stays on the unversioned path string.
-api.interceptors.request.use((config) => {
-  if (config.url && config.url.startsWith("/api/") && !config.url.startsWith("/api/v1/")) {
-    config.url = config.url.replace(/^\/api\//, "/api/v1/");
+// Rewrite historical helper paths to v1 while leaving explicit future versions
+// and the version-neutral lifecycle endpoints untouched.
+export function versionedApiPath(path: string): string {
+  if (/^\/api\/v[1-9][0-9]*(?:\/|$)/.test(path) ||
+      path === "/api/versions" || path.startsWith("/api/versions/")) {
+    return path;
   }
+  if (path === "/api") return "/api/v1";
+  return path.startsWith("/api/") ? path.replace(/^\/api\//, "/api/v1/") : path;
+}
+
+api.interceptors.request.use((config) => {
+  if (config.url) config.url = versionedApiPath(config.url);
   return config;
 });
 
@@ -230,6 +250,11 @@ export async function csrfFetch(input: RequestInfo, init: RequestInit = {}) {
   const method = init.method?.toUpperCase() || "GET";
   const needsToken = ["POST", "PUT", "PATCH", "DELETE"].includes(method);
 
+  init.headers = {
+    ...API_CLIENT_HEADERS,
+    ...(init.headers as Record<string, string>),
+  };
+
   if (needsToken) {
     if (!csrfToken) {
       await refreshCsrfToken();
@@ -256,6 +281,28 @@ export async function parseApiFetchResponse<T>(response: Response): Promise<T> {
   throw new ApiClientError(body.error, response.status, response);
 }
 
+export interface ProjectSearchFacets {
+  category: Record<string, number>;
+  status: Record<string, number>;
+  verified: Record<string, number>;
+  location: Record<string, number>;
+  fundingProgress: Record<string, number>;
+}
+
+export interface ProjectSearchMeta {
+  total: number;
+  search: string | null;
+  latencyMs: number;
+  latencyBudgetMs?: number;
+  facets: ProjectSearchFacets;
+  ranking?: Record<string, number> | null;
+}
+
+export interface ProjectListResponse {
+  projects: ClimateProject[];
+  meta?: ProjectSearchMeta;
+}
+
 // ── Projects ──────────────────────────────────────────────────────────────────
 export async function fetchProjects(params?: {
   category?: string;
@@ -263,17 +310,112 @@ export async function fetchProjects(params?: {
   verified?: boolean;
   search?: string;
   limit?: number;
-}) {
-  const { data } = await api.get<ClimateProject[]>(
+  cursor?: string;
+  lang?: "en" | "es" | "ar";
+}): Promise<ProjectListResponse> {
+  const response = await api.get<ClimateProject[]>(
     "/api/projects",
     { params },
+  );
+  return {
+    projects: response.data,
+    meta: responseMeta(response) as ProjectSearchMeta | undefined,
+  };
+}
+
+export async function fetchProject(id: string, lang?: "en" | "es" | "ar") {
+  const { data } = await api.get<ClimateProject>(
+    `/api/projects/${id}`,
+    { params: lang && lang !== "en" ? { lang } : undefined },
   );
   return data;
 }
 
-export async function fetchProject(id: string) {
-  const { data } = await api.get<ClimateProject>(
-    `/api/projects/${id}`,
+export async function fetchProjectVerification(projectId: string) {
+  const { data } = await api.get<ProjectVerificationStatusResponse>(
+    `/api/projects/${projectId}/verification`,
+  );
+  return data;
+}
+
+export async function createProjectVerificationApplication(
+  projectId: string,
+  payload: {
+    submittedByWallet: string;
+    attestationSummary: string;
+  },
+) {
+  const { data } = await api.post<ProjectVerificationApplication>(
+    `/api/projects/${projectId}/verification/application`,
+    payload,
+  );
+  return data;
+}
+
+export async function requestProjectVerificationChallenge(
+  projectId: string,
+  payload: {
+    applicationId: string;
+    walletAddress: string;
+  },
+) {
+  const { data } = await api.post<{
+    applicationId: string;
+    challenge: string;
+    expiresAt: string;
+    signatureEncoding: string;
+  }>(
+    `/api/projects/${projectId}/verification/application/challenge`,
+    payload,
+  );
+  return data;
+}
+
+export async function submitProjectVerificationWalletProof(
+  projectId: string,
+  payload: {
+    applicationId: string;
+    signature: string;
+  },
+) {
+  const { data } = await api.post<ProjectVerificationApplication>(
+    `/api/projects/${projectId}/verification/application/wallet-proof`,
+    payload,
+  );
+  return data;
+}
+
+export async function updateProjectVerificationApplicationStatus(
+  projectId: string,
+  payload: {
+    applicationId: string;
+    status: Exclude<ProjectVerificationStatus, "wallet_proof_pending" | "approved">;
+    rationale?: string;
+    communityVoteOpensAt?: string;
+    communityVoteClosesAt?: string;
+    revocationReason?: string;
+  },
+) {
+  const { data } = await api.patch<ProjectVerificationApplication>(
+    `/api/projects/${projectId}/verification/application/status`,
+    payload,
+  );
+  return data;
+}
+
+export async function recordProjectVerificationDecision(
+  projectId: string,
+  payload: {
+    applicationId: string;
+    decisionTxHash: string;
+    decisionContractId: string;
+    expiresAt: string;
+    rationale?: string;
+  },
+) {
+  const { data } = await api.post<ProjectVerificationApplication>(
+    `/api/projects/${projectId}/verification/application/decision`,
+    payload,
   );
   return data;
 }
@@ -404,9 +546,25 @@ export async function upsertProfile(
 }
 
 // ── Leaderboard ───────────────────────────────────────────────────────────────
-export async function fetchLeaderboard(limit = 20, period = "all", offset = 0) {
-  const { data } = await api.get<LeaderboardEntry[]>("/api/leaderboard", { params: { limit, period, offset } });
+export async function fetchLeaderboard(limit = 20, period = "all", offset = 0, cursor?: string) {
+  const params: Record<string, unknown> = { limit, period };
+  if (cursor) params.cursor = cursor;
+  else if (offset) params.offset = offset;
+  const { data } = await api.get<LeaderboardEntry[]>("/api/leaderboard", { params });
   return data;
+}
+
+export async function fetchLeaderboardWithMeta(limit = 20, period = "all", cursor?: string, offset = 0) {
+  const params: Record<string, unknown> = { limit, period };
+  if (cursor) params.cursor = cursor;
+  else if (offset) params.offset = offset;
+  const response = await api.get<LeaderboardEntry[]>("/api/leaderboard", { params });
+  const meta = responseMeta(response);
+  return {
+    entries: response.data,
+    nextCursor: (meta?.nextCursor as string | null | undefined) ?? null,
+    hasMore: (meta?.hasMore as boolean | undefined) ?? false,
+  };
 }
 
 // ── Jobs (escrow) ───────────────────────────────────────────────────────────
@@ -439,9 +597,10 @@ export async function completeJobRelease(
 }
 
 // ── Project Updates ─────────────────────────────────────────────
-export async function fetchProjectUpdates(projectId: string) {
+export async function fetchProjectUpdates(projectId: string, lang?: "en" | "es" | "ar") {
   const { data } = await api.get<ProjectUpdate[]>(
     `/api/updates/${projectId}`,
+    { params: lang && lang !== "en" ? { lang } : undefined },
   );
   return data;
 }
@@ -459,11 +618,36 @@ export async function createProjectUpdate(payload: {
   return data;
 }
 
+export async function fetchProjectUpdateHistory(updateId: string) {
+  const { data } = await api.get<ProjectUpdateHistory>(
+    `/api/updates/${updateId}/history`,
+  );
+  return data;
+}
+
+export async function reportProjectUpdate(payload: {
+  updateId: string;
+  donorAddress: string;
+  reason: ProjectUpdateReportReason;
+  details?: string;
+}) {
+  const { data } = await api.post<{ id: string; status: "open"; message: string }>(
+    `/api/updates/${payload.updateId}/reports`,
+    {
+      donorAddress: payload.donorAddress,
+      reason: payload.reason,
+      details: payload.details,
+    },
+  );
+  return data;
+}
+
 // ── Subscriptions ────────────────────────────────────────────────
 export async function subscribeToProject(payload: {
   projectId: string;
   email: string;
   donorAddress?: string;
+  preferredLanguage?: "en" | "es" | "ar";
 }) {
   const { data } = await api.post<{ message: string }>(
     "/api/subscriptions",
@@ -483,7 +667,8 @@ export async function fetchSubscriberCount(projectId: string) {
 export interface GlobalStats {
   totalDonations: number;
   totalXLMRaised: string;
-  totalCO2OffsetKg: number;
+  publishedImpactClaims: number;
+  verifiedImpactClaims: number;
 }
 
 export async function fetchGlobalStats(): Promise<GlobalStats> {
@@ -588,10 +773,11 @@ export async function fetchUpdateLikes(updateId: string, donorAddress?: string) 
 }
 
 // ── Featured Project ─────────────────────────────────────────────
-export async function fetchFeaturedProject(): Promise<ClimateProject | null> {
+export async function fetchFeaturedProject(lang?: "en" | "es" | "ar"): Promise<ClimateProject | null> {
   try {
     const { data } = await api.get<ClimateProject>(
       "/api/projects/featured",
+      { params: lang && lang !== "en" ? { lang } : undefined },
     );
     return data;
   } catch {
@@ -613,36 +799,150 @@ export async function fetchCategoryStats(): Promise<CategoryStats[]> {
 }
 
 // ── Impact Aggregation ───────────────────────────────────────────────────────
+export type ImpactClaimType = "avoided_emissions" | "sequestration" | "offset";
+export type ImpactClaimStatus = "verified" | "operator_stated" | "unverified" | "revoked" | "expired";
+
+export interface ImpactAttestation {
+  id: string;
+  verifierName: string;
+  verifierAddress: string;
+  attestationHash: string;
+  evidenceDigest: string;
+  status: "pending_anchor" | "verified" | "revoked" | "expired";
+  contractId: string | null;
+  transactionHash: string | null;
+  ledger: number | null;
+  issuedAt: string;
+  expiresAt: string;
+  revokedAt: string | null;
+  revocationReason: string | null;
+  revocationTransactionHash: string | null;
+}
+
+export interface ImpactClaim {
+  id: string;
+  projectId: string;
+  projectName: string | null;
+  category: string | null;
+  claimType: ImpactClaimType;
+  quantity: {
+    value: string;
+    lowerBound: string;
+    upperBound: string;
+    unit: string;
+  };
+  uncertainty: {
+    lowerBound: string;
+    upperBound: string;
+    confidencePercent: number | null;
+  };
+  methodology: {
+    id: string;
+    code: string;
+    name: string;
+    version: string;
+    description: string;
+    accountingApproach: string;
+    limitations: string;
+    comparisonScope: string;
+    registryUrl: string | null;
+  };
+  measurementPeriod: { start: string; end: string };
+  vintage: { start: string | null; end: string | null } | null;
+  baseline: string;
+  evidence: Array<{
+    id: string;
+    type: string;
+    sourceUri: string | null;
+    contentHash: string;
+    description: string;
+    measurementDate: string | null;
+    submittedBy: string;
+    createdAt: string;
+  }>;
+  provenance: {
+    status: ImpactClaimStatus;
+    label: string;
+    assertedBy: string;
+    assertingPartyType: string;
+    assertedAt: string;
+    expiresAt: string | null;
+    revokedAt: string | null;
+    revocationReason: string | null;
+    migratedFromLegacy: boolean;
+    migrationNote: string | null;
+    attestation: ImpactAttestation | null;
+  };
+}
+
+export interface ImpactClaimSummary {
+  total: number;
+  verified: number;
+  operatorStated: number;
+  unverified: number;
+  revoked: number;
+  expired: number;
+}
+
+export interface ComparableImpactGroup {
+  claimType: ImpactClaimType;
+  unit: string;
+  methodology: ImpactClaim["methodology"];
+  claims: ImpactClaim[];
+  claimCount: number;
+  verifiedClaimCount: number;
+  range: { lowerBound: string; upperBound: string; unit: string };
+}
+
 export interface ImpactProjectStats {
   totalDonationsXLM: string;
   donorCount: number;
-  co2OffsetKg: number;
-  treesEquivalent: number;
-  uniqueCountries: number;
+  claims: ImpactClaim[];
+  claimSummary: ImpactClaimSummary;
+  comparableImpactGroups: ComparableImpactGroup[];
 }
 
 export interface ImpactCategoryBreakdownItem {
   category: string;
   totalDonationsXLM: string;
   donorCount: number;
-  co2OffsetKg: number;
+  claimCount: number;
+  verifiedClaimCount: number;
 }
 
-export interface ImpactGlobalStats extends ImpactProjectStats {
+export interface ImpactGlobalStats {
+  totalDonationsXLM: string;
+  donorCount: number;
+  claimSummary: ImpactClaimSummary;
+  comparableImpactGroups: ComparableImpactGroup[];
   breakdownByCategory: ImpactCategoryBreakdownItem[];
 }
 
 export interface ImpactDonorStats {
   totalDonatedXLM: string;
-  co2OffsetKg: number;
   projectsSupported: number;
   topCategory: string | null;
+  supportedProjectClaims: ImpactClaim[];
+  claimSummary: ImpactClaimSummary;
+  attributionNotice: string;
 }
 
 export async function fetchImpactProject(projectId: string): Promise<ImpactProjectStats> {
   const { data } = await api.get<ImpactProjectStats>(
     `/api/impact/project/${projectId}`,
   );
+  // A partial deployment, stale cache, or permissive test/mock endpoint may
+  // return a successful envelope without the claim model.  Treat that as an
+  // unavailable evidence feed instead of letting project pages dereference an
+  // untrusted shape and crash.
+  if (
+    !data ||
+    !Array.isArray(data.claims) ||
+    !data.claimSummary ||
+    typeof data.claimSummary.total !== "number"
+  ) {
+    throw new Error("Impact claim response is missing required provenance fields");
+  }
   return data;
 }
 

@@ -91,6 +91,41 @@ const schema = {
       "Enable/disable SSL for PostgreSQL (auto-enabled in production for remote hosts if not explicitly set)",
   },
 
+  DATABASE_URL_PREVIOUS: {
+    required: false,
+    type: "url",
+    description:
+      "Previous PostgreSQL connection string for zero-downtime credential rotation overlap window",
+  },
+
+  POSTGRES_PASSWORD_PREVIOUS: {
+    required: false,
+    description:
+      "Previous PostgreSQL password for zero-downtime credential rotation overlap window",
+  },
+
+  CREDENTIAL_ISSUED_AT_POSTGRES: {
+    required: false,
+    description: "Timestamp (ISO 8601) when PostgreSQL password was issued or rotated",
+  },
+
+  CREDENTIAL_ISSUED_AT_ADMIN: {
+    required: false,
+    description: "Timestamp (ISO 8601) when Admin credentials were issued or rotated",
+  },
+
+  CREDENTIAL_ISSUED_AT_MATCHER: {
+    required: false,
+    description: "Timestamp (ISO 8601) when Matcher Stellar secret key was issued or rotated",
+  },
+
+  CREDENTIAL_MAX_AGE_DAYS: {
+    required: false,
+    type: "number",
+    default: "90",
+    description: "Maximum allowed age in days before a credential is flagged as overdue",
+  },
+
   // ── Stellar Network ───────────────────────────────────────────────────────
 
   STELLAR_NETWORK: {
@@ -126,6 +161,106 @@ const schema = {
     minLength: 56, // Stellar secret keys are 56 chars (S + base32)
     description:
       "Stellar secret key for the donation matcher account (Turrets signing); matching disabled when unset",
+  },
+
+  // ── Donor Onboarding: Sponsored Reserves ─────────────────────────────────
+  // A sponsored account lets a donor who has never held XLM own a Stellar
+  // account without first funding it past the base reserve. The platform locks
+  // its own XLM behind that account; it never holds the donor's key. Leaving
+  // SPONSOR_SECRET_KEY unset disables the whole path, and every other flow —
+  // including today's connected-wallet donation — is unaffected.
+
+  SPONSOR_SECRET_KEY: {
+    required: false,
+    productionRequired: false,
+    minLength: 56, // Stellar secret keys are 56 chars (S + base32)
+    description:
+      "Stellar secret key for the account that sponsors donor base reserves; sponsored account creation disabled when unset",
+  },
+
+  SPONSORSHIP_PER_IP_DAILY: {
+    required: false,
+    type: "number",
+    default: "3",
+    description:
+      "Maximum sponsored accounts one source address may request per rolling 24 hours",
+  },
+
+  SPONSORSHIP_PER_SESSION_TOTAL: {
+    required: false,
+    type: "number",
+    default: "1",
+    description: "Maximum sponsored accounts one onboarding session may request",
+  },
+
+  SPONSORSHIP_GLOBAL_DAILY: {
+    required: false,
+    type: "number",
+    default: "500",
+    description: "Platform-wide cap on sponsored accounts created per rolling 24 hours",
+  },
+
+  SPONSORSHIP_GLOBAL_HOURLY: {
+    required: false,
+    type: "number",
+    default: "60",
+    description:
+      "Platform-wide cap on sponsored accounts created per rolling hour; contains bursts before the daily cap notices",
+  },
+
+  SPONSORSHIP_TREASURY_FLOOR_ACCOUNTS: {
+    required: false,
+    type: "number",
+    default: "20",
+    description:
+      "Stop sponsoring while fewer than this many sponsorships' worth of lockable balance remain, so the treasury can always afford to reclaim what it locked",
+  },
+
+  SPONSORSHIP_MAX_DONATION_XLM: {
+    required: false,
+    type: "number",
+    default: "250",
+    description:
+      "Largest single donation a sponsored account may make before the donor must bring a self-funded wallet",
+  },
+
+  SPONSORSHIP_MAX_LIFETIME_XLM: {
+    required: false,
+    type: "number",
+    default: "1000",
+    description: "Total value one sponsored account may move before it must be upgraded",
+  },
+
+  SPONSORSHIP_RECLAIM_IDLE_DAYS: {
+    required: false,
+    type: "number",
+    default: "30",
+    description:
+      "Days a sponsored account may sit without donating before its reserve is reclaimed",
+  },
+
+  ONBOARDING_IP_HASH_SALT: {
+    required: false,
+    productionRequired: false,
+    minLength: 16,
+    description:
+      "Salt for hashing source addresses in onboarding rate-limit records; a per-deployment random value keeps the hashes non-reversible",
+  },
+
+  // ── Donor Onboarding: Fiat On-Ramp ───────────────────────────────────────
+  // GreenPay never takes fiat. These point at a licensed SEP-24 anchor that
+  // does; see docs/onramp-compliance.md for the obligation split.
+
+  ONRAMP_ANCHOR_URL: {
+    required: false,
+    type: "url",
+    description:
+      "SEP-24 anchor transfer server URL for the fiat on-ramp handoff; the fiat path is not offered when unset",
+  },
+
+  ONRAMP_ANCHOR_HOME_DOMAIN: {
+    required: false,
+    description: "Home domain of the SEP-24 anchor, used to fetch its stellar.toml",
   },
 
   // ── CORS & Security ──────────────────────────────────────────────────────
@@ -173,7 +308,7 @@ const schema = {
     required: false,
     type: "url",
     description:
-      "Redis connection string for distributed rate-limiting; falls back to in-memory store when unset",
+      "Redis connection string for distributed rate-limiting and cross-replica realtime delivery; unset runs single-process (correct locally, silently partial at 2+ replicas)",
   },
 
   CACHE_MAX_ENTRIES: {
@@ -441,6 +576,12 @@ function buildConfig(isTestMode) {
 
     // Database
     databaseUrl: get("DATABASE_URL"),
+    databaseUrlPrevious: get("DATABASE_URL_PREVIOUS"),
+    postgresPasswordPrevious: get("POSTGRES_PASSWORD_PREVIOUS"),
+    credentialIssuedAtPostgres: get("CREDENTIAL_ISSUED_AT_POSTGRES"),
+    credentialIssuedAtAdmin: get("CREDENTIAL_ISSUED_AT_ADMIN"),
+    credentialIssuedAtMatcher: get("CREDENTIAL_ISSUED_AT_MATCHER"),
+    credentialMaxAgeDays: Number(get("CREDENTIAL_MAX_AGE_DAYS")),
     databaseSsl: get("DATABASE_SSL"),
 
     // Stellar Network
@@ -449,6 +590,20 @@ function buildConfig(isTestMode) {
     sorobanRpcUrl: get("SOROBAN_RPC_URL"),
     contractId: get("CONTRACT_ID"),
     matcherSecretKey: get("MATCHER_SECRET_KEY"),
+
+    // Donor Onboarding
+    sponsorSecretKey: get("SPONSOR_SECRET_KEY"),
+    sponsorshipPerIpDaily: Number(get("SPONSORSHIP_PER_IP_DAILY")),
+    sponsorshipPerSessionTotal: Number(get("SPONSORSHIP_PER_SESSION_TOTAL")),
+    sponsorshipGlobalDaily: Number(get("SPONSORSHIP_GLOBAL_DAILY")),
+    sponsorshipGlobalHourly: Number(get("SPONSORSHIP_GLOBAL_HOURLY")),
+    sponsorshipTreasuryFloorAccounts: Number(get("SPONSORSHIP_TREASURY_FLOOR_ACCOUNTS")),
+    sponsorshipMaxDonationXlm: Number(get("SPONSORSHIP_MAX_DONATION_XLM")),
+    sponsorshipMaxLifetimeXlm: Number(get("SPONSORSHIP_MAX_LIFETIME_XLM")),
+    sponsorshipReclaimIdleDays: Number(get("SPONSORSHIP_RECLAIM_IDLE_DAYS")),
+    onboardingIpHashSalt: get("ONBOARDING_IP_HASH_SALT"),
+    onrampAnchorUrl: get("ONRAMP_ANCHOR_URL"),
+    onrampAnchorHomeDomain: get("ONRAMP_ANCHOR_HOME_DOMAIN"),
 
     // CORS & Security
     allowedOrigins: get("ALLOWED_ORIGINS"),

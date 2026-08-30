@@ -1,4 +1,8 @@
 #![no_std]
+#[cfg(all(test, feature = "testutils"))]
+mod governance_property_tests;
+#[cfg(all(test, feature = "testutils"))]
+mod property_tests;
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, token, vec, Address, Bytes, BytesN, Env, IntoVal, String,
@@ -424,12 +428,29 @@ impl DaoGovernanceContract {
     // execute_proposal invokes proposal.target_contract/function with
     // proposer-supplied calldata. Without a restriction here, a successful
     // vote would let a proposal invoke arbitrary calldata against any
-    // contract/function pair. Only the dao_admin (the same authority that
-    // can already force-advance a proposal past Discussion) may change the
-    // allowlist, and the pair is checked both when a proposal is created and
-    // again immediately before execution, so removing an entry after a
-    // proposal is queued still blocks it from running.
+    // contract/function pair.
+    //
+    // Design & Admin Escape Hatch:
+    // Only the dao_admin may change the allowlist. This design acts as an
+    // administrative emergency circuit-breaker to block malicious, compromised,
+    // or deprecated execution targets.
+    //
+    // Governance Risk & Mid-Flight Semantics:
+    // The (target_contract, function) pair is validated both when a proposal is
+    // created (preventing the creation of unexecutable proposals) and again
+    // immediately prior to on-chain execution in `execute_proposal`.
+    // Consequently, `dao_admin` has the authority to unilaterally veto a passed
+    // proposal by removing its target from the allowlist before execution occurs.
 
+    /// Adds a `(target_contract, function)` pair to the execution allowlist.
+    ///
+    /// # Access Control
+    /// Restricted to `config.dao_admin`.
+    ///
+    /// # Admin Escape Hatch & Governance Risk
+    /// The allowlist is designed as an administrative escape hatch and circuit-breaker.
+    /// Adding an allowed target permits proposals to be created for and executed against
+    /// this contract/function pair.
     pub fn add_allowed_target(
         env: Env,
         caller: Address,
@@ -452,6 +473,17 @@ impl DaoGovernanceContract {
             .publish((Symbol::new(&env, "tgt_add"),), (target_contract, function));
     }
 
+    /// Removes a `(target_contract, function)` pair from the execution allowlist.
+    ///
+    /// # Access Control
+    /// Restricted to `config.dao_admin`.
+    ///
+    /// # Mid-Flight Semantics & Emergency Veto
+    /// If an allowlist entry is removed while a proposal is in-flight (Discussion,
+    /// Voting, or Timelocked Execution), `execute_proposal` will fail with
+    /// `"target/function not allowlisted"`. This provides an emergency circuit-breaker
+    /// for the DAO admin to halt execution of approved proposals targeting compromised
+    /// contracts, while intentionally introducing an administrative veto risk.
     pub fn remove_allowed_target(
         env: Env,
         caller: Address,
@@ -473,6 +505,7 @@ impl DaoGovernanceContract {
             .publish((Symbol::new(&env, "tgt_rmv"),), (target_contract, function));
     }
 
+    /// Queries whether a `(target_contract, function)` pair is currently allowlisted.
     pub fn is_allowed_target(env: Env, target_contract: Address, function: Symbol) -> bool {
         env.storage()
             .persistent()
@@ -481,6 +514,12 @@ impl DaoGovernanceContract {
 
     // ─── Requirement 6: Proposal Creation ──────────────────────────────────
 
+    /// Creates a new proposal in the `Discussion` stage.
+    ///
+    /// # Proposal Target Allowlist Check
+    /// Rejects proposal creation immediately if `(target_contract, function)`
+    /// is not present in the allowlist (`DataKey::AllowedTarget`), preventing
+    /// the DAO from spending voting and discussion cycles on unexecutable proposals.
     pub fn create_proposal(
         env: Env,
         proposer: Address,
@@ -717,6 +756,12 @@ impl DaoGovernanceContract {
 
     // ─── Requirement 10: On-Chain Execution ────────────────────────────────
 
+    /// Executes an approved proposal once its timelock has elapsed.
+    ///
+    /// # Dual-Validation Allowlist Check & Admin Circuit Breaker
+    /// Re-validates that `(target_contract, function)` remains allowlisted at execution
+    /// time. If `dao_admin` removed the target entry mid-flight (during discussion,
+    /// voting, or timelock), execution panics with `"target/function not allowlisted"`.
     pub fn execute_proposal(env: Env, proposal_id: u64) {
         let key = DataKey::Proposal(proposal_id);
         let proposal: Proposal = env
@@ -766,6 +811,40 @@ impl DaoGovernanceContract {
             .update_current_contract_wasm(new_wasm_hash.clone());
         env.events()
             .publish((Symbol::new(&env, "upgraded"), caller), new_wasm_hash);
+    }
+
+    // ─── Requirement 12: DAO-Governed Config Update ───────────────────────────
+
+    /// Updates the DAO configuration parameters (quorum, voting period, timelock, etc.).
+    ///
+    /// # Authorization
+    /// Must be authorized by the DAO contract itself (`env.current_contract_address().require_auth()`),
+    /// ensuring configuration updates can only be executed via a successful, passed DAO proposal.
+    ///
+    /// # Bounds checks
+    /// * `quorum_bps`: must be > 0 and <= 10_000 (100%).
+    /// * `voting_period_ledgers`: must be >= `MIN_VOTING_WINDOW` (120_960 ledgers).
+    /// * `timelock_ledgers`: must be > 0.
+    pub fn set_config(env: Env, new_config: Config) {
+        env.current_contract_address().require_auth();
+        if new_config.quorum_bps <= 0 {
+            panic!("quorum must be positive");
+        }
+        if new_config.quorum_bps > 10_000 {
+            panic!("quorum too high");
+        }
+        if new_config.voting_period_ledgers < MIN_VOTING_WINDOW {
+            panic!("voting period too short");
+        }
+        if new_config.timelock_ledgers == 0 {
+            panic!("timelock must be positive");
+        }
+        env.storage().instance().set(&DataKey::Config, &new_config);
+        env.storage()
+            .instance()
+            .extend_ttl(MIN_VOTING_WINDOW, MAX_LOCK_LEDGERS);
+        env.events()
+            .publish((Symbol::new(&env, "set_cfg"),), new_config);
     }
 }
 
@@ -2304,5 +2383,149 @@ mod tests {
         let p = client.get_proposal(&pid);
         env.ledger().set_sequence_number(p.executable_from_ledger);
         client.execute_proposal(&pid);
+    }
+
+    // ─── R16: DAO-Governed Config Updates ─────────────────────────────────
+
+    #[test]
+    fn test_set_config_ok() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (cid, cfg, client) = deploy(&env);
+
+        let new_admin = Address::generate(&env);
+        let new_cfg = Config {
+            gp_token: cfg.gp_token.clone(),
+            quorum_bps: 1500,
+            voting_period_ledgers: VOTING_PERIOD + 10_000,
+            timelock_ledgers: TIMELOCK + 5_000,
+            dao_admin: new_admin.clone(),
+        };
+
+        // When called with contract's own authorization (e.g. via mock_all_auths or internal invocation)
+        client.set_config(&new_cfg);
+
+        let updated = client.get_config();
+        assert_eq!(updated.gp_token, cfg.gp_token);
+        assert_eq!(updated.quorum_bps, 1500);
+        assert_eq!(updated.voting_period_ledgers, VOTING_PERIOD + 10_000);
+        assert_eq!(updated.timelock_ledgers, TIMELOCK + 5_000);
+        assert_eq!(updated.dao_admin, new_admin);
+
+        // Verify event was emitted
+        let events = env.events().all();
+        let last_event = events.last().unwrap();
+        assert_eq!(last_event.0, cid);
+    }
+
+    #[test]
+    #[should_panic(expected = "quorum must be positive")]
+    fn test_set_config_zero_quorum_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_cid, cfg, client) = deploy(&env);
+
+        let mut new_cfg = cfg.clone();
+        new_cfg.quorum_bps = 0;
+        client.set_config(&new_cfg);
+    }
+
+    #[test]
+    #[should_panic(expected = "quorum must be positive")]
+    fn test_set_config_negative_quorum_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_cid, cfg, client) = deploy(&env);
+
+        let mut new_cfg = cfg.clone();
+        new_cfg.quorum_bps = -500;
+        client.set_config(&new_cfg);
+    }
+
+    #[test]
+    #[should_panic(expected = "quorum too high")]
+    fn test_set_config_excessive_quorum_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_cid, cfg, client) = deploy(&env);
+
+        let mut new_cfg = cfg.clone();
+        new_cfg.quorum_bps = 10_001;
+        client.set_config(&new_cfg);
+    }
+
+    #[test]
+    #[should_panic(expected = "voting period too short")]
+    fn test_set_config_short_voting_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_cid, cfg, client) = deploy(&env);
+
+        let mut new_cfg = cfg.clone();
+        new_cfg.voting_period_ledgers = MIN_VOTING_WINDOW - 1;
+        client.set_config(&new_cfg);
+    }
+
+    #[test]
+    #[should_panic(expected = "timelock must be positive")]
+    fn test_set_config_zero_timelock_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_cid, cfg, client) = deploy(&env);
+
+        let mut new_cfg = cfg.clone();
+        new_cfg.timelock_ledgers = 0;
+        client.set_config(&new_cfg);
+    }
+
+    #[test]
+    fn test_mid_flight_target_removal_and_readdition_semantics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_cid, cfg, client) = deploy(&env);
+        let a = Address::generate(&env);
+        let b = Address::generate(&env);
+        let target = deploy_noop(&env);
+        let function = Symbol::new(&env, "noop");
+        let sac = StellarAssetClient::new(&env, &cfg.gp_token);
+        sac.mint(&a, &500_000i128);
+        sac.mint(&b, &500_000i128);
+        client.lock_tokens(&a, &500_000i128, &MAX_LOCK_LEDGERS);
+        client.lock_tokens(&b, &500_000i128, &MAX_LOCK_LEDGERS);
+
+        // 1. Target is allowlisted and proposal is created
+        client.add_allowed_target(&cfg.dao_admin, &target, &function);
+        let pid = client.create_proposal(
+            &a,
+            &String::from_str(&env, "X"),
+            &String::from_str(&env, "Y"),
+            &target,
+            &function,
+            &Bytes::new(&env),
+        );
+
+        // 2. Proposal is voted on, passes, and enters Execution stage
+        snapshot(&client, &a, pid);
+        let end = env.ledger().sequence() + VOTING_PERIOD;
+        vote(&client, &a, pid, true);
+        vote(&client, &b, pid, true);
+        env.ledger().set_sequence_number(end + 1);
+        finalise(&client, pid);
+
+        let p = client.get_proposal(&pid);
+        assert_eq!(p.stage, ProposalStage::Execution);
+
+        // 3. Admin removes target mid-flight (emergency circuit-breaker)
+        client.remove_allowed_target(&cfg.dao_admin, &target, &function);
+        assert!(!client.is_allowed_target(&target, &function));
+
+        // 4. Admin re-adds target after resolving concerns
+        client.add_allowed_target(&cfg.dao_admin, &target, &function);
+        assert!(client.is_allowed_target(&target, &function));
+
+        // 5. Execution now proceeds successfully once timelock has elapsed
+        env.ledger().set_sequence_number(p.executable_from_ledger);
+        client.execute_proposal(&pid);
+        assert_eq!(client.get_proposal(&pid).stage, ProposalStage::Executed);
     }
 }

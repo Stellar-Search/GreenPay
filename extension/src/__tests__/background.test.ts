@@ -33,7 +33,8 @@ class MemoryStorage implements StorageArea {
 }
 
 const EXTENSION_ID = 'test-extension-id';
-const VALID_PUBLIC_KEY = `G${'A'.repeat(55)}`;
+// Test fixture: real checksum-valid Stellar public key used for validation tests
+const VALID_PUBLIC_KEY = 'GDUQ24STT6QESP4QW33O4KDVYMRTBHWZ3ZE6HXX5TCNWUZH6MRT7PADV';
 
 describe('Background Sender Validation & Runtime Parsing', () => {
   let originalChrome: unknown;

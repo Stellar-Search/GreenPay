@@ -1,0 +1,42 @@
+name: Contracts Property Deep
+
+on:
+  schedule:
+    # Nightly deep property exploration (issue #511)
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  property-deep:
+    name: Soroban property tests (deep)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/target
+          key: ${{ runner.os }}-cargo-contracts-${{ hashFiles('contracts/**/Cargo.lock') }}
+      - name: Deep property tests
+        env:
+          PROPTEST_CASES: "2000"
+        run: cargo test --workspace --features testutils prop_ regression_ -- --test-threads=1
+      - name: Money-path coverage report
+        run: bash scripts/money-path-coverage.sh deep
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: contracts-coverage-xml
+          path: contracts/coverage.xml
+          retention-days: 14

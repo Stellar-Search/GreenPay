@@ -19,8 +19,9 @@ function buildApp() {
   return app;
 }
 
+const { Keypair } = require("@stellar/stellar-sdk");
 const PROJECT_ID = "11111111-1111-1111-1111-111111111111";
-const DONOR_KEY = "G" + "A".repeat(55);
+const DONOR_KEY = Keypair.random().publicKey();
 
 describe("GET /api/impact", () => {
   let app;
@@ -51,20 +52,31 @@ describe("GET /api/impact", () => {
     it("caches by project id, not the full request URL", async () => {
       pool.query
         .mockResolvedValueOnce({
-          rows: [{ id: PROJECT_ID, category: "reforestation", raised_xlm: "100", co2_offset_kg: 50 }],
+          rows: [{ id: PROJECT_ID, name: "Forest", category: "reforestation" }],
         })
-        .mockResolvedValueOnce({ rows: [{ totalDonationsXLM: "10", donorCount: 2 }] });
+        .mockResolvedValueOnce({ rows: [{ totalDonationsXLM: "10", donorCount: 2 }] })
+        .mockResolvedValueOnce({ rows: [] });
 
       const first = await request(app).get(`/api/impact/project/${PROJECT_ID}`);
       expect(first.status).toBe(200);
-      expect(pool.query).toHaveBeenCalledTimes(2);
+      expect(pool.query).toHaveBeenCalledTimes(3);
+      expect(first.body.data).toMatchObject({
+        totalDonationsXLM: "10.0000000",
+        donorCount: 2,
+        claims: [],
+      });
+      expect(first.body.data).not.toHaveProperty("co2OffsetKg");
+      expect(first.body.data).not.toHaveProperty("uniqueCountries");
 
       // A different query string must hit the same cache entry rather than
       // minting a new one keyed on req.originalUrl.
       const second = await request(app).get(`/api/impact/project/${PROJECT_ID}?cachebuster=${Date.now()}`);
       expect(second.status).toBe(200);
-      expect(pool.query).toHaveBeenCalledTimes(2); // no additional queries
+      expect(pool.query).toHaveBeenCalledTimes(3); // no additional queries
       expect(second.body).toEqual(first.body);
+
+      const issuedSql = pool.query.mock.calls.map(([sql]) => sql).join("\n");
+      expect(issuedSql).not.toMatch(/co2_offset_kg\s*\/|amount_xlm\s*\*/i);
     });
   });
 
@@ -79,32 +91,46 @@ describe("GET /api/impact", () => {
 
     it("caches by donor public key", async () => {
       pool.query
-        .mockResolvedValueOnce({ rows: [{ totalDonatedXLM: "5", projectsSupported: 1, co2OffsetKg: 3 }] })
-        .mockResolvedValueOnce({ rows: [{ category: "clean-water" }] });
+        .mockResolvedValueOnce({ rows: [{ totalDonatedXLM: "5", projectsSupported: 1 }] })
+        .mockResolvedValueOnce({ rows: [{ category: "clean-water" }] })
+        .mockResolvedValueOnce({ rows: [] });
 
       const first = await request(app).get(`/api/impact/donor/${DONOR_KEY}`);
       expect(first.status).toBe(200);
-      expect(pool.query).toHaveBeenCalledTimes(2);
+      expect(pool.query).toHaveBeenCalledTimes(3);
+      expect(first.body.data.supportedProjectClaims).toEqual([]);
+      expect(first.body.data.attributionNotice).toMatch(/project-level outcomes/i);
+      expect(first.body.data).not.toHaveProperty("co2OffsetKg");
 
       const second = await request(app).get(`/api/impact/donor/${DONOR_KEY}`);
       expect(second.status).toBe(200);
-      expect(pool.query).toHaveBeenCalledTimes(2);
+      expect(pool.query).toHaveBeenCalledTimes(3);
     });
   });
 
   describe("GET /api/impact/global", () => {
     it("serves the second request from cache", async () => {
       pool.query
-        .mockResolvedValueOnce({ rows: [{ totalDonationsXLM: "10", donorCount: 2, co2OffsetKg: "5" }] })
+        .mockResolvedValueOnce({ rows: [{ totalDonationsXLM: "10", donorCount: 2 }] })
+        .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [] });
 
       const first = await request(app).get("/api/impact/global");
       expect(first.status).toBe(200);
-      expect(pool.query).toHaveBeenCalledTimes(2);
+      expect(pool.query).toHaveBeenCalledTimes(3);
+      expect(first.body.data.claimSummary).toEqual({
+        total: 0,
+        verified: 0,
+        operatorStated: 0,
+        unverified: 0,
+        revoked: 0,
+        expired: 0,
+      });
+      expect(first.body.data).not.toHaveProperty("treesEquivalent");
 
       const second = await request(app).get("/api/impact/global");
       expect(second.status).toBe(200);
-      expect(pool.query).toHaveBeenCalledTimes(2);
+      expect(pool.query).toHaveBeenCalledTimes(3);
     });
   });
 });

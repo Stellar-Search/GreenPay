@@ -31,6 +31,37 @@ spec:
     - protocol: TCP
       port: 5432
 ---
+# default-deny-ingress above selects every pod in the namespace, so without this
+# the backend cannot reach Redis at all — and because the realtime module is
+# built to degrade rather than crash when its store is unreachable, the symptom
+# would be a live feed that quietly reaches only one pod's clients: precisely
+# the bug Redis was introduced to fix, reintroduced by a missing policy.
+#
+# summary-worker is included because it publishes ai_summary_ready through the
+# same adapter.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-redis
+  namespace: greenpay
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: backend
+    - podSelector:
+        matchLabels:
+          app: summary-worker
+    ports:
+    - protocol: TCP
+      port: 6379
+---
 # Without these, default-deny-ingress above blackholes the entire application:
 # it selects every pod in the namespace and allows nothing, and the only other
 # policy covers Postgres. Applying k8s/ as-is left the ingress controller

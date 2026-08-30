@@ -5,6 +5,5 @@
   "exclude": ["**/*.test.js"],
   "excludeExternals": true,
   "includeVersion": false,
-  "hideGenerator": true,
-  
+  "hideGenerator": true
 }

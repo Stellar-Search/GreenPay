@@ -155,12 +155,14 @@ function toIso(value) {
 }
 
 function mapProjectRow(row) {
+  const { translationMetadata } = require("./contentLanguage");
   return {
     id: row.id,
-    name: row.name,
-    description: row.description,
-    category: row.category,
-    location: row.location,
+    name: row.localized_name || row.name,
+    description: row.localized_description || row.description,
+    category: row.localized_category || row.category,
+    sourceCategory: row.category,
+    location: row.localized_location || row.location,
     walletAddress: row.wallet_address,
     goalXLM: row.goal_xlm?.toString() || "0",
     raisedXLM: row.raised_xlm?.toString() || "0",
@@ -170,6 +172,11 @@ function mapProjectRow(row) {
     rejectionReason: row.rejection_reason || null,
     verified: row.verified,
     onChainVerified: row.on_chain_verified,
+    verificationExpiresAt: toIso(row.verification_expires_at),
+    verificationRevokedAt: toIso(row.verification_revoked_at),
+    verificationRevocationReason: row.verification_revocation_reason || null,
+    verificationDecisionTxHash: row.verification_decision_tx_hash || null,
+    verificationDecisionContractId: row.verification_decision_contract_id || null,
     tags: row.tags || [],
     aiSummary:            row.ai_summary || null,
     aiSummaryGeneratedAt: row.ai_summary_generated_at ? toIso(row.ai_summary_generated_at) : null,
@@ -177,6 +184,7 @@ function mapProjectRow(row) {
     aiSummarySourceHash:  row.ai_summary_source_hash || null,
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
+    ...translationMetadata(row),
   };
 }
 
@@ -237,12 +245,20 @@ function mapProfileRow(row) {
 // exported as `mapProfileRow`
 
 function mapProjectUpdateRow(row) {
+  const { translationMetadata } = require("./contentLanguage");
   return {
     id: row.id,
     projectId: row.project_id,
-    title: row.title,
-    body: row.body,
+    title: row.localized_title || row.title,
+    body: row.localized_body || row.body,
     createdAt: toIso(row.created_at),
+    publishedAt: toIso(row.published_at),
+    editedAt: toIso(row.edited_at),
+    revision: Number(row.revision || 1),
+    moderationStatus: row.moderation_status || "published",
+    isEdited: Number(row.revision || 1) > 1 || Boolean(row.edited_at),
+    underReview: row.moderation_status === "published_pending_review",
+    ...translationMetadata(row),
   };
 }
 

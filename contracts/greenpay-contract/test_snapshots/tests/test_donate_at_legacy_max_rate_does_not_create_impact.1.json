@@ -192,6 +192,7 @@
       ]
     ],
     [],
+    [],
     []
   ],
   "ledger": {
@@ -320,8 +321,8 @@
                       },
                       "val": {
                         "i128": {
-                          "hi": 9223372036854775807,
-                          "lo": 18446744073705445888
+                          "hi": 0,
+                          "lo": 0
                         }
                       }
                     },
@@ -935,8 +936,8 @@
                         },
                         "val": {
                           "i128": {
-                            "hi": 9223372036854775807,
-                            "lo": 18446744073705445888
+                            "hi": 0,
+                            "lo": 0
                           }
                         }
                       },
@@ -2304,9 +2305,101 @@
             ],
             "data": {
               "i128": {
-                "hi": 9223372036854775807,
-                "lo": 18446744073705445888
+                "hi": 0,
+                "lo": 0
               }
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": null,
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_call"
+              },
+              {
+                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
+              },
+              {
+                "symbol": "get_donor_stats"
+              }
+            ],
+            "data": {
+              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_return"
+              },
+              {
+                "symbol": "get_donor_stats"
+              }
+            ],
+            "data": {
+              "map": [
+                {
+                  "key": {
+                    "symbol": "badge"
+                  },
+                  "val": {
+                    "vec": [
+                      {
+                        "symbol": "EarthGuardian"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "co2_offset_grams"
+                  },
+                  "val": {
+                    "i128": {
+                      "hi": 0,
+                      "lo": 0
+                    }
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "donation_count"
+                  },
+                  "val": {
+                    "u32": 1
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "total_donated"
+                  },
+                  "val": {
+                    "i128": {
+                      "hi": 9223372036854775807,
+                      "lo": 18446744073709551615
+                    }
+                  }
+                }
+              ]
             }
           }
         }

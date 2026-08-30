@@ -6,10 +6,13 @@ import { useRouter } from "next/router";
 import Link from "next/link";
 import CircularProgress from "@/components/CircularProgress";
 import { fetchProject } from "@/lib/api";
-import { formatXLM, formatCO2, progressPercent } from "@/utils/format";
+import { formatXLM, progressPercent } from "@/utils/format";
 import type { ClimateProject } from "@/utils/types";
+import { useI18n } from "@/lib/i18n";
+import ContentLanguageNotice from "@/components/ContentLanguageNotice";
 
 export default function WidgetPage() {
+  const { locale } = useI18n();
   const router = useRouter();
   const { projectId } = router.query;
   const [project, setProject] = useState<ClimateProject | null>(null);
@@ -18,11 +21,11 @@ export default function WidgetPage() {
 
   useEffect(() => {
     if (!projectId) return;
-    fetchProject(projectId as string)
+    fetchProject(projectId as string, locale)
       .then(setProject)
       .catch(() => setProject(null))
       .finally(() => setLoading(false));
-  }, [projectId]);
+  }, [projectId, locale]);
 
   if (loading) {
     return (
@@ -55,13 +58,14 @@ export default function WidgetPage() {
     <div className={`min-h-screen ${bgClass} p-4 flex items-center justify-center`}>
       <div className={`w-full max-w-sm rounded-xl border ${borderClass} overflow-hidden shadow-lg`}>
         {/* Header */}
-        <div className="bg-gradient-to-r from-forest-500 to-emerald-500 p-4 text-white">
+        <div dir={project.contentDirection} lang={project.contentLanguage} className="bg-gradient-to-r from-forest-500 to-emerald-500 p-4 text-white text-start">
           <h3 className="font-display text-lg font-bold truncate">{project.name}</h3>
           <p className={`text-sm opacity-90 truncate`}>{project.category}</p>
         </div>
 
         {/* Content */}
         <div className="p-4 space-y-4">
+          <ContentLanguageNotice content={project} />
           {/* Progress bar */}
           <div>
             <div className="flex justify-between items-baseline mb-2">
@@ -87,8 +91,8 @@ export default function WidgetPage() {
               <p className={`text-lg font-bold ${textClass}`}>{project.donorCount}</p>
             </div>
             <div className={`p-2 rounded bg-opacity-10 bg-emerald-600`}>
-              <p className={`text-xs ${secondaryClass} font-semibold`}>CO₂ Offset</p>
-              <p className={`text-lg font-bold ${textClass}`}>{formatCO2(project.co2OffsetKg)}</p>
+              <p className={`text-xs ${secondaryClass} font-semibold`}>Outcome evidence</p>
+              <p className={`text-sm font-bold ${textClass}`}>View claims →</p>
             </div>
           </div>
 

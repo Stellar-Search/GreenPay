@@ -79,7 +79,7 @@ async function mockApi(page: Page) {
   await page.route("**/api/v1/projects?**", (r) => r.fulfill({ json: { success: true, data: MOCK_PROJECTS } }));
   await page.route("**/api/v1/projects", (r) => r.fulfill({ json: { success: true, data: MOCK_PROJECTS } }));
   await page.route("**/api/v1/stats/global", (r) =>
-    r.fulfill({ json: { success: true, data: { totalDonations: 1, totalXLMRaised: "100", totalCO2OffsetKg: 1000 } } }),
+    r.fulfill({ json: { success: true, data: { totalDonations: 1, totalXLMRaised: "100", publishedImpactClaims: 1, verifiedImpactClaims: 0 } } }),
   );
 }
 
@@ -101,7 +101,8 @@ test.describe("ProjectComparison modal", () => {
 
     await expect(dialog.getByText(MOCK_PROJECTS[0].name)).toBeVisible();
     await expect(dialog.getByText(MOCK_PROJECTS[1].name)).toBeVisible();
-    await expect(dialog.getByText("CO2 per XLM")).toBeVisible();
+    await expect(dialog.getByText("Outcome evidence")).toBeVisible();
+    await expect(dialog.getByText(/not reduced to a donation rate/i).first()).toBeVisible();
     await expect(dialog.getByText("Progress %")).toBeVisible();
     await expect(dialog.getByText("Donor count")).toBeVisible();
   });

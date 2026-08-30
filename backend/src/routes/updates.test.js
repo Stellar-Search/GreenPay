@@ -1,29 +1,49 @@
 "use strict";
+
 const express = require("express");
 const request = require("supertest");
 const { apiEnvelope, errorHandler } = require("../middleware/apiEnvelope");
 const { signToken } = require("../middleware/auth");
 
-jest.mock("../db/pool", () => ({
-  query: jest.fn(),
-}));
-
+jest.mock("../db/pool", () => ({ query: jest.fn(), connect: jest.fn() }));
 jest.mock("../middleware/rateLimiter", () => ({
   createRateLimiter: () => (req, res, next) => next(),
   createLayeredRateLimiter: () => (req, res, next) => next(),
 }));
-
-jest.mock("../services/email", () => ({
-  enqueueUpdateNotifications: jest.fn().mockResolvedValue(undefined),
-}));
-
-jest.mock("../services/push", () => ({
-  sendUpdatePushNotifications: jest.fn().mockResolvedValue(undefined),
+jest.mock("../services/updateNotifications", () => ({
+  dispatchPublicationNotifications: jest.fn().mockResolvedValue(undefined),
+  dispatchRemovalNotifications: jest.fn().mockResolvedValue(undefined),
 }));
 
 const pool = require("../db/pool");
-const { enqueueUpdateNotifications } = require("../services/email");
-const { sendUpdatePushNotifications } = require("../services/push");
+const {
+  dispatchPublicationNotifications,
+  dispatchRemovalNotifications,
+} = require("../services/updateNotifications");
+
+const PROJECT_ID = "11111111-1111-1111-1111-111111111111";
+const UPDATE_ID = "22222222-2222-2222-2222-222222222222";
+const APPEAL_ID = "33333333-3333-3333-3333-333333333333";
+const { Keypair } = require("@stellar/stellar-sdk");
+const DONOR = Keypair.random().publicKey();
+const NOW = "2026-08-28T10:00:00.000Z";
+
+const projectRow = {
+  id: PROJECT_ID,
+  name: "Reef Cleanup",
+  verified: false,
+  on_chain_verified: false,
+};
+const updateRow = {
+  id: UPDATE_ID,
+  project_id: PROJECT_ID,
+  title: "New photos",
+  body: "Great progress this month",
+  source_language: "en",
+  moderation_status: "pending",
+  revision: 1,
+  created_at: NOW,
+};
 
 function buildApp() {
   const app = express();
@@ -34,92 +54,231 @@ function buildApp() {
   return app;
 }
 
-function adminToken() {
-  return signToken({ role: "admin", sub: "admin" }, "1h");
+function adminToken(subject = "moderator-a") {
+  return signToken({ role: "admin", sub: subject }, "1h");
 }
 
-const PROJECT_ID = "11111111-1111-1111-1111-111111111111";
-const projectRow = {
-  id: PROJECT_ID,
-  name: "Reef Cleanup",
-  description: "desc",
-  category: "ocean",
-  location: "here",
-  wallet_address: "GABC",
-  goal_xlm: "100",
-  raised_xlm: "10",
-  donor_count: 1,
-  co2_offset_kg: 5,
-  status: "active",
-  verified: true,
-  on_chain_verified: false,
-  tags: [],
-};
-const updateRow = {
-  id: "22222222-2222-2222-2222-222222222222",
-  project_id: PROJECT_ID,
-  title: "New photos",
-  body: "Great progress this month",
-  created_at: new Date().toISOString(),
-};
+function mockTransaction(handler) {
+  const client = {
+    query: jest.fn(async (sql, params) => {
+      if (["BEGIN", "COMMIT", "ROLLBACK"].includes(sql)) return { rows: [] };
+      return handler(sql, params);
+    }),
+    release: jest.fn(),
+  };
+  pool.connect.mockResolvedValue(client);
+  return client;
+}
 
-describe("POST /api/updates", () => {
+describe("project update moderation lifecycle", () => {
   let app;
 
   beforeEach(() => {
     jest.clearAllMocks();
     pool.query.mockReset();
+    pool.connect.mockReset();
     app = buildApp();
   });
 
-  it("enqueues chunked email and push fan-out instead of querying subscribers inline", async () => {
-    pool.query
-      .mockResolvedValueOnce({ rows: [projectRow] }) // project lookup
-      .mockResolvedValueOnce({ rows: [updateRow] }); // insert ... returning
+  it("holds a standard project's new update for pre-publication review", async () => {
+    const client = mockTransaction(async (sql) => {
+      if (sql.includes("FROM projects WHERE")) return { rows: [projectRow] };
+      if (sql.includes("INSERT INTO project_updates (")) return { rows: [updateRow] };
+      if (sql.includes("INSERT INTO project_update_moderation_events")) return { rows: [] };
+      throw new Error(`unexpected query: ${sql}`);
+    });
 
-    const res = await request(app)
+    const response = await request(app)
       .post("/api/updates")
       .set("Authorization", `Bearer ${adminToken()}`)
       .send({ projectId: PROJECT_ID, title: "New photos", body: "Great progress this month" });
 
-    expect(res.status).toBe(201);
+    expect(response.status).toBe(201);
+    expect(response.body.data.moderationStatus).toBe("pending");
+    expect(client.query).toHaveBeenCalledWith(
+      expect.stringContaining("INSERT INTO project_update_moderation_events"),
+      expect.arrayContaining(["moderator-a", "project_admin", "created", null, "pending"]),
+    );
+    expect(dispatchPublicationNotifications).not.toHaveBeenCalled();
+  });
 
-    // Only the project lookup and the insert touch the database here — no
-    // "SELECT email FROM project_subscriptions" (or device tokens) inline.
-    expect(pool.query).toHaveBeenCalledTimes(2);
-    expect(pool.query.mock.calls[0][0]).toMatch(/FROM projects/);
-    expect(pool.query.mock.calls[1][0]).toMatch(/INSERT INTO project_updates/);
-
-    expect(enqueueUpdateNotifications).toHaveBeenCalledWith({
-      project: expect.objectContaining({ id: PROJECT_ID }),
-      update: expect.objectContaining({ id: updateRow.id }),
+  it("shows a fully verified project's update during review but still holds notifications", async () => {
+    const trustedRow = { ...projectRow, verified: true, on_chain_verified: true };
+    const pendingReview = {
+      ...updateRow,
+      moderation_status: "published_pending_review",
+      published_at: NOW,
+    };
+    mockTransaction(async (sql) => {
+      if (sql.includes("FROM projects WHERE")) return { rows: [trustedRow] };
+      if (sql.includes("INSERT INTO project_updates (")) return { rows: [pendingReview] };
+      return { rows: [] };
     });
-    expect(sendUpdatePushNotifications).toHaveBeenCalledWith({
+
+    const response = await request(app)
+      .post("/api/updates")
+      .set("Authorization", `Bearer ${adminToken()}`)
+      .send({ projectId: PROJECT_ID, title: "New photos", body: "Great progress this month" });
+
+    expect(response.status).toBe(201);
+    expect(response.body.data).toEqual(expect.objectContaining({
+      moderationStatus: "published_pending_review",
+      underReview: true,
+    }));
+    expect(dispatchPublicationNotifications).not.toHaveBeenCalled();
+  });
+
+  it("approves a pending update atomically and queues notifications after commit", async () => {
+    const joined = {
+      ...updateRow,
+      project_name: projectRow.name,
+      project_verified: false,
+      project_on_chain_verified: false,
+    };
+    const published = { ...updateRow, moderation_status: "published", published_at: NOW };
+    const client = mockTransaction(async (sql) => {
+      if (sql.includes("FROM project_updates u JOIN projects")) return { rows: [joined] };
+      if (sql.includes("UPDATE project_updates") && sql.includes("RETURNING")) return { rows: [published] };
+      return { rows: [] };
+    });
+
+    const response = await request(app)
+      .post(`/api/updates/${UPDATE_ID}/moderation`)
+      .set("Authorization", `Bearer ${adminToken()}`)
+      .send({ action: "approve", reason: "Claims and supporting evidence were reviewed" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.moderationStatus).toBe("published");
+    expect(client.query.mock.calls.map(([sql]) => sql)).toEqual(expect.arrayContaining([
+      expect.stringContaining("project_update_moderation_events"),
+      expect.stringContaining("project_update_reports"),
+    ]));
+    expect(dispatchPublicationNotifications).toHaveBeenCalledWith({
       project: expect.objectContaining({ id: PROJECT_ID }),
-      update: expect.objectContaining({ id: updateRow.id }),
+      update: expect.objectContaining({ id: UPDATE_ID }),
     });
   });
 
-  it("still creates the update even if enqueueing notifications fails", async () => {
-    pool.query
-      .mockResolvedValueOnce({ rows: [projectRow] })
-      .mockResolvedValueOnce({ rows: [updateRow] });
-    enqueueUpdateNotifications.mockRejectedValueOnce(new Error("queue unavailable"));
-    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+  it("queues a correction when a published update is removed", async () => {
+    const published = {
+      ...updateRow,
+      moderation_status: "published",
+      published_at: NOW,
+      project_name: projectRow.name,
+      project_verified: true,
+      project_on_chain_verified: true,
+    };
+    const removed = { ...published, moderation_status: "removed", removed_at: NOW };
+    mockTransaction(async (sql) => {
+      if (sql.includes("FROM project_updates u JOIN projects")) return { rows: [published] };
+      if (sql.includes("UPDATE project_updates") && sql.includes("RETURNING")) return { rows: [removed] };
+      return { rows: [] };
+    });
 
-    const res = await request(app)
-      .post("/api/updates")
+    const response = await request(app)
+      .post(`/api/updates/${UPDATE_ID}/moderation`)
       .set("Authorization", `Bearer ${adminToken()}`)
-      .send({ projectId: PROJECT_ID, title: "New photos", body: "Great progress this month" });
+      .send({ action: "remove", reason: "The material impact claim could not be substantiated" });
 
-    expect(res.status).toBe(201);
-    // Let the rejected fire-and-forget promise settle before asserting.
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining("Failed to enqueue email notifications"),
-      "queue unavailable",
+    expect(response.status).toBe(200);
+    expect(dispatchRemovalNotifications).toHaveBeenCalledWith({
+      project: expect.objectContaining({ id: PROJECT_ID }),
+      update: expect.objectContaining({ moderationStatus: "removed" }),
+      reason: "The material impact claim could not be substantiated",
+    });
+  });
+
+  it("stores the previous public revision and marks an edit as under review", async () => {
+    const current = { ...updateRow, moderation_status: "published", published_at: NOW, revision: 2 };
+    const edited = {
+      ...current,
+      title: "Corrected photos",
+      revision: 3,
+      edited_at: NOW,
+      moderation_status: "published_pending_review",
+    };
+    const client = mockTransaction(async (sql) => {
+      if (sql.includes("SELECT * FROM project_updates")) return { rows: [current] };
+      if (sql.includes("UPDATE project_updates") && sql.includes("RETURNING")) return { rows: [edited] };
+      return { rows: [] };
+    });
+
+    const response = await request(app)
+      .patch(`/api/updates/${UPDATE_ID}`)
+      .set("Authorization", `Bearer ${adminToken()}`)
+      .send({ title: "Corrected photos", editReason: "Corrected the field visit date" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual(expect.objectContaining({
+      revision: 3,
+      isEdited: true,
+      underReview: true,
+    }));
+    expect(client.query).toHaveBeenCalledWith(
+      expect.stringContaining("INSERT INTO project_update_revisions"),
+      expect.arrayContaining([UPDATE_ID, 2, true, "moderator-a"]),
     );
+  });
 
-    errorSpy.mockRestore();
+  it("accepts one report from a project donor and does not auto-remove content", async () => {
+    pool.query
+      .mockResolvedValueOnce({ rows: [{ id: UPDATE_ID, is_donor: true }] })
+      .mockResolvedValueOnce({ rows: [{ id: "report-1", status: "open", created_at: NOW }] });
+
+    const response = await request(app)
+      .post(`/api/updates/${UPDATE_ID}/reports`)
+      .send({ donorAddress: DONOR, reason: "fraudulent_claim", details: "The reported total conflicts with the public ledger" });
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.status).toBe("open");
+    expect(pool.query).toHaveBeenCalledTimes(2);
+    expect(pool.query.mock.calls[1][0]).toContain("ON CONFLICT (update_id, reporter_address) DO NOTHING");
+  });
+
+  it("rejects reports from accounts with no committed donation to the project", async () => {
+    pool.query.mockResolvedValueOnce({ rows: [{ id: UPDATE_ID, is_donor: false }] });
+    const response = await request(app)
+      .post(`/api/updates/${UPDATE_ID}/reports`)
+      .send({ donorAddress: DONOR, reason: "spam" });
+    expect(response.status).toBe(403);
+    expect(response.body.error.code).toBe("DONOR_REQUIRED");
+  });
+
+  it("requires a different moderator to decide an appeal", async () => {
+    mockTransaction(async (sql) => {
+      if (sql.includes("FROM project_update_appeals a")) {
+        return { rows: [{
+          appeal_id: APPEAL_ID,
+          update_id: UPDATE_ID,
+          filed_by: "moderator-a",
+          prior_status: "removed",
+          appeal_status: "pending",
+          ...updateRow,
+          project_name: projectRow.name,
+          project_verified: false,
+          project_on_chain_verified: false,
+        }] };
+      }
+      return { rows: [] };
+    });
+    const response = await request(app)
+      .post(`/api/updates/appeals/${APPEAL_ID}/decision`)
+      .set("Authorization", `Bearer ${adminToken("moderator-a")}`)
+      .send({ outcome: "granted", reason: "A second review found the evidence sufficient" });
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe("INDEPENDENT_REVIEW_REQUIRED");
+  });
+
+  it("filters the donor feed to published and published-under-review states", async () => {
+    pool.query.mockResolvedValueOnce({ rows: [{
+      ...updateRow,
+      moderation_status: "published_pending_review",
+      published_at: NOW,
+    }] });
+    const response = await request(app).get(`/api/updates/${PROJECT_ID}`);
+    expect(response.status).toBe(200);
+    expect(pool.query.mock.calls[0][0]).toContain("u.moderation_status = ANY($2::text[])");
+    expect(pool.query.mock.calls[0][1][1]).toEqual(["published", "published_pending_review"]);
+    expect(response.body.data[0].underReview).toBe(true);
   });
 });

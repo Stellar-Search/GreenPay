@@ -13,12 +13,12 @@
  * Security contract:
  *   Every field that originates from user/database input MUST be passed
  *   through escapeHtml() before it is interpolated into the HTML string.
- *   Fields produced by our own formatting helpers (formatXLM, formatCO2,
+ *   Fields produced by our own formatting helpers (formatXLM,
  *   progressPercent, toLocaleString) are numeric/locale-formatted and
  *   contain no HTML-significant characters — they are left as-is.
  */
 import { escapeHtml } from "@/utils/escapeHtml";
-import { formatXLM, formatCO2, progressPercent } from "@/utils/format";
+import { formatXLM, progressPercent } from "@/utils/format";
 import type { ClimateProject, ProjectUpdate } from "@/utils/types";
 
 export interface ReportOptions {
@@ -311,7 +311,7 @@ export function buildReportHtml({ project, updates }: ReportOptions): string {
     </div>
 
     <div class="section">
-      <h3 class="section-title">Impact Metrics</h3>
+      <h3 class="section-title">Funding Metrics</h3>
       <div class="stats-grid">
         <div class="stat-card">
           <div class="stat-icon">💰</div>
@@ -329,9 +329,9 @@ export function buildReportHtml({ project, updates }: ReportOptions): string {
           <div class="stat-label">Total Donors</div>
         </div>
         <div class="stat-card">
-          <div class="stat-icon">♻️</div>
-          <div class="stat-value">${formatCO2(project.co2OffsetKg)}</div>
-          <div class="stat-label">CO₂ Offset</div>
+          <div class="stat-icon">📋</div>
+          <div class="stat-value">Live record</div>
+          <div class="stat-label">Outcome claims on project page</div>
         </div>
       </div>
     </div>

@@ -18,6 +18,9 @@ jest.mock("../middleware/rateLimiter", () => ({
   createRateLimiter: () => (req, res, next) => next(),
   createLayeredRateLimiter: () => (req, res, next) => next(),
 }));
+jest.mock("../services/donationIntegrity", () => ({
+  queueDonationAssessment: jest.fn().mockResolvedValue({}),
+}));
 
 const http = require("http");
 const express = require("express");
@@ -28,8 +31,11 @@ const pool = require("../db/pool");
 const { execute } = require("../eventSourcing/commandBus");
 const { DonationRecordedEvent } = require("../eventSourcing/events");
 
+const { Keypair } = require("@stellar/stellar-sdk");
+const _keys = Array.from({ length: 26 }, () => Keypair.random().publicKey());
 function makePublicKey(char = "A") {
-  return `G${char.repeat(55)}`;
+  const index = Math.abs(char.charCodeAt(0) - 65) % 26;
+  return _keys[index];
 }
 
 function makeTxHash(char = "a") {
@@ -75,6 +81,12 @@ describe("POST /api/donations → donation_event WebSocket broadcast", () => {
       transports: ["websocket"],
     });
     app.set("io", ioServer);
+    // The route broadcasts through the realtime module rather than a bare
+    // io.emit, so the module has to know which server to emit on — exactly what
+    // server.js does at startup. No redisUrl keeps this in single-process mode,
+    // which is what this suite covers: the local-development path must behave
+    // exactly as it did before cross-replica delivery was introduced.
+    require("../realtime").initializeRealtime(ioServer, { redisUrl: null });
     app.use("/api/donations", require("./donations"));
 
     httpServer.listen(0, () => {
@@ -86,6 +98,7 @@ describe("POST /api/donations → donation_event WebSocket broadcast", () => {
   });
 
   afterAll((done) => {
+    require("../realtime").resetRealtime();
     ioServer.close(done);
   });
 
