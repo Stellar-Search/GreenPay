@@ -91,6 +91,41 @@ const schema = {
       "Enable/disable SSL for PostgreSQL (auto-enabled in production for remote hosts if not explicitly set)",
   },
 
+  DATABASE_URL_PREVIOUS: {
+    required: false,
+    type: "url",
+    description:
+      "Previous PostgreSQL connection string for zero-downtime credential rotation overlap window",
+  },
+
+  POSTGRES_PASSWORD_PREVIOUS: {
+    required: false,
+    description:
+      "Previous PostgreSQL password for zero-downtime credential rotation overlap window",
+  },
+
+  CREDENTIAL_ISSUED_AT_POSTGRES: {
+    required: false,
+    description: "Timestamp (ISO 8601) when PostgreSQL password was issued or rotated",
+  },
+
+  CREDENTIAL_ISSUED_AT_ADMIN: {
+    required: false,
+    description: "Timestamp (ISO 8601) when Admin credentials were issued or rotated",
+  },
+
+  CREDENTIAL_ISSUED_AT_MATCHER: {
+    required: false,
+    description: "Timestamp (ISO 8601) when Matcher Stellar secret key was issued or rotated",
+  },
+
+  CREDENTIAL_MAX_AGE_DAYS: {
+    required: false,
+    type: "number",
+    default: "90",
+    description: "Maximum allowed age in days before a credential is flagged as overdue",
+  },
+
   // ── Stellar Network ───────────────────────────────────────────────────────
 
   STELLAR_NETWORK: {
@@ -541,6 +576,12 @@ function buildConfig(isTestMode) {
 
     // Database
     databaseUrl: get("DATABASE_URL"),
+    databaseUrlPrevious: get("DATABASE_URL_PREVIOUS"),
+    postgresPasswordPrevious: get("POSTGRES_PASSWORD_PREVIOUS"),
+    credentialIssuedAtPostgres: get("CREDENTIAL_ISSUED_AT_POSTGRES"),
+    credentialIssuedAtAdmin: get("CREDENTIAL_ISSUED_AT_ADMIN"),
+    credentialIssuedAtMatcher: get("CREDENTIAL_ISSUED_AT_MATCHER"),
+    credentialMaxAgeDays: Number(get("CREDENTIAL_MAX_AGE_DAYS")),
     databaseSsl: get("DATABASE_SSL"),
 
     // Stellar Network

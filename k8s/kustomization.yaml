@@ -17,6 +17,8 @@ resources:
   - namespace.yaml
   - configmap.yaml
   - secret.yaml
+  - secret-store.yaml
+  - external-secret.yaml
   - postgres.yaml
   # Backs the Socket.IO adapter and the realtime replay stream. Without it the
   # live feed silently reaches only the clients of whichever pod emitted.
