@@ -14,9 +14,9 @@ Stellar GreenPay is an open-source climate donation platform where donors give X
 ## ✨ Features (v1)
 
 - 🔗 **Wallet Connect** — Freighter browser wallet integration
-- 🌍 **Browse Projects** — Verified climate projects with impact metrics
+- 🌍 **Browse Projects** — Climate projects with evidence-backed outcome claims and visible provenance
 - 💚 **Donate XLM** — Direct on-chain donations to project wallets
-- 📊 **Impact Tracking** — Soroban contract tracks every donation and CO₂ offset
+- 📊 **Evidence-first outcomes** — donations are on-chain; project outcome ranges carry methodology, evidence, verifier status, an on-chain attestation hash, and revocation history
 - 🏆 **Leaderboard** — Top donors ranked by total XLM given
 - 💬 **Project Updates** — Organisations post progress updates to donors
 

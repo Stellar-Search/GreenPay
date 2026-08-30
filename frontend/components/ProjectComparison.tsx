@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Fragment, useMemo, useState } from "react";
-import { formatCO2, formatXLM, progressPercent } from "@/utils/format";
+import { formatXLM, progressPercent } from "@/utils/format";
 import type { ClimateProject } from "@/utils/types";
 
 interface ProjectComparisonProps {
@@ -9,7 +9,7 @@ interface ProjectComparisonProps {
 }
 
 const ROWS = [
-  { key: "co2", label: "CO2 per XLM" },
+  { key: "outcomes", label: "Outcome evidence" },
   { key: "progress", label: "Progress %" },
   { key: "donorCount", label: "Donor count" },
   { key: "goal", label: "Goal" },
@@ -64,11 +64,8 @@ export default function ProjectComparison({ projects, onClose }: ProjectComparis
               </div>
               {projects.map((project) => {
                 const pct = progressPercent(project.raisedXLM, project.goalXLM);
-                const co2PerXLM = Number.parseFloat(project.goalXLM) > 0
-                  ? project.co2OffsetKg / Number.parseFloat(project.goalXLM)
-                  : 0;
                 let value = "";
-                if (row.key === "co2") value = `${co2PerXLM.toFixed(2)} kg`;
+                if (row.key === "outcomes") value = "Open project record";
                 if (row.key === "progress") value = `${pct}%`;
                 if (row.key === "donorCount") value = project.donorCount.toLocaleString();
                 if (row.key === "goal") value = formatXLM(project.goalXLM);
@@ -79,8 +76,8 @@ export default function ProjectComparison({ projects, onClose }: ProjectComparis
                 return (
                   <div key={`${project.id}-${row.key}`} className="py-2 border-t border-forest-100">
                     <p className="font-body text-sm text-forest-900">{value}</p>
-                    {row.key === "raised" && (
-                      <p className="font-body text-xs text-[#547454] mt-1">{formatCO2(project.co2OffsetKg)} offset</p>
+                    {row.key === "outcomes" && (
+                      <p className="font-body text-xs text-[#547454] mt-1">Ranges and provenance are not reduced to a donation rate.</p>
                     )}
                   </div>
                 );

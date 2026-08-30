@@ -1,11 +1,17 @@
 import type { BackgroundRequest, BackgroundResponse } from './messages';
 import {
   WorkerSessionState,
+  isValidStellarAddress,
   type ProjectSummary,
   type StorageArea,
 } from './session-state';
 
 const API_BASE = 'https://api.stellar-greenpay.app';
+const API_CLIENT_HEADERS = Object.freeze({
+  'X-Client-Name': 'extension',
+  'X-Client-Version': '1.0.0',
+  'X-Client-API-Version': '1',
+});
 
 let defaultState: WorkerSessionState | null = null;
 
@@ -35,13 +41,18 @@ function toProjectSummary(value: unknown): ProjectSummary | null {
   const project = value as Record<string, unknown>;
   if (typeof project.id !== 'string' || typeof project.name !== 'string') return null;
 
+  // walletAddress is the payment destination — validate the full StrKey
+  // checksum at ingestion time.  A project whose walletAddress is absent,
+  // non-string, or fails the checksum is dropped entirely so it never
+  // reaches the project cache or the Operation.payment() call.
+  if (!isValidStellarAddress(project.walletAddress)) return null;
+
   return {
     id: project.id,
     name: project.name,
     description: typeof project.description === 'string' ? project.description : '',
     category: typeof project.category === 'string' ? project.category : 'Other',
-    walletAddress:
-      typeof project.walletAddress === 'string' ? project.walletAddress : '',
+    walletAddress: project.walletAddress,
   };
 }
 
@@ -56,7 +67,7 @@ export async function fetchProjects(
 ): Promise<ProjectSummary[]> {
   const params = new URLSearchParams({ limit: query ? '5' : '3' });
   if (query) params.set('search', query);
-  const url = `${API_BASE}/api/projects?${params}`;
+  const url = `${API_BASE}/api/v1/projects?${params}`;
 
   let lastError: unknown;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -68,6 +79,7 @@ export async function fetchProjects(
     try {
       const response = await fetch(url, {
         signal: controller.signal,
+        headers: API_CLIENT_HEADERS,
       });
       clearTimeout(timer);
 

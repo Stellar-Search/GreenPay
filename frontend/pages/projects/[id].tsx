@@ -5,15 +5,19 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/router";
 import Link from "next/link";
 import DonateForm from "@/components/DonateForm";
+import { loadStarterAccount } from "@/lib/starterAccount";
 import DonationFeed from "@/components/DonationFeed";
 import ToastNotification, { type ToastItem } from "@/components/ToastNotification";
 import WalletConnect from "@/components/WalletConnect";
 import CircularProgress from "@/components/CircularProgress";
 import MonthlyGivingSetup from "@/components/MonthlyGivingSetup";
 import DescriptionAccordion from "@/components/DescriptionAccordion";
-import { createProjectCampaign, fetchProject, fetchProjectMatches, fetchProjectUpdates, fetchSubscriberCount, generateProjectSummary, getApiErrorMessage, subscribeToProject, toggleUpdateLike } from "@/lib/api";
+import ImpactClaimCard from "@/components/ImpactClaimCard";
+import { createProjectCampaign, fetchImpactProject, fetchProject, fetchProjectMatches, fetchProjectUpdateHistory, fetchProjectUpdates, fetchSubscriberCount, generateProjectSummary, getApiErrorMessage, reportProjectUpdate, subscribeToProject, toggleUpdateLike } from "@/lib/api";
+import type { ImpactProjectStats } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
-import { formatXLM, formatCO2, progressPercent, timeAgo, statusClass, statusLabel, CATEGORY_ICONS, copyToClipboard, shortenAddress } from "@/utils/format";
+import ContentLanguageNotice from "@/components/ContentLanguageNotice";
+import { formatXLM, progressPercent, timeAgo, statusClass, statusLabel, CATEGORY_ICONS, copyToClipboard, shortenAddress } from "@/utils/format";
 import { buildReportHtml } from "@/utils/buildReportHtml";
 import { accountUrl, fetchProjectDiscussion, type ProjectDiscussionMessage } from "@/lib/stellar";
 import { markMonthlySubscriptionPaid } from "@/lib/monthlyGiving";
@@ -22,8 +26,11 @@ import type {
   Donation,
   ProjectCampaign,
   ProjectUpdate,
+  ProjectUpdateHistory,
+  ProjectUpdateReportReason,
 } from "@/utils/types";
 import { useWishlist } from "@/hooks/useWishlist";
+import { renderMarkdown } from "@/lib/safeMarkdown";
 
 interface ProjectDetailProps {
   publicKey: string | null;
@@ -36,17 +43,41 @@ export default function ProjectDetail({
 }: ProjectDetailProps) {
   const router = useRouter();
   const { id } = router.query;
-  const { t, localeTag } = useI18n();
+  const { t, localeTag, locale } = useI18n();
 
   const [project, setProject] = useState<ClimateProject | null>(null);
   const [updates, setUpdates] = useState<ProjectUpdate[]>([]);
   const [updateLikes, setUpdateLikes] = useState<Record<string, { liked: boolean; likeCount: number }>>({});
+  const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
+  const [updateHistories, setUpdateHistories] = useState<Record<string, ProjectUpdateHistory>>({});
+  const [historyLoadingId, setHistoryLoadingId] = useState<string | null>(null);
+  const [reportingUpdateId, setReportingUpdateId] = useState<string | null>(null);
+  const [reportReason, setReportReason] = useState<ProjectUpdateReportReason>("fraudulent_claim");
+  const [reportDetails, setReportDetails] = useState("");
+  const [reportState, setReportState] = useState<"idle" | "submitting" | "success" | "error">("idle");
+  const [reportError, setReportError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
   const [shareState, setShareState] = useState<'idle' | 'copied'>('idle');
   const [shareCount, setShareCount] = useState<number>(0);
-  const [calcAmount, setCalcAmount] = useState<string>("50");
+  const [projectImpact, setProjectImpact] = useState<ImpactProjectStats | null>(null);
+
+  /**
+   * Which key signs this donation.
+   *
+   * Derived from whether the connected address *is* the browser-held starter
+   * account rather than from a flag set during onboarding, so it stays correct
+   * across a page reload, a second visit, or a donor who has since connected a
+   * real wallet — in all of which a remembered flag would be stale and would
+   * send the donation to the wrong signer.
+   */
+  const [donationSigner, setDonationSigner] = useState<"wallet" | "starter">("wallet");
+
+  useEffect(() => {
+    const starter = loadStarterAccount();
+    setDonationSigner(starter && starter.publicKey === publicKey ? "starter" : "wallet");
+  }, [publicKey]);
   const [subState, setSubState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [subError, setSubError] = useState<string | null>(null);
   const [subscriberCount, setSubscriberCount] = useState<number | null>(null);
@@ -84,21 +115,23 @@ export default function ProjectDetail({
   useEffect(() => {
     if (!id) return;
     Promise.all([
-      fetchProject(id as string),
-      fetchProjectUpdates(id as string),
+      fetchProject(id as string, locale),
+      fetchProjectUpdates(id as string, locale),
       fetchProjectMatches(id as string),
+      fetchImpactProject(id as string).catch(() => null),
     ])
-      .then(([p, u, m]) => {
+      .then(([p, u, m, impact]) => {
         setProject(p);
         setUpdates(u);
         setMatches(m);
+        setProjectImpact(impact);
         if (p.serverNow) {
           setServerOffset(p.serverNow - Date.now());
         }
       })
       .catch(() => router.push("/projects"))
       .finally(() => setLoading(false));
-  }, [id, router]);
+  }, [id, router, locale]);
 
   useEffect(() => {
     if (!project) return;
@@ -140,6 +173,54 @@ export default function ProjectDetail({
       setUpdateLikes((prev) => ({ ...prev, [updateId]: result }));
     } catch {
       // silently fail
+    }
+  };
+
+  const handleToggleHistory = async (updateId: string) => {
+    if (expandedHistoryId === updateId) {
+      setExpandedHistoryId(null);
+      return;
+    }
+    setExpandedHistoryId(updateId);
+    if (updateHistories[updateId]) return;
+    setHistoryLoadingId(updateId);
+    try {
+      const history = await fetchProjectUpdateHistory(updateId);
+      setUpdateHistories((previous) => ({ ...previous, [updateId]: history }));
+    } catch {
+      setUpdateHistories((previous) => ({
+        ...previous,
+        [updateId]: { currentRevision: 1, editedAt: null, revisions: [] },
+      }));
+    } finally {
+      setHistoryLoadingId(null);
+    }
+  };
+
+  const openReportForm = (updateId: string) => {
+    setReportingUpdateId(updateId);
+    setReportReason("fraudulent_claim");
+    setReportDetails("");
+    setReportState("idle");
+    setReportError(null);
+  };
+
+  const handleReportUpdate = async (event: React.FormEvent, updateId: string) => {
+    event.preventDefault();
+    if (!publicKey) return;
+    setReportState("submitting");
+    setReportError(null);
+    try {
+      await reportProjectUpdate({
+        updateId,
+        donorAddress: publicKey,
+        reason: reportReason,
+        details: reportDetails.trim() || undefined,
+      });
+      setReportState("success");
+    } catch (error) {
+      setReportState("error");
+      setReportError(getApiErrorMessage(error, "Report could not be submitted."));
     }
   };
 
@@ -279,6 +360,7 @@ export default function ProjectDetail({
         projectId: project.id,
         email: subEmail,
         donorAddress: publicKey || undefined,
+        preferredLanguage: locale,
       });
       setSubState("success");
       setSubEmail("");
@@ -296,7 +378,7 @@ export default function ProjectDetail({
     setCampaignError(null);
     try {
       await createProjectCampaign(project.id, campaignForm);
-      const updatedProject = await fetchProject(project.id);
+      const updatedProject = await fetchProject(project.id, locale);
       setProject(updatedProject);
       setCampaignForm({
         title: "",
@@ -336,17 +418,6 @@ export default function ProjectDetail({
   const countdownText = activeCampaign
     ? formatCountdown(activeCampaign.deadline, countdownNow)
     : null;
-
-  const calcAmountNum = parseFloat(calcAmount) || 0;
-  const estimatedCO2 = calcAmountNum * (project.co2OffsetKg || 0);
-  const treesEquivalent = estimatedCO2 / 22;
-  
-  let analogy = "";
-  if (treesEquivalent === 0) analogy = "Enter an amount to see your impact!";
-  else if (treesEquivalent < 1) analogy = "A tiny sprout of change! 🌱";
-  else if (treesEquivalent < 10) analogy = "A small grove taking root! 🌳";
-  else if (treesEquivalent < 50) analogy = "A growing mini-forest! 🌲";
-  else analogy = "A massive impact for our planet! 🌍";
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-10 pb-24 sm:pb-10 animate-fade-in">
@@ -472,7 +543,7 @@ export default function ProjectDetail({
           <div className="card">
             <div className="flex items-start gap-4 mb-5">
               <div className="w-14 h-14 rounded-2xl bg-forest-100 flex items-center justify-center text-3xl border border-forest-200 flex-shrink-0">
-                {CATEGORY_ICONS[project.category] || "🌿"}
+                {CATEGORY_ICONS[(project.sourceCategory || project.category) as keyof typeof CATEGORY_ICONS] || "🌿"}
               </div>
               <div className="flex-1">
                 <div className="flex flex-wrap items-center gap-2 mb-2">
@@ -532,9 +603,10 @@ export default function ProjectDetail({
                     </svg>
                   </button>
                 </div>
-                <h1 className="font-display text-2xl sm:text-3xl font-bold text-forest-900">
-                  {project.name}
-                </h1>
+                <div dir={project.contentDirection} lang={project.contentLanguage} className="text-start">
+                  <h1 className="font-display text-2xl sm:text-3xl font-bold text-forest-900">
+                    {project.name}
+                  </h1>
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-1">
                   <p className="text-[#4b654b] text-sm font-body">
                     📍 {project.location}
@@ -547,6 +619,8 @@ export default function ProjectDetail({
                     </div>
                   )}
                 </div>
+                </div>
+                <div className="mt-2"><ContentLanguageNotice content={project} /></div>
               </div>
             </div>
 
@@ -576,9 +650,9 @@ export default function ProjectDetail({
                   value: project.donorCount.toString(),
                 },
                 {
-                  icon: "♻️",
-                  label: "CO₂ Offset",
-                  value: formatCO2(project.co2OffsetKg, localeTag),
+                  icon: "📋",
+                  label: "Outcome Claims",
+                  value: `${projectImpact?.claimSummary.total ?? 0} (${projectImpact?.claimSummary.verified ?? 0} verified)`,
                 },
                 {
                   icon: "🎯",
@@ -592,32 +666,42 @@ export default function ProjectDetail({
                     <p className="font-semibold text-forest-900 text-sm font-body">
                       {s.value}
                     </p>
-                    {s.label === "CO₂ Offset" && (
-                      <span
-                        className="tooltip"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          e.preventDefault();
-                        }}
-                      >
-                        <button
-                          type="button"
-                          className="w-3.5 h-3.5 flex items-center justify-center rounded-full bg-forest-100 text-[8px] text-forest-600 border border-forest-200 hover:bg-forest-200 transition-colors focus:outline-none focus:ring-1 focus:ring-forest-400"
-                          aria-label="CO2 offset estimate methodology info"
-                        >
-                          ℹ️
-                        </button>
-                        <span className="tooltip-text" role="tooltip">
-                          Estimated CO₂ offset based on this project&apos;s declared
-                          impact rate per XLM donated. Actual results may vary.
-                        </span>
-                      </span>
-                    )}
                   </div>
                   <p className="text-xs text-[#547454] font-body">{s.label}</p>
                 </div>
               ))}
             </div>
+
+            <section className="mt-5 border-t border-forest-100 pt-5">
+              <div className="flex flex-wrap items-end justify-between gap-2">
+                <div>
+                  <h2 className="font-display text-xl font-bold text-forest-900">Measured outcome claims</h2>
+                  <p className="mt-1 text-xs text-forest-600">
+                    Project-level evidence records; they are never calculated from your donation amount.
+                  </p>
+                </div>
+                {projectImpact && (
+                  <p className="text-xs font-semibold text-forest-700">
+                    {projectImpact.claimSummary.operatorStated} operator-stated · {projectImpact.claimSummary.unverified} unverified · {projectImpact.claimSummary.revoked} withdrawn
+                  </p>
+                )}
+              </div>
+              {projectImpact === null ? (
+                <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                  Outcome claim records are temporarily unavailable. No environmental quantity is inferred from the donation data.
+                </p>
+              ) : projectImpact.claims.length ? (
+                <div className="mt-4 space-y-4">
+                  {projectImpact.claims.map((claim) => (
+                    <ImpactClaimCard key={claim.id} claim={claim} locale={localeTag} />
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                  No measured outcome claim has been published for this project. The donation destination and amount remain verifiable on-chain.
+                </p>
+              )}
+            </section>
 
             {/* Wallet link */}
             <div className="mt-4 pt-4 border-t border-forest-100 flex items-center gap-2 text-xs text-[#547454] font-body">
@@ -761,7 +845,9 @@ export default function ProjectDetail({
             <h2 className="font-display text-lg font-semibold text-forest-900 mb-3">
               About this Project
             </h2>
-            <DescriptionAccordion description={project.description} />
+            <div dir={project.contentDirection} lang={project.contentLanguage} className="text-start">
+              <DescriptionAccordion description={project.description} />
+            </div>
             {project.tags.length > 0 && (
               <div className="flex flex-wrap gap-2 mt-4">
                 {project.tags.map((tag) => (
@@ -957,21 +1043,34 @@ export default function ProjectDetail({
                   return (
                     <div
                       key={u.id}
-                      className="pb-4 border-b border-forest-100 last:border-0 last:pb-0"
+                      className="pb-4 border-b border-forest-100 last:border-0 last:pb-0 text-start"
+                      dir={u.contentDirection}
+                      lang={u.contentLanguage}
                     >
-                      <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-start justify-between gap-3 mb-2">
                         <h3 className="font-semibold text-forest-900 text-sm font-body">
                           {u.title}
                         </h3>
-                        <span className="text-xs text-[#547454] font-body">
-                          {timeAgo(u.createdAt)}
-                        </span>
+                        <div className="flex flex-wrap justify-end items-center gap-1.5 text-xs font-body">
+                          {u.isEdited && (
+                            <span className="rounded-full bg-amber-50 px-2 py-0.5 text-amber-800">
+                              Edited · revision {u.revision}
+                            </span>
+                          )}
+                          {u.underReview && (
+                            <span className="rounded-full bg-sky-50 px-2 py-0.5 text-sky-800">
+                              Published · review pending
+                            </span>
+                          )}
+                          <span className="text-[#547454]">{timeAgo(u.createdAt)}</span>
+                        </div>
                       </div>
                       <div
                         className="text-[#4b654b] text-sm leading-relaxed font-body prose prose-sm max-w-none"
                         dangerouslySetInnerHTML={{ __html: renderMarkdown(u.body) }}
                       />
-                      <div className="flex items-center gap-3 mt-2">
+                      <div className="mt-2"><ContentLanguageNotice content={u} /></div>
+                      <div className="flex flex-wrap items-center gap-3 mt-2">
                         <button
                           onClick={() => handleToggleLike(u.id)}
                           disabled={!publicKey}
@@ -984,7 +1083,105 @@ export default function ProjectDetail({
                           <span>{like?.liked ? "❤️" : "🤍"}</span>
                           <span>{like?.likeCount ?? 0}</span>
                         </button>
+                        {u.isEdited && (
+                          <button
+                            type="button"
+                            onClick={() => handleToggleHistory(u.id)}
+                            className="text-xs font-body text-forest-700 hover:underline"
+                          >
+                            {expandedHistoryId === u.id ? "Hide edit history" : "View edit history"}
+                          </button>
+                        )}
+                        {publicKey && (
+                          <button
+                            type="button"
+                            onClick={() => reportingUpdateId === u.id
+                              ? setReportingUpdateId(null)
+                              : openReportForm(u.id)}
+                            className="text-xs font-body text-[#76553a] hover:underline"
+                          >
+                            {reportingUpdateId === u.id ? "Cancel report" : "Report update"}
+                          </button>
+                        )}
                       </div>
+                      {expandedHistoryId === u.id && (
+                        <div className="mt-3 rounded-lg border border-forest-100 bg-forest-50/40 p-3">
+                          <p className="text-xs font-semibold text-forest-900 mb-2">Public edit history</p>
+                          {historyLoadingId === u.id ? (
+                            <p className="text-xs text-[#547454]">Loading history…</p>
+                          ) : (updateHistories[u.id]?.revisions.length ?? 0) === 0 ? (
+                            <p className="text-xs text-[#547454]">No earlier public revision is available.</p>
+                          ) : (
+                            <div className="space-y-3">
+                              {updateHistories[u.id].revisions.map((revision) => (
+                                <div key={revision.revision} className="border-t border-forest-100 pt-2 first:border-0 first:pt-0">
+                                  <p className="text-xs font-semibold text-forest-800">
+                                    Revision {revision.revision} · replaced {timeAgo(revision.replacedAt)}
+                                  </p>
+                                  <p className="text-xs text-[#547454] mt-0.5">Reason: {revision.editReason}</p>
+                                  <p className="text-xs font-medium text-forest-900 mt-2">{revision.title}</p>
+                                  <div
+                                    className="text-xs text-[#4b654b] mt-1 prose prose-sm max-w-none"
+                                    dangerouslySetInnerHTML={{ __html: renderMarkdown(revision.body) }}
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {reportingUpdateId === u.id && (
+                        <form
+                          className="mt-3 rounded-lg border border-amber-200 bg-amber-50/50 p-3 space-y-2"
+                          onSubmit={(event) => handleReportUpdate(event, u.id)}
+                        >
+                          <p className="text-xs font-semibold text-amber-950">
+                            Reports are reviewed by moderators and do not automatically hide an update.
+                          </p>
+                          {reportState === "success" ? (
+                            <p role="status" className="text-xs text-green-700">
+                              Report submitted. A moderator will review it.
+                            </p>
+                          ) : (
+                            <>
+                              <label className="block text-xs text-amber-950">
+                                Reason
+                                <select
+                                  value={reportReason}
+                                  onChange={(event) => setReportReason(event.target.value as ProjectUpdateReportReason)}
+                                  className="input-field mt-1 w-full text-sm"
+                                >
+                                  <option value="fraudulent_claim">Unsupported or misleading impact claim</option>
+                                  <option value="abuse">Abuse or harassment</option>
+                                  <option value="spam">Spam</option>
+                                  <option value="off_topic_solicitation">Off-topic solicitation</option>
+                                  <option value="dangerous_content">Dangerous content</option>
+                                  <option value="privacy">Personal or private information</option>
+                                  <option value="other">Other</option>
+                                </select>
+                              </label>
+                              <label className="block text-xs text-amber-950">
+                                Details (optional)
+                                <textarea
+                                  value={reportDetails}
+                                  maxLength={2000}
+                                  onChange={(event) => setReportDetails(event.target.value)}
+                                  className="input-field mt-1 min-h-20 w-full text-sm"
+                                  placeholder="Describe the specific statement or policy concern."
+                                />
+                              </label>
+                              {reportError && <p role="alert" className="text-xs text-red-700">{reportError}</p>}
+                              <button
+                                type="submit"
+                                disabled={reportState === "submitting"}
+                                className="btn-primary px-3 py-1.5 text-xs disabled:opacity-60"
+                              >
+                                {reportState === "submitting" ? "Submitting…" : "Submit report"}
+                              </button>
+                            </>
+                          )}
+                        </form>
+                      )}
                     </div>
                   );
                 })}
@@ -1087,55 +1284,25 @@ export default function ProjectDetail({
                 Donate to {project.name}
               </a>
             ) : (
-              <WalletConnect onConnect={onConnect} />
+              <WalletConnect
+                onConnect={onConnect}
+                allowGuidedOnboarding
+                projectId={project.id}
+              />
             )}
           </div>
 
-          {/* Impact Calculator */}
+          {/* Outcome provenance */}
           <div className="card bg-forest-50 border-forest-200">
-            <h3 className="font-display font-semibold text-forest-900 mb-2">Impact Calculator</h3>
-            <p className="text-xs text-[#4b654b] mb-3 font-body">See what your donation can achieve before you give.</p>
-            
-            <div className="flex flex-wrap gap-2 mb-3">
-              {["10", "25", "50", "100", "250"].map(p => (
-                <button
-                  key={p}
-                  onClick={() => setCalcAmount(p)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
-                    calcAmount === p ? "bg-forest-600 text-white border-forest-600 shadow-sm" : "bg-white text-forest-700 border-forest-200 hover:border-forest-400"
-                  }`}
-                >
-                  {p} XLM
-                </button>
-              ))}
-            </div>
-            
-            <div className="mb-4">
-              <input
-                type="number"
-                value={calcAmount}
-                onChange={(e) => setCalcAmount(e.target.value)}
-                placeholder="Custom amount"
-                min="0"
-                className="w-full px-3 py-2 text-sm rounded-lg border border-forest-200 bg-white focus:outline-none focus:ring-2 focus:ring-forest-400 font-body placeholder:text-forest-300"
-              />
-            </div>
-            
-            {calcAmountNum > 0 && (
-              <div className="p-3 bg-white rounded-lg border border-forest-100 shadow-sm animate-fade-in">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-lg">♻️</span>
-                  <span className="font-semibold text-forest-800 text-sm font-body">{formatCO2(estimatedCO2, localeTag)} offset</span>
-                </div>
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-lg">🌳</span>
-                  <span className="font-semibold text-forest-800 text-sm font-body">~{treesEquivalent.toFixed(1)} trees/year</span>
-                </div>
-                <div className="pt-2 border-t border-forest-50 text-center">
-                  <span className="text-xs text-forest-600 font-medium italic font-body">{analogy}</span>
-                </div>
-              </div>
-            )}
+            <h3 className="font-display font-semibold text-forest-900 mb-2">How outcome reporting works</h3>
+            <p className="text-xs text-[#4b654b] font-body leading-relaxed">
+              A payment does not automatically become avoided emissions, sequestration, or an offset. Project operators submit measured ranges and evidence; independent verifiers attest a canonical hash on-chain. Withdrawn attestations stay visible.
+            </p>
+            <p className="mt-3 rounded-lg border border-forest-100 bg-white p-3 text-xs font-semibold text-forest-800">
+              {projectImpact === null
+                ? "Outcome records temporarily unavailable"
+                : `${projectImpact.claimSummary.total} current and historical claim record${projectImpact.claimSummary.total === 1 ? "" : "s"}`}
+            </p>
           </div>
 
           {publicKey ? (
@@ -1143,6 +1310,7 @@ export default function ProjectDetail({
             <DonateForm
               project={project}
               publicKey={publicKey}
+              signer={donationSigner}
               initialAmount={prefillAmount}
               initialMessage={prefillReplyMemo}
               onSuccess={() => {
@@ -1160,7 +1328,7 @@ export default function ProjectDetail({
                 }
                 setRefreshKey((k) => k + 1);
                 setTimeout(
-                  () => fetchProject(project.id).then(setProject),
+                  () => fetchProject(project.id, locale).then(setProject),
                   2000,
                 );
               }}
@@ -1171,7 +1339,11 @@ export default function ProjectDetail({
               <p className="text-center text-[#4b654b] text-sm mb-4 font-body">
                 Connect your wallet to donate
               </p>
-              <WalletConnect onConnect={onConnect} />
+              <WalletConnect
+                onConnect={onConnect}
+                allowGuidedOnboarding
+                projectId={project.id}
+              />
             </div>
           )}
 
@@ -1287,94 +1459,6 @@ export default function ProjectDetail({
       )}
     </div>
   );
-}
-
-/** Helper to escape HTML text nodes. */
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-/** Helper to escape HTML attribute values. */
-function escapeAttr(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
-/** Validates scheme for href attributes (http, https, mailto). */
-function isValidScheme(url: string): boolean {
-  const trimmed = url.trim();
-  return /^(?:https?:\/\/|mailto:)/i.test(trimmed);
-}
-
-/** Formats inline text (escape HTML + handle nested bold/italic if any). */
-function renderInlineFormatting(str: string): string {
-  if (/\x00TOK_\d+\x00/.test(str)) {
-    return str;
-  }
-  let res = escapeHtml(str);
-  res = res.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-  res = res.replace(/\*(.+?)\*/g, "<em>$1</em>");
-  return res;
-}
-
-/** Simple markdown-to-HTML: bold, italic, links, line breaks. */
-export function renderMarkdown(text: string): string {
-  if (!text) return "";
-
-  const tokens: string[] = [];
-  const addToken = (htmlSnippet: string): string => {
-    const id = tokens.length;
-    tokens.push(htmlSnippet);
-    return `\x00TOK_${id}\x00`;
-  };
-
-  // 1. Process links: [text](url)
-  let processed = text.replace(
-    /\[([^\]]+)\]\(([^)]+)\)/g,
-    (match, rawLabel, rawUrl) => {
-      if (!isValidScheme(rawUrl)) {
-        return match;
-      }
-      const href = escapeAttr(rawUrl.trim());
-      const labelHtml = renderInlineFormatting(rawLabel);
-      const tag = `<a href="${href}" target="_blank" rel="noopener noreferrer" class="text-forest-600 hover:underline">${labelHtml}</a>`;
-      return addToken(tag);
-    },
-  );
-
-  // 2. Process bold: **text**
-  processed = processed.replace(/\*\*(.+?)\*\*/g, (_, content) => {
-    const formatted = renderInlineFormatting(content);
-    return addToken(`<strong>${formatted}</strong>`);
-  });
-
-  // 3. Process italic: *text*
-  processed = processed.replace(/\*(.+?)\*/g, (_, content) => {
-    const formatted = renderInlineFormatting(content);
-    return addToken(`<em>${formatted}</em>`);
-  });
-
-  // 4. Escape all remaining unformatted text
-  processed = escapeHtml(processed);
-
-  // 5. Convert line breaks
-  processed = processed.replace(/\n/g, "<br />");
-
-  // 6. Restore tokens in reverse order
-  for (let i = tokens.length - 1; i >= 0; i--) {
-    processed = processed.replace(`\x00TOK_${i}\x00`, tokens[i]);
-  }
-
-  return processed;
 }
 
 function formatCountdown(deadline: string, nowMs: number) {

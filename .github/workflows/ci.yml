@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: ['**']
   pull_request:
-    branches: [main]
+    branches: [main, develop]
   workflow_dispatch:
     inputs:
       dast_target:
@@ -170,21 +170,76 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    services:
+      # The multi-replica realtime suite spawns two or more real backend
+      # processes and asserts an event emitted by one reaches a client connected
+      # to another. That fan-out goes through Redis, so without this service the
+      # suite skips itself and the cross-replica guarantee is unproven — which is
+      # how the bug it covers survived in the first place.
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-node-install
         with:
           working-directory: backend
+      - name: Install shared dependencies
+        run: npm install
+        working-directory: shared
       - name: npm audit (fail on high/critical)
         run: npx --yes audit-ci@7.1.0 --high --package-manager npm
+      - name: OpenAPI compatibility (published v1 baseline)
+        run: npm run check:openapi && npm run check:api-compat
       - run: npm run lint
+
+      # Deliberately WITHOUT REDIS_URL. Pointing the whole suite at a live Redis
+      # makes it stateful across runs — the rate limiter's counters outlive the
+      # process, so a second run sees a throttled account from the first — and
+      # leaves an open connection that stops jest exiting. The suites that need
+      # a real Redis own their own connection lifecycle and run in the step
+      # below.
       - run: npm test -- --coverage
+
+      # These two skip themselves without a reachable Redis, which is what keeps
+      # `npm test` working on a developer machine. In CI that skip would quietly
+      # retire the only test proving cross-replica delivery, so they get a step
+      # with the service wired up, and the guard fails the build if the
+      # multi-replica suite did not actually run.
+      - name: Redis-backed suites (cross-replica delivery, shared rate limiter)
+        run: npx jest src/middleware/rateLimiter.redis.test.js test/realtime.multiInstance.test.js --runInBand
+        env:
+          REDIS_URL: redis://127.0.0.1:6379
+      - name: Multi-replica realtime delivery must actually run
+        run: node scripts/assert-multi-instance-coverage.js
+        working-directory: .
+        env:
+          REDIS_URL: redis://127.0.0.1:6379
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: backend-coverage-lcov
           path: backend/coverage/lcov.info
           retention-days: 7
+
+  mobile_api_compatibility:
+    name: Mobile (newer API tolerance)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node-install
+        with:
+          working-directory: mobile
+      - run: npm test -- --runInBand __tests__/apiCompatibility.test.ts
 
   contracts:
     name: Soroban Contracts (Rust)
@@ -206,6 +261,10 @@ jobs:
           key: ${{ runner.os }}-cargo-contracts-${{ hashFiles('contracts/**/Cargo.lock') }}
       - run: cargo check --workspace
       - run: cargo test --workspace
+      - name: Property tests (fast profile)
+        env:
+          PROPTEST_CASES: "32"
+        run: cargo test --workspace --features testutils prop_ -- --test-threads=1
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - name: Rust vulnerability scan
@@ -397,7 +456,7 @@ jobs:
         working-directory: shared
       - name: Backend real-transaction integration test
         working-directory: backend
-        run: npx jest src/services/indexerService.integration.test.js src/routes/leaderboard.integration.test.js --runInBand
+        run: npx jest src/services/indexerService.integration.test.js src/routes/leaderboard.integration.test.js src/services/projectSearch.integration.test.js --runInBand
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/greenpay
       - name: Start local Stellar protocol 21 network

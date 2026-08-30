@@ -12,10 +12,11 @@ import {
   fetchCategoryStats,
 } from "@/lib/api";
 import { useDonationSocket, type DonationSocketPayload } from "@/hooks/useDonationSocket";
-import { formatCO2, formatXLM, progressPercent } from "@/utils/format";
+import { formatXLM, progressPercent } from "@/utils/format";
 import { useI18n } from "@/lib/i18n";
 import type { GlobalStats, CategoryStats } from "@/lib/api";
 import type { ClimateProject } from "@/utils/types";
+import ContentLanguageNotice from "@/components/ContentLanguageNotice";
 
 interface HomeProps {
   publicKey: string | null;
@@ -48,7 +49,7 @@ const FEATURES = [
   },
   {
     icon: "🏆",
-    title: "Impact Badges",
+    title: "Donation Badges",
     desc: "Earn on-chain badges as you give more — Seedling, Tree, Forest, Earth Guardian.",
   },
 ];
@@ -63,7 +64,7 @@ const IMPACT_STATS = [
     duration: 2000,
   },
   { value: 5000, suffix: "+", label: "Monthly Donors", duration: 2500 },
-  { value: 250, suffix: "k", label: "CO₂ Offset (kg)", duration: 3000 },
+  { value: 5, label: "Visible claim states", duration: 3000 },
 ];
 
 const CATEGORIES = [
@@ -82,6 +83,7 @@ function getCategoryIcon(category: string): string {
 }
 
 export default function Home({ publicKey, onConnect }: HomeProps) {
+  const { locale } = useI18n();
   const [showConnect, setShowConnect] = useState(false);
   const [globalStats, setGlobalStats] = useState<GlobalStats | null>(null);
   const [featuredProject, setFeaturedProject] = useState<ClimateProject | null>(
@@ -98,21 +100,21 @@ export default function Home({ publicKey, onConnect }: HomeProps) {
     fetchGlobalStats()
       .then(setGlobalStats)
       .catch(() => null);
-    fetchFeaturedProject()
+    fetchFeaturedProject(locale)
       .then(setFeaturedProject)
       .catch(() => null);
     fetchCategoryStats()
       .then(setCategoryStats)
       .catch(() => null);
 
-    fetchProjects({ limit: 100 })
-      .then((projects) => {
+    fetchProjects({ limit: 100, lang: locale })
+      .then(({ projects }) => {
         projectNamesRef.current = new Map(
           projects.map((project) => [project.id, project.name]),
         );
       })
       .catch(() => null);
-  }, []);
+  }, [locale]);
 
   const handleDonationEvent = useCallback((payload: DonationSocketPayload) => {
     const projectName = projectNamesRef.current.get(payload.projectId);
@@ -217,8 +219,8 @@ export default function Home({ publicKey, onConnect }: HomeProps) {
           ))}
         </div>
 
-        {/* ── Global CO2 Offset Ticker ────────────────────────────── */}
-        {globalStats !== null && <CO2OffsetTicker stats={globalStats} />}
+        {/* ── Evidence record ticker ──────────────────────────────── */}
+        {globalStats !== null && <ImpactEvidenceTicker stats={globalStats} />}
 
         {/* ── Featured Project Spotlight ──────────────────────────── */}
         {featuredProject !== null && (
@@ -457,18 +459,21 @@ function FeaturedProjectCard({ project }: { project: ClimateProject }) {
                 {project.category}
               </span>
             </div>
-            <h3 className="font-display text-2xl font-bold text-forest-900 mb-2">
-              {project.name}
-            </h3>
-            <p className="text-[#4b654b] text-sm leading-relaxed font-body mb-4 line-clamp-3">
-              {project.description}
-            </p>
+            <div dir={project.contentDirection} lang={project.contentLanguage} className="text-start">
+              <h3 className="font-display text-2xl font-bold text-forest-900 mb-2">
+                {project.name}
+              </h3>
+              <p className="text-[#4b654b] text-sm leading-relaxed font-body mb-3 line-clamp-3">
+                {project.description}
+              </p>
+            </div>
+            <div className="mb-4"><ContentLanguageNotice content={project} /></div>
             <div className="flex flex-wrap gap-4 text-sm mb-5">
               <span className="flex items-center gap-1 text-forest-700 font-body">
                 👥 <strong>{t("project.donorsCount", { count: project.donorCount })}</strong>
               </span>
               <span className="flex items-center gap-1 text-forest-700 font-body">
-                ♻️ <strong>{formatCO2(project.co2OffsetKg, localeTag)}</strong> offset
+                📋 <strong>Evidence-backed claims</strong> on the project page
               </span>
               <span className="flex items-center gap-1 text-[#4b654b] font-body">
                 📍 {project.location}
@@ -516,23 +521,23 @@ function FeaturedProjectCard({ project }: { project: ClimateProject }) {
   );
 }
 
-function CO2OffsetTicker({ stats }: { stats: GlobalStats }) {
+function ImpactEvidenceTicker({ stats }: { stats: GlobalStats }) {
   const { t, localeTag } = useI18n();
-  const { count, elementRef } = useCountUp(stats.totalCO2OffsetKg, 2500);
+  const { count, elementRef } = useCountUp(stats.publishedImpactClaims ?? 0, 2500);
   return (
     <div
       ref={elementRef}
       className="card mb-20 bg-gradient-to-br from-forest-900 to-forest-700 border-none text-white text-center py-10 shadow-xl"
     >
-      <p className="text-3xl mb-2">🍃</p>
+      <p className="text-3xl mb-2">📋</p>
       <div className="font-display text-5xl sm:text-6xl font-bold text-white mb-2">
-        {formatCO2(count, localeTag)}
+        {new Intl.NumberFormat(localeTag).format(count)}
       </div>
       <p className="text-forest-200 text-sm font-body uppercase tracking-widest font-bold opacity-80">
-        Total CO₂ Offset Across All Donations
+        Published Project Outcome Records
       </p>
       <p className="text-forest-300 text-xs font-body mt-2">
-        {t("project.donationsCount", { count: stats.totalDonations })} ·{" "}
+        {stats.verifiedImpactClaims ?? 0} independently verified · {t("project.donationsCount", { count: stats.totalDonations })} ·{" "}
         {new Intl.NumberFormat(localeTag).format(parseFloat(stats.totalXLMRaised))} XLM raised
       </p>
     </div>

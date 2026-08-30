@@ -83,7 +83,10 @@
     "milestones": "معالم المشروع",
     "proof": "الإثبات ↗",
     "loadMore": "تحميل المزيد",
-    "noUpdatesYet": "لم يتم نشر أي تحديثات بعد."
+    "noUpdatesYet": "لم يتم نشر أي تحديثات بعد.",
+    "contentLanguage": "المحتوى معروض باللغة {language}.",
+    "fallbackContent": "الترجمة المطلوبة غير متاحة. يُعرض النص الأصلي باللغة {language}.",
+    "machineTranslatedContent": "محتوى مترجم آليًا إلى {language}. راجع النص الأصلي قبل الاعتماد على ادعاءات الأثر."
   },
   "admin": {
     "title": "إدارة المشروع",

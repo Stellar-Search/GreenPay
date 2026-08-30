@@ -1,23 +1,27 @@
 import { useMemo } from "react";
-import { badgeEmoji, badgeLabel, formatCO2, formatDate, formatXLM, shortenAddress } from "@/utils/format";
+import { badgeEmoji, badgeLabel, formatDate, formatXLM, shortenAddress } from "@/utils/format";
 import { useI18n } from "@/lib/i18n";
 import type { BadgeTier } from "@/utils/types";
+import type { ImpactClaim } from "@/lib/api";
+import ImpactClaimCard from "./ImpactClaimCard";
 
 export default function ImpactCertificate(props: {
   donorAddress: string;
   donorName?: string | null;
   totalDonatedXLM: string;
-  totalCO2OffsetKg: number;
   badgeTier: BadgeTier | null;
   projectsSupported: Array<{ id: string; name: string }>;
+  impactClaims: ImpactClaim[];
+  attributionNotice: string;
 }) {
   const {
     donorAddress,
     donorName,
     totalDonatedXLM,
-    totalCO2OffsetKg,
     badgeTier,
     projectsSupported,
+    impactClaims,
+    attributionNotice,
   } = props;
 
   const { localeTag } = useI18n();
@@ -38,7 +42,7 @@ export default function ImpactCertificate(props: {
               Impact Certificate
             </h2>
             <p className="text-forest-100 text-sm mt-2 font-body">
-              This certificate recognizes climate impact achieved through on-chain donations.
+              On-chain donations, shown beside separately evidenced project outcomes.
             </p>
           </div>
           <div className="text-5xl">🌿</div>
@@ -67,12 +71,12 @@ export default function ImpactCertificate(props: {
             </p>
           </div>
           <div className="card text-center border-forest-100/50">
-            <p className="text-2xl mb-2">♻️</p>
+            <p className="text-2xl mb-2">📋</p>
             <p className="font-display font-bold text-forest-900 text-lg">
-              {formatCO2(totalCO2OffsetKg, localeTag)}
+              {impactClaims.length}
             </p>
             <p className="text-xs text-[#547454] mt-1 font-body uppercase tracking-wider font-bold opacity-60">
-              CO₂ Offset
+              Project Outcome Claims
             </p>
           </div>
           <div className="card text-center border-forest-100/50">
@@ -84,6 +88,31 @@ export default function ImpactCertificate(props: {
               Badge Tier
             </p>
           </div>
+        </div>
+
+        <div className="mb-8 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+          <p className="font-bold">No donor-level outcome attribution</p>
+          <p className="mt-1">{attributionNotice}</p>
+        </div>
+
+        <div className="mb-8">
+          <h3 className="font-display font-bold text-forest-900 mb-3">
+            Current project outcome records
+          </h3>
+          {impactClaims.length === 0 ? (
+            <p className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+              No measured project outcome claim is associated with the projects on this certificate.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {impactClaims.slice(0, 4).map((claim) => (
+                <ImpactClaimCard key={claim.id} claim={claim} locale={localeTag} compact />
+              ))}
+            </div>
+          )}
+          {impactClaims.length > 4 && (
+            <p className="mt-2 text-xs text-[#4b654b]">+{impactClaims.length - 4} more outcome records</p>
+          )}
         </div>
 
         <div className="rounded-2xl border border-forest-100 bg-forest-50 p-5">
@@ -116,11 +145,10 @@ export default function ImpactCertificate(props: {
             Issued on {issuedDate}
           </p>
           <p className="text-xs text-[#547454] font-body">
-            Verified by on-chain donation history
+            Donation history is on-chain. Each outcome claim carries its own current provenance.
           </p>
         </div>
       </div>
     </div>
   );
 }
-

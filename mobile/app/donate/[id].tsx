@@ -422,7 +422,10 @@ export default function DonateScreen() {
       </View>
 
       <View style={{ alignItems: 'center', marginVertical: 8, paddingHorizontal: 16 }}>
-        <WalletConnect />
+        {/* Guided onboarding is enabled here and nowhere else: this is the one
+            screen where a donor without a Stellar address is trying to give,
+            rather than trying to look at something. */}
+        <WalletConnect allowGuidedOnboarding projectId={selectedProjectId} />
       </View>
 
       <View style={styles.card}>

@@ -14,6 +14,7 @@ const { env } = require("../config/env");
 const { generateProjectSummary } = require("./claude");
 const { logAdminAction } = require("./audit");
 const { logger: rootLogger, getCorrelationId, runWithCorrelationId } = require("../utils/logger");
+const { publish } = require("../realtime");
 
 const logger = rootLogger.child({ service: "summary-queue" });
 
@@ -112,8 +113,11 @@ async function processSummaryJob(io, job) {
     const row = updated.rows[0];
     if (!row) return; // project was deleted while job was queued
 
+    // Same cross-replica problem as the donation feed: the pod running this
+    // queue worker is rarely the pod holding the socket of the operator waiting
+    // on the summary.
     if (io) {
-      io.emit("ai_summary_ready", {
+      await publish("ai_summary_ready", {
         projectId,
         aiSummary:            row.ai_summary,
         aiSummaryGeneratedAt: new Date(row.ai_summary_generated_at).toISOString(),

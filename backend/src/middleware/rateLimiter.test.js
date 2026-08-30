@@ -11,7 +11,15 @@
  *
  * The rate-limit store is reset between test suites by creating a fresh app
  * instance for each describe block.
+ *
+ * Redis is mocked away rather than left to the environment. This suite covers
+ * the in-memory fallback, whose defining property — separate app instances hold
+ * separate counters — is the exact opposite of the shared-store behaviour
+ * rateLimiter.redis.test.js asserts. Without this mock the suite passes or fails
+ * depending on whether REDIS_URL happens to be set, which it now is in CI.
  */
+
+jest.mock("../cache/redisClient", () => null);
 
 const express = require("express");
 const request = require("supertest");

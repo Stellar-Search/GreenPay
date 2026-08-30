@@ -208,12 +208,12 @@ stellar contract invoke \
   --project_id "project-001" \
   --name "Amazon Reforestation" \
   --wallet <project-wallet-address> \
-  --co2_per_xlm 8500
+  --co2_per_xlm 0
 ```
 
 - `project_id` should be unique and stable (e.g. `amazon-reforestation`).
 - `wallet` is the project's Stellar destination account.
-- `co2_per_xlm` is grams of CO₂ offset per XLM donated.
+- `co2_per_xlm` is a deprecated ABI slot and must be `0`; environmental outcomes use evidence-backed claim attestations.
 
 ### Recommended initial registration process
 

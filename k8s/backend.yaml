@@ -166,6 +166,70 @@ spec:
                 port:
                   number: 4000
 ---
+# Socket.IO gets its own Ingress, separate from the /api rules above, for three
+# reasons.
+#
+# 1. It was not routed at all. Every ingress rule here matches /api, and the
+#    Socket.IO client connects to /socket.io/ — so the live feed's handshake
+#    reached no backend. In the Helm chart it was worse than a 404: the
+#    catch-all "/" rule sent it to the frontend service, which runs no
+#    Socket.IO server.
+#
+# 2. Session affinity belongs on this path and nowhere else. Socket.IO opens
+#    with HTTP long-polling and upgrades afterwards, and every request in that
+#    handshake — including the POST carrying the session id — must reach the
+#    pod that issued it, or the client is told its session is unknown and
+#    restarts the handshake in a loop. Pinning /api the same way would defeat
+#    load balancing across replicas for no benefit, since REST requests are
+#    stateless.
+#
+#    Affinity is the chosen answer rather than forcing transports:
+#    ["websocket"]. WebSocket-only removes the need for affinity entirely, but
+#    it also removes the fallback that keeps the feed working for donors behind
+#    corporate proxies and TLS-terminating middleboxes that break the Upgrade.
+#    The trade-off is written up in docs/realtime.md.
+#
+# 3. It must not inherit rewrite-target: / from the rules above, which would
+#    rewrite the handshake URI and break it.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: backend-socket-ingress
+  namespace: greenpay
+  annotations:
+    # Pin a client to one pod for the handshake and the connection that follows.
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    # "persistent" keeps the client on its pod across the upgrade rather than
+    # rebalancing mid-handshake, which "balanced" is free to do.
+    nginx.ingress.kubernetes.io/affinity-mode: "persistent"
+    nginx.ingress.kubernetes.io/session-cookie-name: "greenpay_realtime"
+    nginx.ingress.kubernetes.io/session-cookie-path: "/socket.io"
+    nginx.ingress.kubernetes.io/session-cookie-max-age: "86400"
+    nginx.ingress.kubernetes.io/session-cookie-expires: "86400"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: "Lax"
+    # A pinned pod that goes away must release its clients rather than
+    # blackholing them until the cookie expires.
+    nginx.ingress.kubernetes.io/session-cookie-change-on-failure: "true"
+    # An idle live feed is normal — donations are bursty. The nginx default of
+    # 60s would tear down healthy sockets between events, producing exactly the
+    # reconnect churn this feature is meant to avoid.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: greenpay.local
+      http:
+        paths:
+          - path: /socket.io
+            pathType: Prefix
+            backend:
+              service:
+                name: backend-stable
+                port:
+                  number: 4000
+
+---
 apiVersion: argoproj.io/v1alpha1
 kind: AnalysisTemplate
 metadata:

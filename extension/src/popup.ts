@@ -20,6 +20,7 @@ import { recoverPopupSession, type PopupRecoveryClient } from './popup-session';
 import { SearchCoordinator } from './popup-search';
 import {
   STORAGE_KEYS,
+  isValidStellarAddress,
   type ProjectSummary,
   type RecoverySnapshot,
   type WalletSession,
@@ -84,12 +85,18 @@ export function showStatus(message: string, kind?: 'error' | 'success') {
 }
 
 export function updateDonateButton() {
+  // Guard: the donate button must not arm against an invalid destination.
+  // isValidStellarAddress performs the full StrKey checksum check — a
+  // non-empty but checksum-invalid address that slipped through would cause
+  // the Horizon operation to fail after the user has already confirmed in
+  // Freighter.  Blocking it here provides the earliest possible feedback.
+  const destinationOk = isValidStellarAddress(activeProject?.walletAddress);
   const els = getElements();
   if (!els?.donateBtn) return;
   els.donateBtn.disabled =
     (els.connectBtn ? els.connectBtn.disabled : false) ||
     !currentWallet ||
-    !activeProject?.walletAddress ||
+    !destinationOk ||
     currentDonationAmount <= 0;
 }
 
