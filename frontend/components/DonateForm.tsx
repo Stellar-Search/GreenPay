@@ -3,7 +3,7 @@
  * Donation form for a climate project.
  */
 import { useState, useEffect } from "react";
-import { buildDonationTransaction, buildContractDonationTransaction, buildChangeTrustTransaction, submitTransaction, submitAndConfirmDonation, DonationSubmissionError, explorerUrl, getXLMBalance, getAssetBalance, getDonorStats, hashMessage, CONTRACT_ID, NATIVE_ASSET_CONTRACT_ID, getReserveStatus } from "@/lib/stellar";
+import { buildDonationTransaction, buildContractDonationTransaction, buildChangeTrustTransaction, submitTransaction, submitAndConfirmDonation, DonationSubmissionError, explorerUrl, getXLMBalance, getAssetBalance, getDonorStats, hashMessage, validateHash, CONTRACT_ID, NATIVE_ASSET_CONTRACT_ID, getReserveStatus } from "@/lib/stellar";
 import { signTransactionWithWallet } from "@/lib/wallet";
 import { loadStarterAccount, signWithStarterAccount, shouldPromptExport } from "@/lib/starterAccount";
 import { track, completeFunnel } from "@/lib/funnel";
@@ -293,7 +293,10 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
       if (useContract) {
         setStep("building");
 
-        const msgHash = message.trim() ? hashMessage(message.trim()) : 0;
+        const msgHash = hashMessage(message.trim());
+        if (!validateHash(msgHash)) {
+          throw new Error("Invalid donation message hash");
+        }
 
         tx = await buildContractDonationTransaction({
           contractId: CONTRACT_ID,

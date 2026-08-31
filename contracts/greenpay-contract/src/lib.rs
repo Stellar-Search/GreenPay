@@ -643,6 +643,9 @@ impl GreenPayContract {
         if amount <= 0 {
             panic!("Donation amount must be positive");
         }
+        if msg_hash == 0 {
+            panic!("msg_hash must be a non-zero correlation ID");
+        }
 
         if !env
             .storage()
@@ -1685,6 +1688,17 @@ mod tests {
             .register_stellar_asset_contract_v2(token_admin)
             .address();
         let donor = Address::generate(&env);
+        client.donate(&token, &donor, &pid, &1000, &1u32);
+    }
+
+    #[test]
+    #[should_panic(expected = "msg_hash must be a non-zero correlation ID")]
+    fn test_donate_rejects_zero_msg_hash() {
+        let (env, _cid, client, _admin, pid) = setup();
+        let donor = Address::generate(&env);
+        let token = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
         client.donate(&token, &donor, &pid, &1000, &0u32);
     }
 
@@ -1743,7 +1757,7 @@ mod tests {
         let donor = Address::generate(&env);
         let amount = i128::MAX;
         mint_to(&env, &token_client, &donor, amount);
-        client.donate(&token, &donor, &pid, &amount, &0u32);
+        client.donate(&token, &donor, &pid, &amount, &1u32);
 
         assert_eq!(client.get_project(&pid).total_raised, amount);
         assert_eq!(client.get_global_co2(), 0);
@@ -1790,7 +1804,7 @@ mod tests {
                 .set(&DataKey::Project(pid.clone()), &project);
         });
 
-        client.donate(&token, &donor, &pid, &amount, &0u32);
+        client.donate(&token, &donor, &pid, &amount, &1u32);
     }
 
     #[test]
@@ -1817,7 +1831,7 @@ mod tests {
         let donor_balance_before = token_balance(&env, &token, &donor);
         let wallet_balance_before = token_balance(&env, &token, &project_before.wallet);
 
-        let result = client.try_donate(&token, &donor, &pid, &amount, &0u32);
+        let result = client.try_donate(&token, &donor, &pid, &amount, &1u32);
         assert!(result.is_err(), "donate must fail on total_raised overflow");
 
         assert_eq!(
@@ -1875,7 +1889,7 @@ mod tests {
         });
 
         let global_co2_before = client.get_global_co2();
-        client.donate(&token, &donor, &pid, &amount, &0u32);
+        client.donate(&token, &donor, &pid, &amount, &1u32);
 
         assert_eq!(client.get_global_co2(), global_co2_before);
         assert_eq!(client.get_global_total(), amount);
@@ -1891,7 +1905,7 @@ mod tests {
         mint_to(&env, &token_client, &donor, amount * 3);
 
         for _ in 0..3 {
-            client.donate(&token, &donor, &pid, &amount, &0u32);
+            client.donate(&token, &donor, &pid, &amount, &1u32);
         }
 
         let project = client.get_project(&pid);
@@ -1908,7 +1922,7 @@ mod tests {
         for _ in 0..3 {
             let donor = Address::generate(&env);
             mint_to(&env, &token_client, &donor, amount);
-            client.donate(&token, &donor, &pid, &amount, &0u32);
+            client.donate(&token, &donor, &pid, &amount, &1u32);
         }
 
         assert_eq!(client.get_project(&pid).donor_count, 3);
@@ -2260,7 +2274,7 @@ mod tests {
         let token_client = StellarAssetClient::new(&env, &token);
         client.allow_token(&admin, &token);
         token_client.mint(&donor, &STROOP);
-        client.donate(&token, &donor, &pid, &STROOP, &0u32);
+        client.donate(&token, &donor, &pid, &STROOP, &1u32);
         assert_eq!(client.get_project(&pid).total_raised, 6 * STROOP);
         assert_eq!(client.get_donor_stats(&donor).donation_count, 2);
         assert_eq!(
@@ -2313,7 +2327,7 @@ mod tests {
             let pid = String::from_str(&env, &format!("proj-{:03}", i));
             let donor = Address::generate(&env);
             token_client.mint(&donor, &STROOP);
-            client.donate(&token, &donor, &pid, &STROOP, &0u32);
+            client.donate(&token, &donor, &pid, &STROOP, &1u32);
         }
 
         assert_eq!(client.get_donation_count(), 10);
@@ -2355,7 +2369,7 @@ mod tests {
         let token_client = StellarAssetClient::new(&env, &token);
         client.allow_token(&admin, &token);
         token_client.mint(&donor, &STROOP);
-        client.donate(&token, &donor, &pid, &STROOP, &0u32);
+        client.donate(&token, &donor, &pid, &STROOP, &1u32);
 
         // Extend the GreenPay instance config so it survives the jump; then
         // jump beyond the default 4096-ledger instance entry TTL. Per-entity
@@ -2881,7 +2895,7 @@ mod tests {
         sac.mint(&Address::generate(&env), &amount);
         let donor = Address::generate(&env);
         sac.mint(&donor, &amount);
-        client_v1.donate(&token, &donor, &pid, &amount, &0u32);
+        client_v1.donate(&token, &donor, &pid, &amount, &1u32);
 
         // Record state before upgrade
         let total_before = client_v1.get_global_total();
@@ -2912,7 +2926,7 @@ mod tests {
         let donor = Address::generate(&env);
         let amount = 10 * STROOP; // Seedling tier
         mint_to(&env, &token_client, &donor, amount);
-        client.donate(&token, &donor, &pid, &amount, &0u32);
+        client.donate(&token, &donor, &pid, &amount, &1u32);
 
         // Collection metadata.
         assert_eq!(
@@ -2954,7 +2968,7 @@ mod tests {
         let friend = Address::generate(&env);
         let amount = 10 * STROOP;
         mint_to(&env, &token_client, &donor, amount);
-        client.donate(&token, &donor, &pid, &amount, &0u32);
+        client.donate(&token, &donor, &pid, &amount, &1u32);
 
         let token_id = client
             .get_token_id(&donor, &BadgeTier::Seedling)
@@ -2989,14 +3003,14 @@ mod tests {
         let recipient = Address::generate(&env);
         let amount = 10 * STROOP; // Seedling
         mint_to(&env, &token_client, &donor, amount);
-        client.donate(&token, &donor, &pid, &amount, &0u32);
+        client.donate(&token, &donor, &pid, &amount, &1u32);
         let donor_token = client
             .get_token_id(&donor, &BadgeTier::Seedling)
             .expect("donor badge must be minted");
 
         // The recipient earned Seedling too.
         mint_to(&env, &token_client, &recipient, amount);
-        client.donate(&token, &recipient, &pid, &amount, &0u32);
+        client.donate(&token, &recipient, &pid, &amount, &1u32);
         let recipient_token = client
             .get_token_id(&recipient, &BadgeTier::Seedling)
             .expect("recipient badge must be minted");
@@ -3027,7 +3041,7 @@ mod tests {
         let other = Address::generate(&env);
         let amount = 10 * STROOP;
         mint_to(&env, &token_client, &donor, amount);
-        client.donate(&token, &donor, &pid, &amount, &0u32);
+        client.donate(&token, &donor, &pid, &amount, &1u32);
 
         let token_id = client
             .get_token_id(&donor, &BadgeTier::Seedling)

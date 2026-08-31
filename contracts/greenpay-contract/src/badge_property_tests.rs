@@ -71,7 +71,7 @@ mod badge {
         amount: i128,
     ) {
         token_client.mint(donor, &amount);
-        client.donate(token, donor, project_id, &amount, &0u32);
+        client.donate(token, donor, project_id, &amount, &1u32);
     }
 
     proptest! {

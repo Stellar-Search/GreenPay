@@ -68,7 +68,7 @@ mod overflow {
             let expected: i128 = amounts.iter().copied().sum();
             for amount in &amounts {
                 token_client.mint(&donor, amount);
-                client.donate(&token, &donor, &project_id, amount, &0u32);
+                client.donate(&token, &donor, &project_id, amount, &1u32);
             }
 
             prop_assert_eq!(client.get_global_total(), expected);
@@ -84,7 +84,7 @@ mod overflow {
             let (env, client, _admin, token, token_client, project_id) = setup(co2);
             let donor = Address::generate(&env);
             token_client.mint(&donor, &amount);
-            client.donate(&token, &donor, &project_id, &amount, &0u32);
+            client.donate(&token, &donor, &project_id, &amount, &1u32);
 
             prop_assert!(client.get_global_co2() >= 0);
             prop_assert!(client.get_donor_stats(&donor).co2_offset_grams >= 0);
@@ -102,7 +102,7 @@ mod overflow {
 
             for _ in 0..n {
                 token_client.mint(&donor, &amount);
-                client.donate(&token, &donor, &project_id, &amount, &0u32);
+                client.donate(&token, &donor, &project_id, &amount, &1u32);
             }
 
             prop_assert_eq!(client.get_donor_stats(&donor).donation_count, n as u32);
@@ -115,7 +115,7 @@ mod overflow {
         let (env, client, _admin, token, token_client, project_id) = setup(1_000);
         let donor = Address::generate(&env);
         token_client.mint(&donor, &STROOP);
-        client.donate(&token, &donor, &project_id, &0i128, &0u32);
+        client.donate(&token, &donor, &project_id, &0i128, &1u32);
     }
 
     #[test]
@@ -126,7 +126,7 @@ mod overflow {
 
         let before = client.get_global_total();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            client.donate(&token, &donor, &project_id, &i128::MAX, &0u32);
+            client.donate(&token, &donor, &project_id, &i128::MAX, &1u32);
         }));
 
         if result.is_err() {
@@ -151,8 +151,8 @@ mod overflow {
         let a_amt = 5 * STROOP;
         let b_amt = 7 * STROOP;
         token_client.mint(&donor, &(a_amt + b_amt));
-        client.donate(&token, &donor, &project_a, &a_amt, &0u32);
-        client.donate(&token, &donor, &project_b, &b_amt, &0u32);
+        client.donate(&token, &donor, &project_a, &a_amt, &1u32);
+        client.donate(&token, &donor, &project_b, &b_amt, &1u32);
 
         assert_eq!(client.get_global_total(), a_amt + b_amt);
         assert_eq!(client.get_project(&project_a).total_raised, a_amt);
