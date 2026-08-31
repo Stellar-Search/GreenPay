@@ -2548,7 +2548,10 @@ mod tests {
 
         // Multiple reads should return the same value
         // This test verifies that get_snapshot_power is read-only
-        assert_eq!(snap_power_1, snap_power_2, "snapshot power should not change on repeated reads");
+        assert_eq!(
+            snap_power_1, snap_power_2,
+            "snapshot power should not change on repeated reads"
+        );
     }
 
     #[test]
