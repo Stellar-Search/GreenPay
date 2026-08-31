@@ -32,7 +32,6 @@ const { Server, TransactionBuilder, Networks, Memo, Operation, Asset } = require
 const { v4: uuidv4 } = require("uuid");
 const pool = require("../db/pool");
 const { env } = require("../config/env");
-const {CircuitBreaker} = require("./circuitBreaker");
 
 // Network configuration
 const NETWORK = env.stellarNetwork;

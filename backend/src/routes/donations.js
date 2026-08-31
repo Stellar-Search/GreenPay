@@ -4,7 +4,7 @@
 "use strict";
 const express = require("express");
 const router  = express.Router();
-const { v4: uuid } = require("uuid");
+
 const pool = require("../db/pool");
 const { createLayeredRateLimiter } = require("../middleware/rateLimiter");
 const { createApiError } = require("../middleware/apiEnvelope");
@@ -14,7 +14,7 @@ const { validateBody, validate } = require("../middleware/validate");
 const { DonationCreateSchema } = require("../schemas/donations");
 const { stellarPublicKey } = require("../schemas/common");
 const donorKeyParamsSchema = z.object({ publicKey: stellarPublicKey });
-const { computeBadges, mapDonationRow } = require("../services/store");
+const { mapDonationRow } = require("../services/store");
 // Layered: a coarse per-IP floor (so donors behind a shared NAT/carrier egress
 // don't starve each other), the real per-wallet cap, and a global cap on this
 // expensive endpoint so a distributed flood is bounded even when no single
@@ -27,7 +27,7 @@ const donationLimiter = createLayeredRateLimiter({
   global: 120,
 });
 const { execute, DonationReplayConflictError } = require("../eventSourcing/commandBus");
-const { DonationRecordedEvent, MatchAppliedEvent } = require("../eventSourcing/events"); // 10 requests per minute
+
 const { logger: rootLogger } = require("../utils/logger");
 
 const logger = rootLogger.child({ service: "donations-route" });

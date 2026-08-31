@@ -1,10 +1,15 @@
-import { renderHook } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { EventEmitter } from "events";
 import { useDonationSocket, type DonationSocketPayload } from "../useDonationSocket";
 import { getSocket } from "@/lib/socket";
+import { fetchMissedEvents } from "@/lib/realtime";
 
 jest.mock("@/lib/socket", () => ({
   getSocket: jest.fn(),
+}));
+
+jest.mock("@/lib/realtime", () => ({
+  fetchMissedEvents: jest.fn(),
 }));
 
 function makeFakeSocket() {
@@ -28,6 +33,11 @@ function payload(overrides: Partial<DonationSocketPayload> = {}): DonationSocket
 }
 
 describe("useDonationSocket", () => {
+  beforeEach(() => {
+    (getSocket as jest.Mock).mockReset();
+    (fetchMissedEvents as jest.Mock).mockReset();
+  });
+
   it("does not subscribe when projectId is undefined", () => {
     const socket = makeFakeSocket();
     (getSocket as jest.Mock).mockReturnValue(socket);
@@ -80,103 +90,99 @@ describe("useDonationSocket", () => {
     const socket = makeFakeSocket();
     (getSocket as jest.Mock).mockReturnValue(socket);
     const onDonation = jest.fn();
-
-    // Mock fetch for backfill
-    global.fetch = jest.fn();
+    const mockFetchMissedEvents = fetchMissedEvents as jest.Mock;
 
     renderHook(() => useDonationSocket("project-1", onDonation));
 
-    // Emit a donation to set lastEventTimestampRef
-    const firstDonation = payload({ timestamp: "2026-01-01T10:00:00.000Z" });
-    socket.emit("donation_event", firstDonation);
+    // Emit a donation with a cursor so cursorRef is populated
+    const firstDonation = payload({ timestamp: "2026-01-01T10:00:00.000Z", cursor: "cursor-1" });
+    act(() => {
+      socket.emit("donation_event", firstDonation);
+    });
     expect(onDonation).toHaveBeenCalledWith(firstDonation);
     expect(onDonation).toHaveBeenCalledTimes(1);
 
-    // Simulate reconnect event
+    // Simulate reconnect
     const missedDonations = [
-      payload({ 
+      { name: "donation_event", payload: payload({ 
         donorAddress: "GDONOR2", 
         amountXLM: 5,
         transactionHash: "tx-2",
         timestamp: "2026-01-01T10:15:00.000Z" 
-      }),
-      payload({ 
+      }), cursor: "cursor-2", emittedAt: "2026-01-01T10:15:00.000Z" },
+      { name: "donation_event", payload: payload({ 
         donorAddress: "GDONOR3", 
         amountXLM: 20,
         transactionHash: "tx-3",
         timestamp: "2026-01-01T10:30:00.000Z" 
-      }),
+      }), cursor: "cursor-3", emittedAt: "2026-01-01T10:30:00.000Z" },
     ];
 
-    (global.fetch as jest.Mock).mockResolvedValue({
-      ok: true,
-      json: async () => missedDonations,
+    mockFetchMissedEvents.mockResolvedValue({
+      events: missedDonations,
+      nextCursor: "cursor-3",
+      reset: false,
+      reason: null,
+      degraded: false,
     });
 
     // Trigger reconnect
-    socket.emit("connect", {});
+    await act(async () => {
+      socket.emit("connect", {});
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
 
-    // Wait for async backfill to complete
-    await new Promise(resolve => setTimeout(resolve, 100));
-
-    // Verify fetch was called with correct params
-    expect(global.fetch).toHaveBeenCalledWith(
-      expect.stringContaining("/api/donations?")
-    );
-    const fetchUrl = (global.fetch as jest.Mock).mock.calls[0][0];
-    expect(fetchUrl).toContain("since=2026-01-01T10%3A00%3A00.000Z");
-    expect(fetchUrl).toContain("projectId=project-1");
+    // Verify fetchMissedEvents was called with the cursor
+    expect(mockFetchMissedEvents).toHaveBeenCalledWith("cursor-1");
 
     // Verify missed donations were processed
+    // The hook spreads event.payload and adds cursor, so the delivered payloads include cursor
     expect(onDonation).toHaveBeenCalledTimes(3);
-    expect(onDonation).toHaveBeenNthCalledWith(2, missedDonations[0]);
-    expect(onDonation).toHaveBeenNthCalledWith(3, missedDonations[1]);
+    expect(onDonation).toHaveBeenNthCalledWith(2, { ...missedDonations[0].payload, cursor: "cursor-2" });
+    expect(onDonation).toHaveBeenNthCalledWith(3, { ...missedDonations[1].payload, cursor: "cursor-3" });
   });
 
-  it("handles backfill failure gracefully", async () => {
+  it("fires onGap with reset on backfill failure", async () => {
     const socket = makeFakeSocket();
     (getSocket as jest.Mock).mockReturnValue(socket);
     const onDonation = jest.fn();
-    const consoleError = jest.spyOn(console, "error").mockImplementation();
+    const onGap = jest.fn();
+    const mockFetchMissedEvents = fetchMissedEvents as jest.Mock;
 
-    global.fetch = jest.fn();
+    renderHook(() => useDonationSocket("project-1", onDonation, { onGap }));
 
-    renderHook(() => useDonationSocket("project-1", onDonation));
+    // Emit a donation with a cursor so cursorRef is populated
+    const firstDonation = payload({ timestamp: "2026-01-01T10:00:00.000Z", cursor: "cursor-1" });
+    act(() => {
+      socket.emit("donation_event", firstDonation);
+    });
 
-    // Emit a donation to set lastEventTimestampRef
-    const firstDonation = payload({ timestamp: "2026-01-01T10:00:00.000Z" });
-    socket.emit("donation_event", firstDonation);
+    // Simulate failed replay
+    mockFetchMissedEvents.mockRejectedValue(new Error("Network error"));
 
-    // Simulate failed fetch
-    (global.fetch as jest.Mock).mockRejectedValue(new Error("Network error"));
+    await act(async () => {
+      socket.emit("connect", {});
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
 
-    socket.emit("connect", {});
-
-    await new Promise(resolve => setTimeout(resolve, 100));
-
-    expect(consoleError).toHaveBeenCalledWith(
-      "Failed to backfill missed donations:",
-      expect.any(Error)
-    );
-
-    consoleError.mockRestore();
+    expect(onGap).toHaveBeenCalledWith({ kind: "reset", reason: "REPLAY_UNAVAILABLE" });
   });
 
   it("skips backfill if no previous donations received", async () => {
     const socket = makeFakeSocket();
     (getSocket as jest.Mock).mockReturnValue(socket);
     const onDonation = jest.fn();
-
-    global.fetch = jest.fn();
+    const mockFetchMissedEvents = fetchMissedEvents as jest.Mock;
 
     renderHook(() => useDonationSocket("project-1", onDonation));
 
-    // Trigger reconnect without any prior donations
-    socket.emit("connect", {});
+    // Trigger reconnect without any prior donations (no cursor set)
+    await act(async () => {
+      socket.emit("connect", {});
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
 
-    await new Promise(resolve => setTimeout(resolve, 100));
-
-    // Fetch should not be called
-    expect(global.fetch).not.toHaveBeenCalled();
+    // fetchMissedEvents should not be called because no cursor was ever set
+    expect(mockFetchMissedEvents).not.toHaveBeenCalled();
   });
 });

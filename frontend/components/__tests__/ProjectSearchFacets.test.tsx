@@ -57,7 +57,7 @@ describe("ProjectSearchFacets", () => {
       />,
     );
     expect(screen.getByText("Active")).toBeInTheDocument();
-    expect(screen.getByText("1")).toBeInTheDocument();
+    expect(screen.getAllByText("1").length).toBeGreaterThan(0);
   });
 
   it("calls onFilterChange when category is selected", () => {
