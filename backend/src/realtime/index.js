@@ -226,7 +226,17 @@ let fanoutInstrumented = false;
 function instrumentFanout(RedisAdapterClass) {
   if (fanoutInstrumented) return;
 
-  const AdapterClass = RedisAdapterClass || require("@socket.io/redis-adapter").RedisAdapter;
+  let AdapterClass = RedisAdapterClass;
+  if (!AdapterClass) {
+    try {
+      AdapterClass = require("@socket.io/redis-adapter").RedisAdapter;
+    } catch {
+      // Module not installed: skip instrumentation rather than break delivery.
+      logger.warn({ msg: "realtime fanout instrumentation unavailable: @socket.io/redis-adapter not installed" });
+      fanoutInstrumented = true;
+      return;
+    }
+  }
   const original = AdapterClass?.prototype?.onmessage;
   if (typeof original !== "function") {
     // A version that no longer exposes this seam: skip instrumentation rather
