@@ -187,6 +187,8 @@ pub enum DataKey {
     // storage as it grows.
     ImpactVerifier(Address),
     ImpactAttestation(String),
+    // Emergency pause flag — when true, fund-moving functions are blocked.
+    Paused,
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -517,6 +519,53 @@ impl GreenPayContract {
         env.storage()
             .instance()
             .set(&DataKey::GlobalCO2OffsetGrams, &0i128);
+        env.storage().instance().set(&DataKey::Paused, &false);
+    }
+
+    // ─── Emergency pause ────────────────────────────────────────────────────
+
+    pub fn pause(env: Env, admin: Address) {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if stored_admin != admin {
+            panic!("Only admin can pause");
+        }
+        env.storage().instance().set(&DataKey::Paused, &true);
+    }
+
+    pub fn unpause(env: Env, admin: Address) {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if stored_admin != admin {
+            panic!("Only admin can unpause");
+        }
+        env.storage().instance().set(&DataKey::Paused, &false);
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+    }
+
+    fn require_not_paused(env: &Env) {
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
+        if paused {
+            panic!("Contract is paused");
+        }
     }
 
     /// Exposes the contract's current schema version to off-chain consumers and scripts.
@@ -640,6 +689,7 @@ impl GreenPayContract {
         msg_hash: u32,
     ) {
         donor.require_auth();
+        Self::require_not_paused(&env);
         if amount <= 0 {
             panic!("Donation amount must be positive");
         }
@@ -1244,6 +1294,7 @@ impl GreenPayContract {
     /// [`MIN_VOTING_WINDOW_LEDGERS`, `MAX_VOTING_WINDOW_LEDGERS`].
     pub fn create_proposal(env: Env, admin: Address, project_id: String, duration_ledgers: u32) {
         admin.require_auth();
+        Self::require_not_paused(&env);
         if env.storage().instance().has(&DataKey::DaoContract) {
             panic!("DAO governance is active; legacy proposals are retired");
         }
@@ -1311,6 +1362,7 @@ impl GreenPayContract {
     /// enforced to prevent double-counting.
     pub fn vote_verify_project(env: Env, voter: Address, project_id: String, approve: bool) {
         voter.require_auth();
+        Self::require_not_paused(&env);
         if env.storage().instance().has(&DataKey::DaoContract) {
             panic!("DAO governance is active; legacy voting is retired");
         }
@@ -1566,6 +1618,7 @@ mod tests {
         assert_eq!(client.get_project_count(), 0);
         assert_eq!(client.get_donation_count(), 0);
         assert_eq!(client.get_global_total(), 0);
+        assert!(!client.is_paused());
     }
 
     #[test]
@@ -1619,6 +1672,46 @@ mod tests {
         let admin = Address::generate(&env);
         client.initialize(&admin);
         client.initialize(&admin);
+    }
+
+    // ─── Pause / emergency-stop tests ──────────────────────────────────────
+
+    #[test]
+    fn test_pause_and_unpause() {
+        let (_env, _cid, client, admin, _pid) = setup();
+        assert!(!client.is_paused());
+        client.pause(&admin);
+        assert!(client.is_paused());
+        client.unpause(&admin);
+        assert!(!client.is_paused());
+    }
+
+    #[test]
+    #[should_panic(expected = "Only admin can pause")]
+    fn test_pause_non_admin_fails() {
+        let (env, _cid, client, _admin, _pid) = setup();
+        let rando = Address::generate(&env);
+        client.pause(&rando);
+    }
+
+    #[test]
+    #[should_panic(expected = "Only admin can unpause")]
+    fn test_unpause_non_admin_fails() {
+        let (env, _cid, client, _admin, _pid) = setup();
+        let rando = Address::generate(&env);
+        client.unpause(&rando);
+    }
+
+    #[test]
+    #[should_panic(expected = "Contract is paused")]
+    fn test_donate_rejected_when_paused() {
+        let (env, _cid, client, admin, pid) = setup();
+        let donor = Address::generate(&env);
+        let token = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
+        client.pause(&admin);
+        client.donate(&token, &donor, &pid, &1000, &1u32);
     }
 
     #[test]
