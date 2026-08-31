@@ -488,6 +488,18 @@
                             "lo": 500000
                           }
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -1398,7 +1410,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'target/function not allowlisted' from contract function 'Symbol(obj#351)'"
+                  "string": "caught panic 'target/function not allowlisted' from contract function 'Symbol(obj#355)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"

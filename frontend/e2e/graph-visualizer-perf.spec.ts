@@ -27,7 +27,7 @@ async function mockApi(page: Page) {
     r.fulfill({ json: { _embedded: { records: [] }, balances: [] } })
   );
   await page.route("**/api/v1/stats/global", (r) =>
-    r.fulfill(ok({ totalDonations: 0, totalXLMRaised: "0", totalCO2OffsetKg: 0 }))
+    r.fulfill(ok({ totalDonations: 0, totalXLMRaised: "0", publishedImpactClaims: 0, verifiedImpactClaims: 0 }))
   );
   await page.route("**/api/v1/stats/categories", (r) => r.fulfill(ok([])));
   await page.route("**/api/v1/projects?**", (r) => r.fulfill(ok([])));

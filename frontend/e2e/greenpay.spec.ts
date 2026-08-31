@@ -66,7 +66,7 @@ async function mockApi(page: Page) {
   // Stats / categories / impact / leaderboard.
   await page.route("**/api/v1/impact/**",          (r) => r.fulfill(ok({})));
   await page.route("**/api/v1/stats/categories",   (r) => r.fulfill(ok([{ category: "Reforestation", count: 1 }])));
-  await page.route("**/api/v1/stats/global",       (r) => r.fulfill(ok({ totalDonations: 1, totalXLMRaised: "100", totalCO2OffsetKg: 1000 })));
+  await page.route("**/api/v1/stats/global",       (r) => r.fulfill(ok({ totalDonations: 1, totalXLMRaised: "100", publishedImpactClaims: 1, verifiedImpactClaims: 0 })));
   await page.route("**/api/v1/leaderboard**",      (r) => r.fulfill(ok(MOCK_LEADERBOARD)));
 
   // Profile, donations, subscriptions, updates.
@@ -169,8 +169,8 @@ test.describe("Project detail & DonateForm", () => {
     });
 
     test("preset amount buttons pre-fill the custom-amount input", async ({ page }) => {
-      // Scope selectors to the donation form so we don't collide with the
-      // CO₂-impact calculator preview that also renders "25 XLM" buttons.
+      // Scope selectors to the donation form so future project-side actions
+      // cannot collide with the preset donation controls.
       const form = page.locator(".card", { hasText: /make a donation/i });
       await expect(form.getByRole("heading", { name: /make a donation/i })).toBeVisible();
       const amountInput = form.getByPlaceholder(/or enter custom amount/i);
@@ -198,10 +198,10 @@ test.describe("Project detail & DonateForm", () => {
 });
 
 test.describe("Leaderboard", () => {
-  test("loads and shows the badge tier legend", async ({ page }) => {
+  test("loads and shows the donation badge tier legend", async ({ page }) => {
     await mockApi(page);
     await page.goto("/leaderboard");
-    await expect(page.getByText("Impact Badge Tiers")).toBeVisible();
+    await expect(page.getByText("Donation Badge Tiers")).toBeVisible();
     await expect(page.getByText("Seedling").first()).toBeVisible();
   });
 });

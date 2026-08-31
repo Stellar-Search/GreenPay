@@ -2,11 +2,21 @@
  * app/projects/[id].tsx
  * Project detail screen
  */
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { apiGet, API_URL, parseApiFetchResponse } from '../../utils/api';
-import { getPushToken, followProject, unfollowProject } from '../../utils/notifications';
+import { apiFetch, apiGet, parseApiFetchResponse } from '../../utils/api';
+import {
+  getPushToken,
+  getStoredPushToken,
+  followProject,
+  unfollowProject,
+  requestNotificationPermissionsWithRationale,
+  openNotificationSettings,
+} from '../../utils/notifications';
+import { parseProjectUpdates, type MobileProjectUpdate } from '../../utils/projectUpdates';
+import { useWallet } from '../../src/hooks/useWallet';
+import { useTheme } from '../theme';
 
 interface ClimateProject {
   id: string;
@@ -27,7 +37,9 @@ export default function ProjectDetailScreen() {
   const { colors } = useTheme();
   const router = useRouter();
   const { id } = useLocalSearchParams();
+  const { publicKey } = useWallet();
   const [project, setProject] = useState<ClimateProject | null>(null);
+  const [projectUpdates, setProjectUpdates] = useState<MobileProjectUpdate[]>([]);
   const [loading, setLoading] = useState(true);
   const [isFollowing, setIsFollowing] = useState(false);
   const [pushToken, setPushToken] = useState<string | null>(null);
@@ -42,20 +54,19 @@ export default function ProjectDetailScreen() {
 
   const initializeNotifications = async () => {
     try {
-      const token = await getPushToken();
+      const token = await getStoredPushToken();
       if (token) {
         setPushToken(token);
-        // Check if already following this project
         checkFollowStatus(id as string, token);
       }
     } catch (error) {
-      console.error('Error initializing notifications:', error);
+      console.error('Error initializing notifications state:', error);
     }
   };
 
   const checkFollowStatus = async (projectId: string, token: string) => {
     try {
-      const response = await fetch(`${API_URL}/api/notifications/follows?token=${token}`);
+      const response = await apiFetch(`/api/notifications/follows?token=${encodeURIComponent(token)}`);
       const followedProjects = await parseApiFetchResponse<Array<{ id: string }>>(response);
       const isFollowed = followedProjects.some((p) => p.id === projectId);
       setIsFollowing(isFollowed);
@@ -66,8 +77,12 @@ export default function ProjectDetailScreen() {
 
   const loadProject = async (projectId: string) => {
     try {
-      const data = await apiGet<ClimateProject>(`/api/projects/${projectId}`);
-      setProject(data);
+      const [projectData, updatesData] = await Promise.all([
+        apiGet<ClimateProject>(`/api/projects/${projectId}`),
+        apiGet<unknown>(`/api/updates/${projectId}`).catch(() => []),
+      ]);
+      setProject(projectData);
+      setProjectUpdates(parseProjectUpdates(updatesData));
     } catch (error) {
       console.error('Error loading project:', error);
     } finally {
@@ -76,16 +91,44 @@ export default function ProjectDetailScreen() {
   };
 
   const handleToggleFollow = async () => {
-    if (!pushToken || !project) return;
+    if (!project) return;
 
     setFollowLoading(true);
     try {
       if (isFollowing) {
-        await unfollowProject(project.id, pushToken);
-        setIsFollowing(false);
+        const token = pushToken || (await getStoredPushToken());
+        if (token) {
+          await unfollowProject(project.id, token);
+          setIsFollowing(false);
+        }
       } else {
-        await followProject(project.id, pushToken);
-        setIsFollowing(true);
+        let token = pushToken || (await getStoredPushToken());
+        if (!token) {
+          const permResult = await requestNotificationPermissionsWithRationale(
+            'Enable notifications to receive updates about this project.'
+          );
+          if (!permResult.granted) {
+            if (permResult.needsSettings) {
+              Alert.alert(
+                'Notifications Disabled',
+                'Notification permissions are currently disabled. Please enable them in your device settings to follow project updates.',
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  { text: 'Open Settings', onPress: () => void openNotificationSettings() },
+                ]
+              );
+            }
+            return;
+          }
+          token = await getPushToken();
+        }
+
+        if (token) {
+          setPushToken(token);
+          const walletAddr = publicKey || undefined;
+          await followProject(project.id, token, walletAddr);
+          setIsFollowing(true);
+        }
       }
     } catch (error) {
       console.error('Error toggling follow:', error);
@@ -160,22 +203,32 @@ export default function ProjectDetailScreen() {
         </Text>
       </View>
 
-      <View style={[styles.descriptionCard, { backgroundColor: colors.surface, shadowColor: colors.cardShadow, borderColor: colors.cardBorder }]}> 
+      <View style={[styles.descriptionCard, { backgroundColor: colors.surface, shadowColor: colors.cardShadow, borderColor: colors.cardBorder }]}>
         <Text style={[styles.sectionTitle, { color: colors.primaryText }]}>About this project</Text>
         <Text style={[styles.description, { color: colors.secondaryText }]}>{project.description}</Text>
       </View>
 
-      {pushToken && (
-        <TouchableOpacity
-          style={[styles.followButton, isFollowing && styles.followButtonActive]}
-          onPress={handleToggleFollow}
-          disabled={followLoading}
-        >
-          <Text style={styles.followButtonText}>
-            {followLoading ? 'Loading...' : isFollowing ? '🔔 Following' : '🔔 Follow for Updates'}
-          </Text>
-        </TouchableOpacity>
-      )}
+      <View style={[styles.descriptionCard, { backgroundColor: colors.surface, shadowColor: colors.cardShadow, borderColor: colors.cardBorder }]}>
+        <Text style={[styles.sectionTitle, { color: colors.primaryText }]}>Project updates</Text>
+        {projectUpdates.length === 0 ? (
+          <Text style={[styles.description, { color: colors.secondaryText }]}>No published updates yet.</Text>
+        ) : projectUpdates.map((update) => (
+          <View key={update.id} style={styles.updateItem}>
+            <Text style={[styles.updateTitle, { color: colors.primaryText }]}>{update.title}</Text>
+            <Text style={[styles.description, { color: colors.secondaryText }]}>{update.body}</Text>
+          </View>
+        ))}
+      </View>
+
+      <TouchableOpacity
+        style={[styles.followButton, isFollowing && styles.followButtonActive]}
+        onPress={handleToggleFollow}
+        disabled={followLoading}
+      >
+        <Text style={[styles.followButtonText, isFollowing && { color: '#fff' }]}>
+          {followLoading ? 'Loading...' : isFollowing ? '🔔 Following' : '🔔 Follow for Updates'}
+        </Text>
+      </TouchableOpacity>
 
       <TouchableOpacity
         style={[styles.donateButton, { backgroundColor: colors.buttonBackground }]}
@@ -304,6 +357,17 @@ const styles = StyleSheet.create({
   description: {
     fontSize: 14,
     lineHeight: 20,
+  },
+  updateItem: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#c8d8c8',
+  },
+  updateTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    marginBottom: 4,
   },
   followButton: {
     backgroundColor: '#fff',

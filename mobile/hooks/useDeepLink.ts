@@ -1,73 +1,144 @@
 /**
  * hooks/useDeepLink.ts
- * Handles greenpay:// deep links and navigates to the correct screen.
  *
- * Supported URLs:
+ * Unified routing hook for deep links, universal web links, and push/local
+ * notification taps.
+ *
+ * Supported URLs & Notifications:
  *   greenpay://project/123       → /projects/123
+ *   greenpay://projects/123      → /projects/123
  *   greenpay://donate/<id>       → /donate/<id>
  *   greenpay://recurring/<id>    → /donate/<projectId>?recurringId=<id>
- *                                  (monthly due reminder — donor must re-sign)
+ *   greenpay://recurring         → /recurring
+ *   greenpay://impact            → /impact
+ *   greenpay://leaderboard       → /leaderboard
+ *   greenpay://profile/<addr>    → /profile/<addr>
+ *   Push/local notification taps (milestones, updates, donations, reminders)
  *
- * Validated by `parseGreenPayDeepLink` (utils/qrPayload.ts), the same
- * allowlist/charset rules enforced on the QR path.
+ * All inputs are strictly validated against an allowlist model (navigationDestinations.ts)
+ * so no externally supplied value becomes a route directly.
  *
- * Fix for issue #32 — deep-link / hydration race condition:
- * cold-start URLs go through AppInitContext.queueDeepLink until hydrated;
- * warm-start URLs navigate immediately.
+ * Cold-start versus warm-start handling:
+ * - Cold-start URLs & notification responses are held in AppInitContext until
+ *   AsyncStorage/SecureStore state is hydrated and navigation is ready.
+ * - Warm-start events navigate immediately.
  */
-import { useEffect, useCallback } from 'react';
+import { useEffect, useCallback, useRef } from 'react';
 import * as Linking from 'expo-linking';
+import * as Notifications from 'expo-notifications';
 import { useRouter } from 'expo-router';
 import { useAppInit } from '../src/context/AppInitContext';
-import { parseGreenPayDeepLink } from '../utils/qrPayload';
-import { getRecurringDonation } from '../utils/recurringDonations';
+import {
+  AppDestination,
+  resolveDeepLinkDestination,
+  resolveNotificationDestination,
+  navigateToDestination,
+} from '../utils/navigationDestinations';
+import { setupNotificationChannel, setupNotificationListener } from '../utils/notifications';
+import { getWalletPublicKey } from '../utils/walletKeyStorage';
 
 export function useDeepLink() {
   const router = useRouter();
-  const { queueDeepLink, onDeepLinkReady } = useAppInit();
+  const routerRef = useRef(router);
+  routerRef.current = router;
+
+  const { queueDestination, onDestinationReady, queueDeepLink, onDeepLinkReady } = useAppInit();
+
+  const handleDestination = useCallback(
+    async (destination: AppDestination | null) => {
+      if (!destination) return;
+      await navigateToDestination(routerRef.current, destination);
+    },
+    []
+  );
 
   const handleUrl = useCallback(
     async (url: string | null) => {
       if (!url) return;
-      const parsed = parseGreenPayDeepLink(url);
-      if (!parsed.ok) return;
-
-      if (parsed.segment === 'project') {
-        router.push(`/projects/${parsed.projectId}`);
-        return;
+      const destination = resolveDeepLinkDestination(url);
+      if (destination) {
+        await handleDestination(destination);
       }
-
-      if (parsed.segment === 'recurring') {
-        const entry = await getRecurringDonation(parsed.projectId);
-        if (!entry || entry.status !== 'active') return;
-        router.push({
-          pathname: '/donate/[id]',
-          params: {
-            id: entry.projectId,
-            recurringId: entry.id,
-            amount: entry.amountXLM,
-          },
-        });
-        return;
-      }
-
-      router.push(`/donate/${parsed.projectId}`);
     },
-    [router],
+    [handleDestination]
+  );
+
+  const handleNotificationResponse = useCallback(
+    async (response: Notifications.NotificationResponse | null) => {
+      if (!response) return;
+      const destination = resolveNotificationDestination(response);
+      if (destination) {
+        await handleDestination(destination);
+      }
+    },
+    [handleDestination]
   );
 
   useEffect(() => {
-    onDeepLinkReady((url) => {
-      void handleUrl(url);
-    });
+    // 1. Ensure Android notification channel is initialized
+    void setupNotificationChannel();
 
+    // 2. Register destination handler for cold-start flush
+    if (onDestinationReady) {
+      onDestinationReady((dest) => {
+        void handleDestination(dest);
+      });
+    } else if (onDeepLinkReady) {
+      onDeepLinkReady((url) => {
+        void handleUrl(url);
+      });
+    }
+
+    // 3. Cold-start deep link detection
     Linking.getInitialURL().then((url) => {
-      if (url) queueDeepLink(url);
+      if (url) {
+        const dest = resolveDeepLinkDestination(url);
+        if (dest && queueDestination) {
+          queueDestination(dest);
+        } else if (queueDeepLink) {
+          queueDeepLink(url);
+        }
+      }
     });
 
-    const subscription = Linking.addEventListener('url', ({ url }) => {
+    // 4. Cold-start notification tap detection
+    if (typeof Notifications.getLastNotificationResponseAsync === 'function') {
+      Notifications.getLastNotificationResponseAsync().then((response) => {
+        if (response) {
+          const dest = resolveNotificationDestination(response);
+          if (dest && queueDestination) {
+            queueDestination(dest);
+          }
+        }
+      });
+    }
+
+    // 5. Warm-start deep link listener
+    const linkingSub = Linking.addEventListener('url', ({ url }) => {
       void handleUrl(url);
     });
-    return () => subscription.remove();
-  }, [handleUrl, onDeepLinkReady, queueDeepLink]);
+
+    // 6. Push notification listener and token rotation
+    const notifSub = setupNotificationListener({
+      onNotificationResponse: (response) => {
+        void handleNotificationResponse(response);
+      },
+      getWalletAddress: async () => {
+        return await getWalletPublicKey();
+      },
+    });
+
+    return () => {
+      linkingSub.remove();
+      notifSub.remove();
+    };
+  }, [
+    handleDestination,
+    handleUrl,
+    handleNotificationResponse,
+    onDestinationReady,
+    onDeepLinkReady,
+    queueDestination,
+    queueDeepLink,
+  ]);
 }

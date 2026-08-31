@@ -8,6 +8,8 @@ import { PriceProvider } from "@/lib/priceContext";
 import { I18nProvider } from "@/lib/i18n";
 import { connectWallet, getConnectedPublicKey } from "@/lib/wallet";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+
+import { loadStarterAccount } from "@/lib/starterAccount";
 import "@/styles/globals.css";
 
 // Custom getInitialProps opts every page out of Automatic Static
@@ -36,10 +38,31 @@ export default function App({ Component, pageProps }: AppProps) {
       setPublicKey(testPk);
       return;
     }
-    getConnectedPublicKey().then(pk => { if (pk) setPublicKey(pk); });
+    getConnectedPublicKey().then(pk => {
+      if (pk) {
+        setPublicKey(pk);
+        return;
+      }
+      // No wallet connected, but this browser may hold a starter account from
+      // a previous visit. Restoring it is what stops a donor who came through
+      // the sponsored path having to set it all up again — and the connected
+      // wallet is checked first, so a donor who has since installed one is
+      // never dropped back onto the starter key.
+      const starter = loadStarterAccount();
+      if (starter) setPublicKey(starter.publicKey);
+    });
   }, []);
 
-  const handleConnect = async () => {
+  /**
+   * Accepts an address the caller already has (the sponsored-onboarding flow
+   * ends holding one) and falls back to the Freighter handshake when called
+   * with nothing, which is how Navbar and every pre-existing call site use it.
+   */
+  const handleConnect = async (address?: string) => {
+    if (address) {
+      setPublicKey(address);
+      return;
+    }
     const { publicKey: pk } = await connectWallet();
     if (pk) setPublicKey(pk);
   };

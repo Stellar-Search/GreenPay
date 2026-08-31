@@ -84,7 +84,7 @@ function isWalletSession(value: unknown): value is WalletSession {
   return (
     isRecord(value) &&
     typeof value.publicKey === 'string' &&
-    /^G[A-Z2-7]{55}$/.test(value.publicKey) &&
+    isValidStellarAddress(value.publicKey) &&
     typeof value.network === 'string' &&
     value.network === manifest.network.toUpperCase() &&
     typeof value.validatedAt === 'number'
@@ -217,7 +217,7 @@ export class WorkerSessionState {
   async setWallet(publicKey: string): Promise<WalletSession> {
     return this.runExclusive(async () => {
       await this.initialize();
-      if (!/^G[A-Z2-7]{55}$/.test(publicKey)) {
+      if (!isValidStellarAddress(publicKey)) {
         throw new Error('Invalid Stellar public key');
       }
 

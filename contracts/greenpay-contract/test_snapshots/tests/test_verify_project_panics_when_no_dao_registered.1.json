@@ -249,6 +249,18 @@
                         "val": {
                           "u32": 1
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -498,7 +510,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'DAO contract not registered; call set_dao_contract first' from contract function 'Symbol(obj#101)'"
+                  "string": "caught panic 'DAO contract not registered; call set_dao_contract first' from contract function 'Symbol(obj#105)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"

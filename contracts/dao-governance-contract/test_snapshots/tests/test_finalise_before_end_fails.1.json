@@ -833,6 +833,18 @@
                             "lo": 500000
                           }
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -2138,7 +2150,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'voting period not closed' from contract function 'Symbol(obj#685)'"
+                  "string": "caught panic 'voting period not closed' from contract function 'Symbol(obj#697)'"
                 },
                 {
                   "u64": 1

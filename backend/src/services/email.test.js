@@ -64,7 +64,7 @@ describe("enqueueUpdateNotifications", () => {
           { id: "sub-2", email: "b@example.com" },
         ],
       })
-      .mockResolvedValueOnce({ rows: [] });
+      .mockResolvedValueOnce({ rows: [{ email: "a@example.com" }, { email: "b@example.com" }] });
 
     await email.enqueueUpdateNotifications({ project, update });
 
@@ -100,29 +100,33 @@ describe("enqueueUpdateNotifications", () => {
     }));
     pool.query
       .mockResolvedValueOnce({ rows: fullPage })
-      .mockResolvedValueOnce({ rows: [{ id: "sub-050", email: "last@example.com" }] });
+      .mockResolvedValueOnce({ rows: fullPage.map(({ email }) => ({ email })) })
+      .mockResolvedValueOnce({ rows: [{ id: "sub-050", email: "last@example.com" }] })
+      .mockResolvedValueOnce({ rows: [{ email: "last@example.com" }] });
 
     await email.enqueueUpdateNotifications({ project, update });
 
     const boss = getBossInstance();
     expect(boss.send).toHaveBeenCalledTimes(2);
     // Second page's query starts from the last id seen on the first page.
-    expect(pool.query.mock.calls[1][1].slice(0, 3)).toEqual([project.id, "sub-049", 50]);
+    expect(pool.query.mock.calls[2][1].slice(0, 3)).toEqual([project.id, "sub-049", 50]);
   });
 
   it("groups recipients by preferred language and uses approved localized content", async () => {
     await email.start();
-    pool.query.mockResolvedValueOnce({
-      rows: [{
-        id: "sub-1",
-        email: "donante@example.com",
-        preferred_language: "es",
-        localized_project_name: "Limpieza del arrecife",
-        localized_update_title: "Fotos nuevas",
-        localized_update_body: "Gran progreso este mes",
-        machine_translated: true,
-      }],
-    });
+    pool.query
+      .mockResolvedValueOnce({
+        rows: [{
+          id: "sub-1",
+          email: "donante@example.com",
+          preferred_language: "es",
+          localized_project_name: "Limpieza del arrecife",
+          localized_update_title: "Fotos nuevas",
+          localized_update_body: "Gran progreso este mes",
+          machine_translated: true,
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [{ email: "donante@example.com" }] });
 
     await email.enqueueUpdateNotifications({ project, update });
 
@@ -133,6 +137,38 @@ describe("enqueueUpdateNotifications", () => {
         emails: ["donante@example.com"],
         project: expect.objectContaining({ name: "Limpieza del arrecife" }),
         update: expect.objectContaining({ title: "Fotos nuevas", machineTranslated: true }),
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it("queues removal corrections from the original recipient snapshot", async () => {
+    await email.start();
+    pool.query
+      .mockResolvedValueOnce({
+        rows: [{
+          email: "former-subscriber@example.com",
+          language: "en",
+          project_name: "Reef Cleanup",
+          update_title: "New photos from the field",
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [{ email: "former-subscriber@example.com" }] });
+
+    await email.enqueueUpdateRemovalNotifications({
+      project,
+      update,
+      reason: "Unsupported claim",
+    });
+
+    expect(pool.query.mock.calls[0][0]).toContain("project_update_email_recipients");
+    expect(pool.query.mock.calls[0][0]).not.toContain("project_subscriptions");
+    expect(getBossInstance().send).toHaveBeenCalledWith(
+      "update-email-notify",
+      expect.objectContaining({
+        kind: "removed",
+        reason: "Unsupported claim",
+        emails: ["former-subscriber@example.com"],
       }),
       expect.any(Object),
     );
@@ -180,6 +216,22 @@ describe("sendUpdateNotifications", () => {
     expect(payload.subject).toContain("Actualización del proyecto");
     expect(payload.html).toContain("lang=\"es\"");
     expect(payload.html).toContain("Traducción automática");
+  });
+
+  it("sends a removal correction without repeating the removed body", async () => {
+    global.fetch.mockResolvedValueOnce({ ok: true });
+    await email.sendUpdateNotifications({
+      project,
+      update: { ...update, body: "Content that should not be repeated" },
+      emails: ["donor@example.com"],
+      kind: "removed",
+      reason: "The impact claim could not be substantiated",
+    });
+    const payload = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(payload.subject).toContain("Project update correction");
+    expect(payload.html).toContain("The impact claim could not be substantiated");
+    expect(payload.html).not.toContain("Content that should not be repeated");
+    expect(payload.text).not.toContain("Content that should not be repeated");
   });
 
   it("throws when Resend returns a non-ok response, so pg-boss retries the job", async () => {

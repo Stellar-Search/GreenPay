@@ -374,6 +374,30 @@
                             }
                           ]
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "JobCount"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -1395,7 +1419,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Dispute has not timed out yet' from contract function 'Symbol(obj#351)'"
+                  "string": "caught panic 'Dispute has not timed out yet' from contract function 'Symbol(obj#371)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"

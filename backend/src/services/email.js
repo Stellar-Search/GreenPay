@@ -30,6 +30,26 @@ const EMAIL_COPY = Object.freeze({
   es: { label: "Actualización del proyecto", view: "Ver proyecto →", footer: "Recibes este mensaje porque te suscribiste a las novedades de" },
   ar: { label: "تحديث المشروع", view: "عرض المشروع ←", footer: "تصلك هذه الرسالة لأنك اشتركت في تحديثات" },
 });
+const REMOVAL_COPY = Object.freeze({
+  en: {
+    label: "Project update correction",
+    intro: "A project update that was previously sent to you has been removed after moderation review.",
+    reason: "Reason",
+    view: "View current project information →",
+  },
+  es: {
+    label: "Corrección de actualización del proyecto",
+    intro: "Una actualización del proyecto que recibiste anteriormente fue retirada tras una revisión de moderación.",
+    reason: "Motivo",
+    view: "Ver la información actual del proyecto →",
+  },
+  ar: {
+    label: "تصحيح تحديث المشروع",
+    intro: "تمت إزالة تحديث مشروع أُرسل إليك سابقًا بعد مراجعته.",
+    reason: "السبب",
+    view: "عرض معلومات المشروع الحالية ←",
+  },
+});
 
 let boss = null;
 
@@ -97,7 +117,9 @@ async function enqueueUpdateNotifications({ project, update }) {
          ON ut.update_id = $7
         AND ut.language = ps.preferred_language
         AND ut.moderation_status = 'approved'
-       WHERE ps.project_id = $1 AND ps.id > $2
+       LEFT JOIN project_update_email_recipients er
+         ON er.update_id = $7 AND er.email = ps.email
+       WHERE ps.project_id = $1 AND ps.id > $2 AND er.email IS NULL
        ORDER BY ps.id
        LIMIT $3`,
       [project.id, lastId, EMAIL_CHUNK_SIZE, project.name, update.title, update.body || "", update.id],
@@ -125,14 +147,99 @@ async function enqueueUpdateNotifications({ project, update }) {
       languageGroups.get(key).emails.push(row.email);
     }
     for (const payload of languageGroups.values()) {
-      await boss.send(
-        QUEUE,
-        payload,
-        { retryLimit: RETRY_LIMIT, retryDelay: RETRY_DELAY, deadLetter: DEAD_LETTER_QUEUE },
+      const claim = await pool.query(
+        `INSERT INTO project_update_email_recipients (
+           update_id, email, language, project_name, update_title
+         )
+         SELECT $1, recipient, $3, $4, $5 FROM unnest($2::text[]) AS recipient
+         ON CONFLICT (update_id, email) DO NOTHING
+         RETURNING email`,
+        [update.id, payload.emails, payload.language, payload.project.name, payload.update.title],
       );
+      const claimedEmails = claim.rows.map((row) => row.email);
+      if (claimedEmails.length === 0) continue;
+      try {
+        await boss.send(
+          QUEUE,
+          { ...payload, emails: claimedEmails },
+          { retryLimit: RETRY_LIMIT, retryDelay: RETRY_DELAY, deadLetter: DEAD_LETTER_QUEUE },
+        );
+      } catch (error) {
+        await pool.query(
+          `DELETE FROM project_update_email_recipients
+           WHERE update_id = $1 AND email = ANY($2::text[])`,
+          [update.id, claimedEmails],
+        );
+        throw error;
+      }
     }
 
     lastId = rows[rows.length - 1].id;
+    if (rows.length < EMAIL_CHUNK_SIZE) break;
+  }
+}
+
+/** Queue a correction for the exact addresses that received the original. */
+async function enqueueUpdateRemovalNotifications({ project, update, reason }) {
+  if (!boss) {
+    throw new Error("email notification queue not started — call start() first");
+  }
+
+  let lastEmail = "";
+  for (;;) {
+    const { rows } = await pool.query(
+      `SELECT email, language, project_name, update_title
+       FROM project_update_email_recipients
+       WHERE update_id = $1 AND email > $2 AND correction_queued_at IS NULL
+       ORDER BY email LIMIT $3`,
+      [update.id, lastEmail, EMAIL_CHUNK_SIZE],
+    );
+    if (rows.length === 0) break;
+
+    const groups = new Map();
+    for (const row of rows) {
+      const key = [row.language, row.project_name, row.update_title].join("\u0000");
+      if (!groups.has(key)) {
+        groups.set(key, {
+          language: EMAIL_COPY[row.language] ? row.language : "en",
+          project: { ...project, name: row.project_name || project.name },
+          update: { ...update, title: row.update_title || update.title },
+          emails: [],
+          kind: "removed",
+          reason,
+        });
+      }
+      groups.get(key).emails.push(row.email);
+    }
+
+    for (const payload of groups.values()) {
+      const claim = await pool.query(
+        `UPDATE project_update_email_recipients
+         SET correction_queued_at = NOW()
+         WHERE update_id = $1 AND email = ANY($2::text[])
+           AND correction_queued_at IS NULL
+         RETURNING email`,
+        [update.id, payload.emails],
+      );
+      const claimedEmails = claim.rows.map((row) => row.email);
+      if (claimedEmails.length === 0) continue;
+      try {
+        await boss.send(
+          QUEUE,
+          { ...payload, emails: claimedEmails },
+          { retryLimit: RETRY_LIMIT, retryDelay: RETRY_DELAY, deadLetter: DEAD_LETTER_QUEUE },
+        );
+      } catch (error) {
+        await pool.query(
+          `UPDATE project_update_email_recipients SET correction_queued_at = NULL
+           WHERE update_id = $1 AND email = ANY($2::text[])`,
+          [update.id, claimedEmails],
+        );
+        throw error;
+      }
+    }
+
+    lastEmail = rows[rows.length - 1].email;
     if (rows.length < EMAIL_CHUNK_SIZE) break;
   }
 }
@@ -149,7 +256,7 @@ async function enqueueUpdateNotifications({ project, update }) {
  * @returns {Promise<void>}
  * @throws {Error} When the Resend API returns an unexpected failure.
  */
-async function sendUpdateNotifications({ project, update, emails, language = "en" }) {
+async function sendUpdateNotifications({ project, update, emails, language = "en", kind = "published", reason = null }) {
   if (!env.resendApiKey) {
     console.warn("[email] RESEND_API_KEY not set — skipping notifications");
     return;
@@ -167,9 +274,11 @@ async function sendUpdateNotifications({ project, update, emails, language = "en
     body: JSON.stringify({
       from: env.emailFrom,
       to: emails,
-      subject: `${EMAIL_COPY[language]?.label || EMAIL_COPY.en.label} — ${project.name}: ${update.title}`,
-      html: buildHtml({ project, update, projectUrl, language }),
-      text: buildText({ project, update, projectUrl, language }),
+      subject: kind === "removed"
+        ? `${REMOVAL_COPY[language]?.label || REMOVAL_COPY.en.label} — ${project.name}: ${update.title}`
+        : `${EMAIL_COPY[language]?.label || EMAIL_COPY.en.label} — ${project.name}: ${update.title}`,
+      html: buildHtml({ project, update, projectUrl, language, kind, reason }),
+      text: buildText({ project, update, projectUrl, language, kind, reason }),
     }),
   });
 
@@ -179,9 +288,29 @@ async function sendUpdateNotifications({ project, update, emails, language = "en
   }
 }
 
-function buildHtml({ project, update, projectUrl, language = "en" }) {
+function buildHtml({ project, update, projectUrl, language = "en", kind = "published", reason = null }) {
   const copy = EMAIL_COPY[language] || EMAIL_COPY.en;
   const direction = language === "ar" ? "rtl" : "ltr";
+  if (kind === "removed") {
+    const removal = REMOVAL_COPY[language] || REMOVAL_COPY.en;
+    return `<!DOCTYPE html>
+<html lang="${language}" dir="${direction}">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f7f3ed;font-family:sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="padding:32px 0;"><tr><td align="center">
+    <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;max-width:600px;width:100%;">
+      <tr><td style="padding:32px;">
+        <p style="margin:0 0 8px;font-size:13px;color:#8a6418;text-transform:uppercase;">${removal.label}</p>
+        <h1 style="margin:0 0 8px;font-size:22px;color:#1a3a1a;">${escHtml(update.title)}</h1>
+        <p style="margin:0 0 20px;font-size:13px;color:#5a7a5a;">${escHtml(project.name)}</p>
+        <p style="margin:0 0 16px;font-size:15px;color:#3a5a3a;line-height:1.6;">${removal.intro}</p>
+        <p style="margin:0 0 24px;font-size:14px;color:#3a5a3a;"><strong>${removal.reason}:</strong> ${escHtml(reason || "Content policy review")}</p>
+        <a href="${projectUrl}" style="display:inline-block;background:#2d6a2d;color:#ffffff;text-decoration:none;padding:12px 24px;border-radius:8px;">${removal.view}</a>
+      </td></tr>
+    </table>
+  </td></tr></table>
+</body></html>`;
+  }
   const translationLabel = update.machineTranslated
     ? `<p style="margin:0 0 16px;font-size:12px;color:#8a6418;">${language === "ar" ? "ترجمة آلية — راجع النص الأصلي عند الحاجة" : language === "es" ? "Traducción automática — consulta el original cuando sea necesario" : "Machine translated — consult the original when needed"}</p>`
     : "";
@@ -212,8 +341,21 @@ function buildHtml({ project, update, projectUrl, language = "en" }) {
 </html>`;
 }
 
-function buildText({ project, update, projectUrl, language = "en" }) {
+function buildText({ project, update, projectUrl, language = "en", kind = "published", reason = null }) {
   const copy = EMAIL_COPY[language] || EMAIL_COPY.en;
+  if (kind === "removed") {
+    const removal = REMOVAL_COPY[language] || REMOVAL_COPY.en;
+    return [
+      `${removal.label} — ${project.name}`,
+      "",
+      update.title,
+      "",
+      removal.intro,
+      `${removal.reason}: ${reason || "Content policy review"}`,
+      "",
+      `${removal.view.replace(/\s*[→←]$/, "")}: ${projectUrl}`,
+    ].join("\n");
+  }
   return [
     `${copy.label} — ${project.name}`,
     "",
@@ -236,4 +378,9 @@ function escHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
-module.exports = { start, enqueueUpdateNotifications, sendUpdateNotifications };
+module.exports = {
+  start,
+  enqueueUpdateNotifications,
+  enqueueUpdateRemovalNotifications,
+  sendUpdateNotifications,
+};

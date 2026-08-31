@@ -1,7 +1,11 @@
 openapi: 3.0.3
 info:
   title: Stellar GreenPay API
-  version: 1.0.0
+  version: 1.1.0
+  x-api-version: v1
+  x-lifecycle-status: stable
+  x-version-policy: ./api-versioning-policy.md
+  x-changelog: /api/versions/changelog
   description: |
     REST API for the Stellar GreenPay climate donation platform.
     Every donation is recorded on the Stellar blockchain via Soroban smart contracts.
@@ -10,6 +14,9 @@ info:
     `{ success: false, error: { code, message, details? } }`. The unversioned
     `/api/*` paths are legacy aliases that redirect to `/api/v1/*`; clients
     should migrate to `/api/v1/*` and branch on `error.code`, never message text.
+    Clients MUST ignore unknown response fields. Send `X-Client-Name`,
+    `X-Client-Version`, and `X-Client-API-Version` on every request so support
+    and sunset decisions can be made from observed adoption.
   license:
     name: MIT
 
@@ -17,8 +24,31 @@ servers:
   - url: http://localhost:4000
     description: Local development
 
+x-api-lifecycle:
+  discovery: /api/versions
+  compatibilityBaseline: ./openapi-v1.previous.yml
+  stableVersion: v1
+  legacyUnversioned:
+    deprecated: true
+    successor: /api/v1
+    sunset: '2030-12-31T23:59:59.000Z'
+    usageGated: true
+  clientHeaders:
+    name: X-Client-Name
+    version: X-Client-Version
+    supportedApi: X-Client-API-Version
+
+# The baseline predates correction of its documented `/api/*` aliases to the
+# actual stable `/api/v1/*` paths. The compatibility checker applies this
+# one-time documentation alias before comparing operations and schemas.
+x-compatibility:
+  pathAliases:
+    - from: /api/
+      to: /api/v1/
+
 tags:
   - name: Health
+  - name: Lifecycle
   - name: Projects
   - name: Donations
   - name: Profiles
@@ -28,8 +58,18 @@ tags:
   - name: Jobs
   - name: Stats
   - name: Impact
+  - name: Integrity
   - name: Ratings
   - name: Admin
+  - name: Onboarding
+    description: >-
+      Graduated first-donation paths for donors who arrive without a wallet,
+      without a funded account, or without both. Nothing here is custodial: the
+      donor's key is generated in their browser or on their device and never
+      transmitted, and the sponsored account-creation transaction is
+      unsubmittable until the donor signs it themselves. Donors who already
+      have a funded wallet never touch these endpoints — that flow is
+      unchanged. See docs/adr/ADR-005-graduated-non-custodial-donor-onboarding.md.
   - name: Realtime
     description: >-
       Live donation feed delivery. Broadcasts fan out across every backend
@@ -109,6 +149,8 @@ components:
           type: integer
         co2OffsetKg:
           type: number
+          deprecated: true
+          description: Legacy operator input. Donor-facing environmental outcomes use ImpactClaim records and are never derived from this field.
         verified:
           type: boolean
         onChainVerified:
@@ -143,6 +185,67 @@ components:
           type: boolean
         machineTranslated:
           type: boolean
+
+    ImpactClaim:
+      type: object
+      required: [id, projectId, claimType, quantity, uncertainty, methodology, measurementPeriod, baseline, evidence, provenance]
+      properties:
+        id:
+          type: string
+          format: uuid
+        projectId:
+          type: string
+          format: uuid
+        projectName:
+          type: string
+          nullable: true
+        claimType:
+          type: string
+          enum: [avoided_emissions, sequestration, offset]
+        quantity:
+          type: object
+          properties:
+            value: { type: string }
+            lowerBound: { type: string }
+            upperBound: { type: string }
+            unit: { type: string }
+        uncertainty:
+          type: object
+          properties:
+            lowerBound: { type: string }
+            upperBound: { type: string }
+            confidencePercent: { type: number, nullable: true }
+        methodology:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            code: { type: string }
+            name: { type: string }
+            version: { type: string }
+            limitations: { type: string }
+            comparisonScope: { type: string }
+        measurementPeriod:
+          type: object
+          properties:
+            start: { type: string, format: date }
+            end: { type: string, format: date }
+        vintage:
+          type: object
+          nullable: true
+        baseline:
+          type: string
+        evidence:
+          type: array
+          items: { type: object }
+        provenance:
+          type: object
+          properties:
+            status:
+              type: string
+              enum: [verified, operator_stated, unverified, revoked, expired]
+            label: { type: string }
+            assertedBy: { type: string }
+            attestation: { type: object, nullable: true }
 
     Campaign:
       type: object
@@ -298,6 +401,7 @@ components:
 
     ProjectUpdate:
       type: object
+      required: [id, projectId, title, body, createdAt, revision, moderationStatus, isEdited, underReview]
       properties:
         id:
           type: string
@@ -312,6 +416,27 @@ components:
         createdAt:
           type: string
           format: date-time
+        publishedAt:
+          type: string
+          format: date-time
+          nullable: true
+        editedAt:
+          type: string
+          format: date-time
+          nullable: true
+        revision:
+          type: integer
+          minimum: 1
+        moderationStatus:
+          type: string
+          description: >-
+            Public responses contain published or published_pending_review.
+            Administrative mutation responses may contain any lifecycle state.
+          enum: [pending, published_pending_review, published, rejected, removed, appealed]
+        isEdited:
+          type: boolean
+        underReview:
+          type: boolean
         sourceLanguage: { type: string, enum: [en, es, ar] }
         contentLanguage: { type: string, enum: [en, es, ar] }
         contentDirection: { type: string, enum: [ltr, rtl] }
@@ -582,6 +707,52 @@ components:
             cursor-paginated endpoints.
           deprecated: true
 
+    IntegritySignal:
+      type: object
+      required: [type, confidence, evidence]
+      properties:
+        type:
+          type: string
+          enum: [self_donation, circular_flow, rapid_repeat_pair]
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        evidence:
+          type: object
+          additionalProperties: true
+
+    IntegrityAssessment:
+      type: object
+      required: [id, transaction_hash, project_id, donor_address, confidence_score, review_status]
+      properties:
+        id: { type: string, format: uuid }
+        transaction_hash: { type: string }
+        project_id: { type: string, format: uuid }
+        donor_address: { type: string }
+        amount_xlm: { type: string }
+        observed_source:
+          type: string
+          enum: [api, indexer_horizon, indexer_soroban, historical_replay]
+        confidence_score: { type: number, minimum: 0, maximum: 1 }
+        review_status:
+          type: string
+          enum: [monitoring, pending_review, confirmed, dismissed, appealed]
+        exclude_from_leaderboard: { type: boolean }
+        exclude_from_displayed_totals: { type: boolean }
+        exclude_from_impact_figures: { type: boolean }
+        signals:
+          type: array
+          items: { $ref: '#/components/schemas/IntegritySignal' }
+
+    IntegrityEvaluation:
+      type: object
+      required: [totalLabels, falsePositiveRate, recall, enforcementReady]
+      properties:
+        totalLabels: { type: integer }
+        positiveLabels: { type: integer }
+        negativeLabels: { type: integer }
+        falsePositiveRate: { type: number, nullable: true }
+        recall: { type: number, nullable: true }
+        enforcementReady: { type: boolean }
+
   securitySchemes:
     bearerAuth:
       type: http
@@ -623,14 +794,291 @@ components:
       schema:
         type: string
         example: GABC...XYZ
+    ClientNameHeader:
+      name: X-Client-Name
+      in: header
+      required: false
+      description: Stable client family such as web, mobile, or extension.
+      schema:
+        type: string
+        maxLength: 64
+    ClientVersionHeader:
+      name: X-Client-Version
+      in: header
+      required: false
+      description: Installed client release used to measure adoption.
+      schema:
+        type: string
+        maxLength: 64
+    ClientApiVersionHeader:
+      name: X-Client-API-Version
+      in: header
+      required: false
+      description: Highest major API version the client was built to understand.
+      schema:
+        type: string
+        maxLength: 64
 
   headers:
     AdminKey:
       description: Admin API key (only required when ADMIN_API_KEY env var is set)
       schema:
         type: string
+    ApiVersion:
+      description: Major API version that produced the representation.
+      schema:
+        type: string
+        example: '1'
+    Deprecation:
+      description: True when the requested route is deprecated.
+      schema:
+        type: string
+        enum: ['true']
+    Sunset:
+      description: Earliest HTTP-date after which the deprecated route may be retired, subject to the documented usage gates.
+      schema:
+        type: string
+        example: Tue, 31 Dec 2030 23:59:59 GMT
+    SuccessorLink:
+      description: Links to the successor version and machine-readable deprecation changelog.
+      schema:
+        type: string
+
+    CorrelationId:
+      description: Request correlation identifier returned by the service.
+      schema:
+        type: string
+
+  responses:
+    BadRequest:
+      description: Request validation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Authentication is missing, expired, or invalid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: The requested resource was not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
 
 paths:
+  # ── Lifecycle and version discovery ────────────────────────────────────────
+  /api/versions:
+    get:
+      tags: [Lifecycle]
+      summary: Discover supported API versions and the legacy removal gates
+      operationId: getApiVersions
+      x-version-neutral: true
+      responses:
+        '200':
+          description: Machine-readable API lifecycle state
+          headers:
+            X-Correlation-ID:
+              $ref: '#/components/headers/CorrelationId'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [current, policy, changelog, versions, legacy]
+                        properties:
+                          current: { type: string, enum: [v1] }
+                          policy: { type: string }
+                          changelog: { type: string }
+                          versions:
+                            type: array
+                            items:
+                              type: object
+                              required: [version, status, basePath, deprecated]
+                              properties:
+                                version: { type: string }
+                                status: { type: string, enum: [stable, experimental, deprecated] }
+                                basePath: { type: string }
+                                introducedAt: { type: string, format: date }
+                                deprecated: { type: boolean }
+                                sunset: { type: string, format: date-time, nullable: true }
+                          legacy:
+                            type: object
+                            required: [basePath, status, successor, sunset, removalGates]
+                            properties:
+                              basePath: { type: string, enum: [/api] }
+                              status: { type: string, enum: [deprecated] }
+                              successor: { type: string, enum: [/api/v1] }
+                              sunset: { type: string, format: date-time }
+                              commitment: { type: string }
+                              removalGates: { type: object, additionalProperties: true }
+
+  /api/versions/changelog:
+    get:
+      tags: [Lifecycle]
+      summary: Read API lifecycle announcements
+      operationId: getApiChangelog
+      x-version-neutral: true
+      responses:
+        '200':
+          description: Ordered compatibility, preview, and deprecation notices
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [entries]
+                        properties:
+                          entries:
+                            type: array
+                            items:
+                              type: object
+                              required: [date, version, kind, summary]
+                              properties:
+                                date: { type: string, format: date }
+                                version: { type: string }
+                                kind: { type: string }
+                                summary: { type: string }
+
+  /api/v1/meta:
+    get:
+      tags: [Lifecycle]
+      summary: Read stable v1 service metadata
+      operationId: getV1Meta
+      x-api-version: v1
+      responses:
+        '200':
+          description: Flat v1 service metadata representation
+          headers:
+            X-API-Version:
+              $ref: '#/components/headers/ApiVersion'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [name, version, environment, network, node, uptimeSeconds, timestamp]
+                        additionalProperties: true
+
+  /api/v1/admin/api-usage:
+    get:
+      tags: [Admin, Lifecycle]
+      summary: Inspect the current process API adoption aggregate
+      operationId: getApiUsage
+      x-api-version: v1
+      description: >-
+        Authenticated operational view. Durable deprecation evidence is formed
+        by aggregating structured log records where `event=api_request` across
+        every replica and day in the observation window.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Usage series grouped by endpoint, API version, client, and client release
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [scope, startedAt, generatedAt, durableSource, series]
+                        properties:
+                          scope: { type: string, enum: [process] }
+                          startedAt: { type: string, format: date-time }
+                          generatedAt: { type: string, format: date-time }
+                          durableSource: { type: string }
+                          series:
+                            type: array
+                            items:
+                              type: object
+                              required: [apiVersion, requestedVersion, clientName, clientVersion, clientApiVersion, method, endpoint, statusCode, deprecated, count]
+                              properties:
+                                apiVersion: { type: string, nullable: true }
+                                requestedVersion: { type: string }
+                                clientName: { type: string }
+                                clientVersion: { type: string }
+                                clientApiVersion: { type: string }
+                                method: { type: string }
+                                endpoint: { type: string }
+                                statusCode: { type: integer }
+                                deprecated: { type: boolean }
+                                count: { type: integer }
+                                firstSeenAt: { type: string, format: date-time }
+                                lastSeenAt: { type: string, format: date-time }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v2/meta:
+    get:
+      tags: [Lifecycle]
+      summary: Read the experimental v2 service metadata representation
+      operationId: getV2Meta
+      x-api-version: v2
+      x-lifecycle-status: experimental
+      responses:
+        '200':
+          description: Nested v2 representation adapted from the shared metadata domain result
+          headers:
+            X-API-Version:
+              $ref: '#/components/headers/ApiVersion'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [service, runtime, api]
+                        properties:
+                          service: { type: object, additionalProperties: true }
+                          runtime: { type: object, additionalProperties: true }
+                          api: { type: object, additionalProperties: true }
+
+  /api/projects:
+    get:
+      tags: [Lifecycle]
+      summary: Deprecated unversioned project-list redirect
+      operationId: redirectLegacyProjects
+      deprecated: true
+      x-api-version: legacy
+      x-sunset: '2030-12-31T23:59:59.000Z'
+      externalDocs:
+        description: API deprecation changelog
+        url: /api/versions/changelog
+      responses:
+        '308':
+          description: Method-preserving redirect to `/api/v1/projects`
+          headers:
+            Deprecation:
+              $ref: '#/components/headers/Deprecation'
+            Sunset:
+              $ref: '#/components/headers/Sunset'
+            Link:
+              $ref: '#/components/headers/SuccessorLink'
+            Location:
+              description: Versioned successor URL.
+              schema: { type: string, example: /api/v1/projects }
+
   # ── Health ──────────────────────────────────────────────────────────────────
   /health:
     get:
@@ -659,7 +1107,7 @@ paths:
                     type: object
 
   # ── Projects ─────────────────────────────────────────────────────────────────
-  /api/projects:
+  /api/v1/projects:
     get:
       tags: [Projects]
       summary: List projects
@@ -713,7 +1161,7 @@ paths:
                       meta:
                         $ref: '#/components/schemas/ProjectListMeta'
 
-  /api/projects/featured:
+  /api/v1/projects/featured:
     get:
       tags: [Projects]
       summary: Get featured project
@@ -744,7 +1192,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /api/projects/admin/register:
+  /api/v1/projects/admin/register:
     post:
       tags: [Projects]
       summary: Build on-chain project registration XDR
@@ -789,7 +1237,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /api/projects/admin/confirm:
+  /api/v1/projects/admin/confirm:
     post:
       tags: [Projects]
       summary: Confirm on-chain project registration
@@ -819,7 +1267,7 @@ paths:
                       data:
                         $ref: '#/components/schemas/Project'
 
-  /api/projects/{id}:
+  /api/v1/projects/{id}:
     get:
       tags: [Projects]
       summary: Get project by ID
@@ -868,7 +1316,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /api/projects/{id}/translations/{language}:
+  /api/v1/projects/{id}/translations/{language}:
     put:
       tags: [Projects]
       summary: Create or replace a pending project translation without changing the original
@@ -898,7 +1346,7 @@ paths:
       responses:
         '201': { description: Translation saved in pending moderation }
 
-  /api/projects/{id}/translations/{language}/moderation:
+  /api/v1/projects/{id}/translations/{language}/moderation:
     patch:
       tags: [Projects]
       summary: Moderate project translation content
@@ -924,7 +1372,7 @@ paths:
         '200': { description: Translation moderation state updated }
         '400': { description: Human impact-claim review is required before approving machine translation }
 
-  /api/projects/{id}/status:
+  /api/v1/projects/{id}/status:
     patch:
       tags: [Projects]
       summary: Update project status
@@ -971,7 +1419,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /api/projects/{id}/verify:
+  /api/v1/projects/{id}/verify:
     get:
       tags: [Projects]
       summary: Verify project on-chain
@@ -1001,7 +1449,7 @@ paths:
                           totalRaisedOnChain:
                             type: string
 
-  /api/projects/{id}/campaigns:
+  /api/v1/projects/{id}/campaigns:
     get:
       tags: [Projects]
       summary: List campaigns for a project
@@ -1082,7 +1530,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /api/projects/{id}/milestones:
+  /api/v1/projects/{id}/milestones:
     get:
       tags: [Projects]
       summary: List milestones for a project
@@ -1144,7 +1592,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /api/projects/{id}/milestones/{milestoneId}/reach:
+  /api/v1/projects/{id}/milestones/{milestoneId}/reach:
     post:
       tags: [Projects]
       summary: Mark a milestone as reached
@@ -1186,7 +1634,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /api/projects/{id}/matching:
+  /api/v1/projects/{id}/matching:
     get:
       tags: [Projects]
       summary: List active donation matches for a project
@@ -1258,7 +1706,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /api/projects/{id}/generate-summary:
+  /api/v1/projects/{id}/generate-summary:
     post:
       tags: [Projects]
       summary: Generate AI impact summary for a project
@@ -1324,7 +1772,7 @@ paths:
                 $ref: '#/components/schemas/Error'
 
   # ── Donations ────────────────────────────────────────────────────────────────
-  /api/donations:
+  /api/v1/donations:
     post:
       tags: [Donations]
       summary: Record a donation
@@ -1385,7 +1833,7 @@ paths:
         '429':
           description: Rate limit exceeded
 
-  /api/donations/project/{projectId}:
+  /api/v1/donations/project/{projectId}:
     get:
       tags: [Donations]
       summary: List donations for a project
@@ -1423,7 +1871,7 @@ paths:
                         format: date-time
                         nullable: true
 
-  /api/donations/project/{projectId}/messages:
+  /api/v1/donations/project/{projectId}/messages:
     get:
       tags: [Donations]
       summary: List donations with messages for a project
@@ -1457,7 +1905,7 @@ paths:
                         items:
                           $ref: '#/components/schemas/Donation'
 
-  /api/donations/donor/{publicKey}:
+  /api/v1/donations/donor/{publicKey}:
     get:
       tags: [Donations]
       summary: List donations by a donor
@@ -1493,7 +1941,7 @@ paths:
                 $ref: '#/components/schemas/Error'
 
   # ── Profiles ─────────────────────────────────────────────────────────────────
-  /api/profiles/{publicKey}:
+  /api/v1/profiles/{publicKey}:
     get:
       tags: [Profiles]
       summary: Get donor profile
@@ -1525,7 +1973,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /api/profiles:
+  /api/v1/profiles:
     post:
       tags: [Profiles]
       summary: Create or update donor profile
@@ -1566,7 +2014,7 @@ paths:
                 $ref: '#/components/schemas/Error'
 
   # ── Leaderboard ──────────────────────────────────────────────────────────────
-  /api/leaderboard:
+  /api/v1/leaderboard:
     get:
       tags: [Leaderboard]
       summary: Get donor leaderboard
@@ -1614,7 +2062,7 @@ paths:
                           $ref: '#/components/schemas/LeaderboardEntry'
 
   # ── Updates ──────────────────────────────────────────────────────────────────
-  /api/updates/{projectId}:
+  /api/v1/updates/{projectId}:
     get:
       tags: [Updates]
       summary: List updates for a project
@@ -1656,10 +2104,14 @@ paths:
                         format: date-time
                         nullable: true
 
-  /api/updates:
+  /api/v1/updates:
     post:
       tags: [Updates]
-      summary: Post a project update (admin)
+      summary: Submit a project update for the trust-based moderation flow (admin)
+      description: >-
+        Standard projects enter pending pre-publication review. Fully verified
+        projects enter published_pending_review and are visible immediately.
+        Email and push notifications are held until approval in both modes.
       operationId: createProjectUpdate
       parameters:
         - name: x-admin-key
@@ -1688,7 +2140,7 @@ paths:
                   default: en
       responses:
         '201':
-          description: Update created and subscribers notified
+          description: Update created; subscriber notifications remain held until approval
           content:
             application/json:
               schema:
@@ -1717,7 +2169,202 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /api/updates/{updateId}/translations/{language}:
+  /api/v1/updates/{updateId}:
+    patch:
+      tags: [Updates]
+      summary: Edit an update and retain the previous revision
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: updateId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [editReason]
+              properties:
+                title: { type: string, maxLength: 200 }
+                body: { type: string, maxLength: 20000 }
+                editReason: { type: string, minLength: 5, maxLength: 1000 }
+      responses:
+        '200': { description: Updated revision is pending review; prior public snapshot retained }
+        '409': { description: Moderation decision must be resolved before editing }
+
+  /api/v1/updates/{updateId}/history:
+    get:
+      tags: [Updates]
+      summary: Read earlier donor-visible revisions
+      parameters:
+        - name: updateId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: Prior public snapshots that remain suitable for display }
+
+  /api/v1/updates/{updateId}/reports:
+    get:
+      tags: [Updates]
+      summary: Inspect reports and resolutions for an update
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: updateId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: Chronological report records for moderator review }
+    post:
+      tags: [Updates]
+      summary: Report a public update as a donor to its project
+      description: >-
+        One report per donor and update. Reports are rate-limited and enter a
+        review queue; report volume never removes content automatically.
+      parameters:
+        - name: updateId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [donorAddress, reason]
+              properties:
+                donorAddress: { type: string }
+                reason:
+                  type: string
+                  enum: [fraudulent_claim, abuse, spam, off_topic_solicitation, dangerous_content, privacy, other]
+                details: { type: string, maxLength: 2000 }
+      responses:
+        '201': { description: Report recorded for review }
+        '403': { description: Address has no committed donation to the project }
+        '409': { description: Donor already reported this update }
+
+  /api/v1/updates/moderation/queue:
+    get:
+      tags: [Updates]
+      summary: List updates requiring moderation
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [pending, published_pending_review, appealed] }
+      responses:
+        '200': { description: Queue ordered by open report count then age }
+
+  /api/v1/updates/{updateId}/moderation:
+    post:
+      tags: [Updates]
+      summary: Record a reasoned moderation decision
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: updateId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action, reason]
+              properties:
+                action: { type: string, enum: [approve, reject, remove, reinstate] }
+                reason: { type: string, minLength: 10, maxLength: 2000 }
+      responses:
+        '200': { description: Decision and immutable actor/reason event recorded }
+        '409': { description: Action is invalid from the current lifecycle state }
+
+  /api/v1/updates/{updateId}/moderation-history:
+    get:
+      tags: [Updates]
+      summary: Read the actor/reason moderation audit trail
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: updateId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: Chronological immutable moderation events }
+
+  /api/v1/updates/{updateId}/appeals:
+    post:
+      tags: [Updates]
+      summary: Appeal a rejected or removed update
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: updateId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 20, maxLength: 3000 }
+      responses:
+        '201': { description: Appeal queued for a different moderator }
+        '409': { description: Update is not appealable or already has a pending appeal }
+
+  /api/v1/updates/moderation/appeals:
+    get:
+      tags: [Updates]
+      summary: List pending project update appeals
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Oldest pending appeals first }
+
+  /api/v1/updates/appeals/{appealId}/decision:
+    post:
+      tags: [Updates]
+      summary: Grant or deny an appeal as a different moderator
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: appealId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [outcome, reason]
+              properties:
+                outcome: { type: string, enum: [granted, denied] }
+                reason: { type: string, minLength: 10, maxLength: 2000 }
+      responses:
+        '200': { description: Appeal decision recorded }
+        '409': { description: Appeal already decided or same actor attempted review }
+
+  /api/v1/updates/{updateId}/notifications/retry:
+    post:
+      tags: [Updates]
+      summary: Retry only publication channels that have not accepted the event
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: updateId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: Missing notification channels queued }
+
+  /api/v1/updates/{updateId}/translations/{language}:
     put:
       tags: [Updates]
       summary: Create or replace a pending update translation
@@ -1745,7 +2392,7 @@ paths:
       responses:
         '201': { description: Translation saved in pending moderation }
 
-  /api/updates/{updateId}/translations/{language}/moderation:
+  /api/v1/updates/{updateId}/translations/{language}/moderation:
     patch:
       tags: [Updates]
       summary: Moderate update translation content
@@ -1773,7 +2420,7 @@ paths:
         '200': { description: Translation moderation state updated }
         '400': { description: Human impact-claim review is required before approving machine translation }
 
-  /api/updates/{updateId}/like:
+  /api/v1/updates/{updateId}/like:
     post:
       tags: [Updates]
       summary: Toggle like on an update
@@ -1825,7 +2472,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /api/updates/{updateId}/likes:
+  /api/v1/updates/{updateId}/likes:
     get:
       tags: [Updates]
       summary: Get like count and user like status for an update
@@ -1861,7 +2508,7 @@ paths:
                             type: boolean
 
   # ── Subscriptions ────────────────────────────────────────────────────────────
-  /api/subscriptions:
+  /api/v1/subscriptions:
     post:
       tags: [Subscriptions]
       summary: Subscribe to project updates
@@ -1920,7 +2567,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /api/subscriptions/{projectId}/count:
+  /api/v1/subscriptions/{projectId}/count:
     get:
       tags: [Subscriptions]
       summary: Get subscriber count for a project
@@ -1949,7 +2596,7 @@ paths:
                             type: integer
 
   # ── Jobs ─────────────────────────────────────────────────────────────────────
-  /api/jobs:
+  /api/v1/jobs:
     get:
       tags: [Jobs]
       summary: List jobs
@@ -1977,7 +2624,7 @@ paths:
                         items:
                           $ref: '#/components/schemas/Job'
 
-  /api/jobs/{id}:
+  /api/v1/jobs/{id}:
     get:
       tags: [Jobs]
       summary: Get a job by ID
@@ -2008,7 +2655,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /api/jobs/{id}/release:
+  /api/v1/jobs/{id}/release:
     patch:
       tags: [Jobs]
       summary: Release escrow for a job
@@ -2057,7 +2704,7 @@ paths:
                 $ref: '#/components/schemas/Error'
 
   # ── Stats ─────────────────────────────────────────────────────────────────────
-  /api/stats/global:
+  /api/v1/stats/global:
     get:
       tags: [Stats]
       summary: Global platform statistics
@@ -2082,7 +2729,7 @@ paths:
                           totalCO2OffsetKg:
                             type: integer
 
-  /api/stats/categories:
+  /api/v1/stats/categories:
     get:
       tags: [Stats]
       summary: Active project count per category
@@ -2108,10 +2755,10 @@ paths:
                               type: integer
 
   # ── Impact ───────────────────────────────────────────────────────────────────
-  /api/impact/project/{id}:
+  /api/v1/impact/project/{id}:
     get:
       tags: [Impact]
-      summary: Impact metrics for a project
+      summary: Donation facts and evidence-backed claims for a project
       operationId: getProjectImpact
       parameters:
         - $ref: '#/components/parameters/projectId'
@@ -2132,12 +2779,15 @@ paths:
                             type: string
                           donorCount:
                             type: integer
-                          co2OffsetKg:
-                            type: integer
-                          treesEquivalent:
-                            type: number
-                          uniqueCountries:
-                            type: integer
+                          claims:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/ImpactClaim'
+                          claimSummary:
+                            type: object
+                          comparableImpactGroups:
+                            type: array
+                            items: { type: object }
         '400':
           description: Invalid project id
           content:
@@ -2151,10 +2801,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /api/impact/global:
+  /api/v1/impact/global:
     get:
       tags: [Impact]
-      summary: Global impact metrics
+      summary: Global donation facts and comparable claim groups
       operationId: getGlobalImpact
       responses:
         '200':
@@ -2173,12 +2823,11 @@ paths:
                             type: string
                           donorCount:
                             type: integer
-                          co2OffsetKg:
-                            type: integer
-                          treesEquivalent:
-                            type: number
-                          uniqueCountries:
-                            type: integer
+                          claimSummary:
+                            type: object
+                          comparableImpactGroups:
+                            type: array
+                            items: { type: object }
                           breakdownByCategory:
                             type: array
                             items:
@@ -2190,13 +2839,15 @@ paths:
                                   type: string
                                 donorCount:
                                   type: integer
-                                co2OffsetKg:
+                                claimCount:
+                                  type: integer
+                                verifiedClaimCount:
                                   type: integer
 
-  /api/impact/donor/{publicKey}:
+  /api/v1/impact/donor/{publicKey}:
     get:
       tags: [Impact]
-      summary: Impact metrics for a donor
+      summary: Donation facts plus unallocated claims from supported projects
       operationId: getDonorImpact
       parameters:
         - $ref: '#/components/parameters/publicKey'
@@ -2215,13 +2866,19 @@ paths:
                         properties:
                           totalDonatedXLM:
                             type: string
-                          co2OffsetKg:
-                            type: integer
                           projectsSupported:
                             type: integer
                           topCategory:
                             type: string
                             nullable: true
+                          supportedProjectClaims:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/ImpactClaim'
+                          claimSummary:
+                            type: object
+                          attributionNotice:
+                            type: string
         '400':
           description: Invalid public key
           content:
@@ -2230,7 +2887,7 @@ paths:
                 $ref: '#/components/schemas/Error'
 
   # ── Ratings ──────────────────────────────────────────────────────────────────
-  /api/ratings:
+  /api/v1/ratings:
     post:
       tags: [Ratings]
       summary: Submit or update a project rating
@@ -2273,7 +2930,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /api/ratings/pending:
+  /api/v1/ratings/pending:
     get:
       tags: [Ratings]
       summary: Get a project pending a rating from a donor
@@ -2312,7 +2969,7 @@ paths:
                 $ref: '#/components/schemas/Error'
 
   # ── Admin ────────────────────────────────────────────────────────────────────
-  /api/admin/audit:
+  /api/v1/admin/audit:
     get:
       tags: [Admin]
       summary: Query admin audit log
@@ -2455,3 +3112,683 @@ paths:
                     properties:
                       data:
                         $ref: '#/components/schemas/RealtimeStatus'
+
+  /api/v1/onboarding/paths:
+    get:
+      tags: [Onboarding]
+      summary: First-donation paths this deployment can offer
+      description: >-
+        Returns each path with its availability, its cost, and the trade-offs
+        attached to it. The disclosures ship *with* the options rather than
+        being fetched separately, so a client cannot render the choice without
+        the cost of it. A path this deployment cannot offer is returned with
+        `available: false` and a reason, so the UI can say so instead of
+        dead-ending.
+      responses:
+        '200':
+          description: Available paths and their trade-offs
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          guarantee:
+                            type: string
+                            description: The non-custodial guarantee, restated at the top level.
+                          paths:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                id:
+                                  type: string
+                                  enum: [connected_wallet, sponsored_account, onramp]
+                                title: { type: string }
+                                available: { type: boolean }
+                                unavailableReason:
+                                  type: string
+                                  nullable: true
+                                unchanged:
+                                  type: boolean
+                                  description: >-
+                                    True for the pre-existing connected-wallet flow. Stated
+                                    explicitly so nobody has to infer from silence that it
+                                    survived this change.
+                                tradeoffs:
+                                  type: object
+                                  properties:
+                                    keep: { type: array, items: { type: string } }
+                                    giveUp: { type: array, items: { type: string } }
+                                    mitigation: { type: array, items: { type: string } }
+
+  /api/v1/onboarding/sessions:
+    post:
+      tags: [Onboarding]
+      summary: Start a funnel session
+      description: >-
+        Returns an opaque session id carrying no personal data. Referrers are
+        bucketed server-side, never stored verbatim.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                path:
+                  type: string
+                  enum: [connected_wallet, sponsored_account, onramp, claimable_balance]
+                  nullable: true
+                projectId: { type: string, format: uuid, nullable: true }
+                referrer: { type: string, nullable: true }
+      responses:
+        '201':
+          description: Session started
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          sessionId: { type: string, format: uuid }
+
+  /api/v1/onboarding/events:
+    post:
+      tags: [Onboarding]
+      summary: Record a funnel stage
+      description: >-
+        Idempotent per (session, stage, path): a component that re-renders must
+        not inflate its own conversion rate. An unrecognised stage is accepted
+        and ignored rather than rejected — telemetry must never be able to
+        break a donation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId, stage]
+              properties:
+                sessionId: { type: string, format: uuid }
+                stage:
+                  type: string
+                  enum:
+                    - donate_intent
+                    - path_offered
+                    - path_selected
+                    - tradeoff_acknowledged
+                    - account_ready
+                    - funds_available
+                    - donation_submitted
+                    - donation_confirmed
+                    - donation_recorded
+                path:
+                  type: string
+                  nullable: true
+                projectId: { type: string, format: uuid, nullable: true }
+                detail:
+                  type: object
+                  nullable: true
+                  description: Bounded key/value pairs. Not a free-form blob.
+      responses:
+        '202':
+          description: Recorded, or accepted and ignored
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/onboarding/sessions/complete:
+    post:
+      tags: [Onboarding]
+      summary: Close a funnel session with a terminal outcome
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId, outcome]
+              properties:
+                sessionId: { type: string, format: uuid }
+                outcome:
+                  type: string
+                  enum: [completed, abandoned, failed, in_progress]
+                path: { type: string, nullable: true }
+      responses:
+        '200':
+          description: Session closed
+
+  /api/v1/onboarding/sponsorship/quote:
+    post:
+      tags: [Onboarding]
+      summary: Cost and eligibility for a sponsored account, without committing
+      description: >-
+        Costed but non-committal: a donor sees exactly what the platform locks
+        and what they are accepting before any state exists anywhere.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [publicKey]
+              properties:
+                publicKey: { type: string }
+                sessionId: { type: string, format: uuid, nullable: true }
+                trustline: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Quote and eligibility decision
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/onboarding/sponsorship:
+    post:
+      tags: [Onboarding]
+      summary: Request sponsored account creation
+      description: >-
+        Returns a transaction the sponsor has already signed and that the donor
+        must co-sign. Its closing `endSponsoringFutureReserves` operation is
+        sourced by the donor, so the platform cannot submit it alone — this is
+        the non-custodial guarantee made structural rather than promised.
+
+
+        `acknowledgedDisclosure` must be `true`. Enforced at the API and not
+        only in the UI, so the guarantee survives a client that skips the
+        screen.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [publicKey, sessionId, acknowledgedDisclosure]
+              properties:
+                publicKey: { type: string }
+                sessionId: { type: string, format: uuid }
+                trustline: { type: boolean, default: false }
+                acknowledgedDisclosure:
+                  type: boolean
+                  enum: [true]
+      responses:
+        '201':
+          description: A sponsor-signed transaction awaiting the donor's signature
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          id: { type: string, format: uuid }
+                          state: { type: string }
+                          xdr: { type: string }
+                          networkPassphrase: { type: string }
+                          sponsorPublicKey: { type: string }
+                          expiresAt: { type: string, format: date-time }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          description: An abuse limit or the treasury floor refused this request
+        '503':
+          description: Sponsorship is not configured on this deployment
+
+  /api/v1/onboarding/sponsorship/{id}/submit:
+    post:
+      tags: [Onboarding]
+      summary: Submit the donor-co-signed creation transaction
+      description: >-
+        The submitted envelope is checked against the one that was offered
+        rather than trusted, so the sponsor's signature can never be applied to
+        operations the sponsor did not agree to. Idempotent: a retry after a
+        dropped response does not lock reserve twice.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [signedXdr]
+              properties:
+                signedXdr: { type: string }
+      responses:
+        '200':
+          description: Account created, or already active
+        '400':
+          description: The signed transaction did not match the offer
+        '409':
+          description: The request expired or is already closed
+        '502':
+          description: The network refused or failed the transaction; no reserve was locked
+
+  /api/v1/onboarding/sponsorship/{id}/abandon:
+    post:
+      tags: [Onboarding]
+      summary: Release a sponsorship the donor walked away from
+      description: >-
+        Returns the reserved treasury capacity immediately and leaves nothing
+        behind but an audit row. Succeeds quietly for an unknown id — the
+        caller is a browser that may be retrying a beacon. The server-side
+        sweeper is what actually guarantees release; this makes it immediate.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Released, or nothing to release
+
+  /api/v1/onboarding/sponsorship/ledger:
+    get:
+      tags: [Onboarding]
+      summary: Reserve position and monitoring signals
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Locked reserve, committed capacity, treasury capacity and active signals
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/onboarding/sponsorship/{id}/reclaim:
+    post:
+      tags: [Onboarding]
+      summary: Reclaim one sponsorship's locked reserve
+      description: >-
+        Revocation only succeeds if the account can then meet its own minimum
+        balance — a protocol constraint. An account that cannot is reported
+        with the exact shortfall rather than retried into a guaranteed failure.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Reclaim outcome, with a reason when it could not proceed
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/onboarding/funnel/conversion:
+    get:
+      tags: [Onboarding]
+      summary: Stage-by-stage conversion, optionally against a baseline
+      description: >-
+        Admin-only: publishing exactly where donors give up also publishes
+        where to aim an attack. Supplying `baselineSince` and `baselineUntil`
+        returns a comparison reporting both percentage-point and relative
+        change, plus `sufficientSample`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: since
+          schema: { type: string, format: date-time }
+        - in: query
+          name: until
+          schema: { type: string, format: date-time }
+        - in: query
+          name: path
+          schema: { type: string }
+        - in: query
+          name: baselineSince
+          schema: { type: string, format: date-time }
+        - in: query
+          name: baselineUntil
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Conversion report, or a baseline comparison
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/onboarding/onramp/providers:
+    get:
+      tags: [Onboarding]
+      summary: Fiat on-ramp providers and their compliance split
+      description: >-
+        GreenPay never takes fiat. Each provider entry carries the donor-facing
+        handoff disclosure and the full obligation matrix — which duties sit
+        with the provider, which with the platform, which are shared. An empty
+        list with `configured: false` is a configuration answer, not an error.
+      responses:
+        '200':
+          description: Available providers, their disclosures and obligation matrices
+
+  /api/v1/onboarding/upgrade/disclosures:
+    get:
+      tags: [Onboarding]
+      summary: What a starter account costs, and what a migration does not move
+      responses:
+        '200':
+          description: Starter-account trade-offs and migration limitations
+
+  /api/v1/onboarding/upgrade/challenge:
+    post:
+      tags: [Onboarding]
+      summary: Begin moving donation history to a full wallet
+      description: >-
+        Issues a single-use nonce both addresses must prove control of. Both
+        halves are required: with only the destination proving control anyone
+        could adopt a stranger's history, and with only the source anyone could
+        dump history onto an address they do not own.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fromAddress, toAddress]
+              properties:
+                fromAddress: { type: string }
+                toAddress: { type: string }
+      responses:
+        '201':
+          description: A single-use challenge
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/v1/onboarding/upgrade/complete:
+    post:
+      tags: [Onboarding]
+      summary: Complete the migration
+      description: >-
+        `fromSignature` is a raw ed25519 signature over the challenge text by
+        the starter key. `toChallengeXdr` is the destination wallet's signed,
+        unsubmittable SEP-10-style challenge envelope — wallet extensions will
+        not sign arbitrary bytes, because a wallet that did could be tricked
+        into signing a payment dressed up as a verification message.
+
+
+        Donations are never rewritten to the new address: the ledger records
+        which address made them and the database must not contradict it. The
+        link is recorded instead, and read paths resolve through it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [upgradeId, fromSignature, toChallengeXdr]
+              properties:
+                upgradeId: { type: string, format: uuid }
+                fromSignature: { type: string }
+                toChallengeXdr: { type: string }
+      responses:
+        '200':
+          description: Migration completed, with the number of donations carried across
+        '403':
+          description: One of the two signatures did not verify
+        '409':
+          description: The challenge expired or is already closed
+
+  /api/v1/integrity/policy:
+    get:
+      tags: [Integrity]
+      summary: Public donation-integrity policy position
+      responses:
+        '200':
+          description: Signal categories, disclosure position, enforcement surfaces, and appeal process
+
+  /api/v1/integrity/status:
+    get:
+      tags: [Integrity]
+      summary: Read detector worker, queue, and enforcement status
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Current integrity pipeline status }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/integrity/relationships:
+    post:
+      tags: [Integrity]
+      summary: Record an evidence-backed project wallet relationship
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [projectId, walletAddress, relationshipType, evidenceSummary]
+              properties:
+                projectId: { type: string, format: uuid }
+                walletAddress: { type: string }
+                relationshipType:
+                  type: string
+                  enum: [owner, operator, treasury, beneficiary, declared_related]
+                confidence: { type: number, minimum: 0.5, maximum: 1 }
+                evidenceSummary: { type: string, minLength: 10, maxLength: 1000 }
+      responses:
+        '201': { description: Relationship recorded with reviewer provenance }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/integrity/reviews:
+    get:
+      tags: [Integrity]
+      summary: List the private human-review queue
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [monitoring, pending_review, confirmed, dismissed, appealed]
+            default: pending_review
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        '200':
+          description: Confidence-ordered assessments with signal evidence
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/integrity/reviews/{reviewId}:
+    get:
+      tags: [Integrity]
+      summary: Read an assessment, signals, immutable events, and appeals
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: reviewId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: Full private review record }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/integrity/reviews/{reviewId}/decision:
+    post:
+      tags: [Integrity]
+      summary: Confirm or dismiss an integrity review
+      description: A confirmation applies exclusions only when the labelled-set enforcement gate is enabled.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: reviewId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action, reason]
+              properties:
+                action: { type: string, enum: [confirm, dismiss] }
+                reason: { type: string, minLength: 20, maxLength: 2000 }
+      responses:
+        '200':
+          description: Reasoned human decision and separate surface flags
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IntegrityAssessment' }
+        '409': { description: Review already decided }
+
+  /api/v1/integrity/reviews/{reviewId}/appeal-challenge:
+    post:
+      tags: [Integrity]
+      summary: Request a one-time appeal challenge for an affected wallet
+      parameters:
+        - in: path
+          name: reviewId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [walletAddress]
+              properties:
+                walletAddress: { type: string }
+      responses:
+        '201': { description: Ten-minute challenge text to sign }
+        '403': { description: Wallet is not an affected party }
+
+  /api/v1/integrity/reviews/{reviewId}/appeals:
+    post:
+      tags: [Integrity]
+      summary: Submit a signed appeal and suspend exclusions
+      parameters:
+        - in: path
+          name: reviewId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challengeId, signature, reason]
+              properties:
+                challengeId: { type: string, format: uuid }
+                signature: { type: string }
+                reason: { type: string, minLength: 20, maxLength: 2000 }
+      responses:
+        '201': { description: Appeal queued for an independent reviewer }
+        '403': { description: Wallet signature did not verify }
+        '409': { description: 'Challenge expired, used, or case not appealable' }
+
+  /api/v1/integrity/appeals:
+    get:
+      tags: [Integrity]
+      summary: List pending integrity appeals
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Oldest pending appeals first }
+
+  /api/v1/integrity/appeals/{appealId}/decision:
+    post:
+      tags: [Integrity]
+      summary: Grant or deny an appeal as an independent reviewer
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: appealId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [outcome, reason]
+              properties:
+                outcome: { type: string, enum: [grant, deny] }
+                reason: { type: string, minLength: 20, maxLength: 2000 }
+      responses:
+        '200': { description: Independent appeal decision recorded }
+        '409': { description: Original reviewer attempted to decide the appeal }
+
+  /api/v1/integrity/reviews/{reviewId}/label:
+    post:
+      tags: [Integrity]
+      summary: Add an independently reviewed labelled-set value
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: reviewId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label, rationale]
+              properties:
+                label: { type: string, enum: [legitimate, confirmed_abuse, uncertain] }
+                rationale: { type: string, minLength: 20, maxLength: 2000 }
+      responses:
+        '200': { description: Label recorded for evaluation }
+
+  /api/v1/integrity/evaluation:
+    get:
+      tags: [Integrity]
+      summary: Measure false-positive rate and recall against the labelled set
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Current evaluation and enforcement-readiness result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IntegrityEvaluation' }
+
+  /api/v1/integrity/enforcement/enable:
+    post:
+      tags: [Integrity]
+      summary: Enable confirmed-case exclusions after the evaluation gate passes
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 20, maxLength: 2000 }
+      responses:
+        '200': { description: Enforcement enabled with evaluation snapshot }
+        '409': { description: Labelled-set gate not met }
+
+  /api/v1/integrity/enforcement/disable:
+    post:
+      tags: [Integrity]
+      summary: Immediately disable confirmed-case exclusions
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 20, maxLength: 2000 }
+      responses:
+        '200': { description: Enforcement disabled without deleting cases or gross accounting }

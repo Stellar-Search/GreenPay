@@ -5,6 +5,9 @@ metadata:
   namespace: greenpay
   labels:
     app: backend
+  annotations:
+    reloader.stakater.com/auto: "true"
+    secret.reloader.stakater.com/reload: "greenpay-secrets"
 spec:
   replicas: 2
   revisionHistoryLimit: 5

@@ -203,6 +203,18 @@
                             "lo": 0
                           }
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -648,7 +660,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'no active lock' from contract function 'Symbol(obj#139)'"
+                  "string": "caught panic 'no active lock' from contract function 'Symbol(obj#141)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"

@@ -252,6 +252,12 @@ function mapProjectUpdateRow(row) {
     title: row.localized_title || row.title,
     body: row.localized_body || row.body,
     createdAt: toIso(row.created_at),
+    publishedAt: toIso(row.published_at),
+    editedAt: toIso(row.edited_at),
+    revision: Number(row.revision || 1),
+    moderationStatus: row.moderation_status || "published",
+    isEdited: Number(row.revision || 1) > 1 || Boolean(row.edited_at),
+    underReview: row.moderation_status === "published_pending_review",
     ...translationMetadata(row),
   };
 }

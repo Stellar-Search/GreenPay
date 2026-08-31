@@ -41,6 +41,25 @@ function adminToken() {
   return signToken({ role: "admin", sub: "admin" }, "1h");
 }
 
+describe("GET /api/admin/api-usage", () => {
+  it("requires an admin session and returns bounded adoption series metadata", async () => {
+    await request(buildApp()).get("/api/admin/api-usage").expect(401);
+
+    const response = await request(buildApp())
+      .get("/api/admin/api-usage")
+      .set("Authorization", `Bearer ${adminToken()}`)
+      .expect(200);
+
+    expect(response.body.data).toEqual(expect.objectContaining({
+      scope: "process",
+      startedAt: expect.any(String),
+      generatedAt: expect.any(String),
+      durableSource: "structured logs where event=api_request",
+      series: expect.any(Array),
+    }));
+  });
+});
+
 describe("POST /api/admin/login", () => {
   let app;
 

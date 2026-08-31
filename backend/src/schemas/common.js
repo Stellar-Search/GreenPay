@@ -10,13 +10,15 @@
 
 const { z } = require("zod");
 
-const STELLAR_PUBLIC_KEY = /^G[A-Z0-9]{55}$/;
+const { isValidStellarAddress } = require("../../../shared/validators/stellarValidator");
+
+const STELLAR_PUBLIC_KEY = /^G[A-Z0-9]{55}$/; // Legacy export maintained for compatibility
 const TRANSACTION_HASH = /^[a-fA-F0-9]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const stellarPublicKey = z
   .string({ required_error: "Invalid Stellar public key" })
-  .regex(STELLAR_PUBLIC_KEY, "Invalid Stellar public key");
+  .refine(isValidStellarAddress, "Invalid Stellar public key");
 
 const transactionHash = z
   .string({ required_error: "Invalid transaction hash" })

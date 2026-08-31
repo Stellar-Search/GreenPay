@@ -56,8 +56,8 @@ describe("ProjectSearchFacets", () => {
         onFilterChange={jest.fn()}
       />,
     );
-    expect(screen.getByText("Active")).toBeInTheDocument();
-    expect(screen.getByText("1")).toBeInTheDocument();
+    const activeFilter = screen.getByRole("button", { name: "Active 1" });
+    expect(activeFilter).toBeInTheDocument();
   });
 
   it("calls onFilterChange when category is selected", () => {

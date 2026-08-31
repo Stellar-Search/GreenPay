@@ -366,6 +366,18 @@
                         "val": {
                           "u32": 1
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -738,7 +750,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Proposal already exists for this project' from contract function 'Symbol(obj#159)'"
+                  "string": "caught panic 'Proposal already exists for this project' from contract function 'Symbol(obj#165)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"

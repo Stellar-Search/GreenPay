@@ -534,6 +534,18 @@
                         "val": {
                           "u32": 1
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -1079,7 +1091,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Proposal already resolved' from contract function 'Symbol(obj#313)'"
+                  "string": "caught panic 'Proposal already resolved' from contract function 'Symbol(obj#321)'"
                 },
                 {
                   "string": "proj-001"

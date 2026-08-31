@@ -1,6 +1,19 @@
 import axios from 'axios';
 
 export const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:4000';
+export const CLIENT_NAME = 'mobile';
+export const CLIENT_VERSION = process.env.EXPO_PUBLIC_APP_VERSION || '0.1.0';
+export const CLIENT_API_VERSION = '1';
+
+export const API_CLIENT_HEADERS = Object.freeze({
+  'X-Client-Name': CLIENT_NAME,
+  'X-Client-Version': CLIENT_VERSION,
+  'X-Client-API-Version': CLIENT_API_VERSION,
+});
+
+// Axios defaults keep the existing two-argument post call shape used by the
+// offline retry queue while identifying every request for lifecycle telemetry.
+Object.assign(axios.defaults.headers.common, API_CLIENT_HEADERS);
 
 export type ApiErrorPayload = {
   code: string;
@@ -75,9 +88,33 @@ function rethrowAxiosError(error: unknown): never {
   throw error;
 }
 
+/** Resolve old call-site paths onto v1 without changing explicit versions. */
+export function versionedApiPath(path: string): string {
+  if (/^\/api\/v[1-9][0-9]*(?:\/|$)/.test(path) ||
+      path === '/api/versions' || path.startsWith('/api/versions/')) {
+    return path;
+  }
+  if (path === '/api') return '/api/v1';
+  return path.startsWith('/api/') ? path.replace(/^\/api\//, '/api/v1/') : path;
+}
+
+export function apiUrl(path: string): string {
+  return `${API_URL}${versionedApiPath(path)}`;
+}
+
+export function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  return fetch(apiUrl(path), {
+    ...init,
+    headers: {
+      ...API_CLIENT_HEADERS,
+      ...(init.headers as Record<string, string> | undefined),
+    },
+  });
+}
+
 export async function apiGet<T>(path: string): Promise<T> {
   try {
-    const response = await axios.get<ApiEnvelope<T>>(`${API_URL}${path}`);
+    const response = await axios.get<ApiEnvelope<T>>(apiUrl(path));
     return unwrap(response.data, response.status);
   } catch (error) {
     rethrowAxiosError(error);
@@ -86,7 +123,7 @@ export async function apiGet<T>(path: string): Promise<T> {
 
 export async function apiPost<T>(path: string, body: Record<string, unknown>): Promise<T> {
   try {
-    const response = await axios.post<ApiEnvelope<T>>(`${API_URL}${path}`, body);
+    const response = await axios.post<ApiEnvelope<T>>(apiUrl(path), body);
     return unwrap(response.data, response.status);
   } catch (error) {
     rethrowAxiosError(error);

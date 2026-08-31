@@ -9,6 +9,7 @@
  * find out. Every live event now carries the cursor identifying it, and this
  * module turns the last cursor seen into a concrete answer about the gap.
  */
+import { csrfFetch } from "./api";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
@@ -62,7 +63,7 @@ export async function fetchMissedEvents<T = unknown>(
   if (cursor) query.set("cursor", cursor);
   if (options.limit) query.set("limit", String(options.limit));
 
-  const response = await fetch(`${API_BASE}/api/v1/realtime/replay?${query.toString()}`, {
+  const response = await csrfFetch(`${API_BASE}/api/v1/realtime/replay?${query.toString()}`, {
     signal: options.signal,
   });
 

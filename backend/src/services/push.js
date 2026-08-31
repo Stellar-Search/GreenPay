@@ -159,8 +159,7 @@ async function pruneDeviceTokens(tokens) {
  */
 async function sendUpdatePushNotifications({ project, update }) {
   if (!boss) {
-    console.error("[Push] Update-push queue not started; skipping push fan-out for project", project.id);
-    return;
+    throw new Error(`push notification queue not started for project ${project.id}`);
   }
 
   let lastId = "00000000-0000-0000-0000-000000000000";
@@ -170,20 +169,43 @@ async function sendUpdatePushNotifications({ project, update }) {
       `SELECT pf.id, dt.token, dt.platform
        FROM project_follows pf
        JOIN device_tokens dt ON pf.device_token_id = dt.id
-       WHERE pf.project_id = $1 AND pf.id > $2
+       LEFT JOIN project_update_push_recipients pr
+         ON pr.update_id = $4 AND pr.token = dt.token
+       WHERE pf.project_id = $1 AND pf.id > $2 AND pr.token IS NULL
        ORDER BY pf.id
        LIMIT $3`,
-      [project.id, lastId, PUSH_CHUNK_SIZE],
+      [project.id, lastId, PUSH_CHUNK_SIZE, update.id],
     );
     if (rows.length === 0) break;
 
-    const tokens = rows.map((r) => ({ token: r.token, platform: r.platform }));
-    await boss.send(
-      UPDATE_PUSH_QUEUE,
-      { project, update, tokens },
-      { retryLimit: RETRY_LIMIT, retryDelay: RETRY_DELAY, deadLetter: UPDATE_PUSH_DEAD_LETTER_QUEUE },
+    const tokens = rows.map((row) => ({ token: row.token, platform: row.platform || "unknown" }));
+    const claim = await pool.query(
+      `INSERT INTO project_update_push_recipients (update_id, token, platform)
+       SELECT $1, token, platform
+       FROM unnest($2::text[], $3::text[]) AS recipient(token, platform)
+       ON CONFLICT (update_id, token) DO NOTHING
+       RETURNING token`,
+      [update.id, tokens.map((row) => row.token), tokens.map((row) => row.platform)],
     );
-    queued += tokens.length;
+    const claimed = new Set(claim.rows.map((row) => row.token));
+    const claimedTokens = tokens.filter((row) => claimed.has(row.token));
+    if (claimedTokens.length > 0) {
+      try {
+        await boss.send(
+          UPDATE_PUSH_QUEUE,
+          { project, update, tokens: claimedTokens },
+          { retryLimit: RETRY_LIMIT, retryDelay: RETRY_DELAY, deadLetter: UPDATE_PUSH_DEAD_LETTER_QUEUE },
+        );
+      } catch (error) {
+        await pool.query(
+          `DELETE FROM project_update_push_recipients
+           WHERE update_id = $1 AND token = ANY($2::text[])`,
+          [update.id, claimedTokens.map((row) => row.token)],
+        );
+        throw error;
+      }
+      queued += claimedTokens.length;
+    }
 
     lastId = rows[rows.length - 1].id;
     if (rows.length < PUSH_CHUNK_SIZE) break;
@@ -194,6 +216,53 @@ async function sendUpdatePushNotifications({ project, update }) {
   }
 }
 
+/** Queue a follow-up for the exact device tokens that received the original. */
+async function sendUpdateRemovalPushNotifications({ project, update, reason }) {
+  if (!boss) {
+    throw new Error(`push notification queue not started for project ${project.id}`);
+  }
+
+  let lastToken = "";
+  for (;;) {
+    const { rows } = await pool.query(
+      `SELECT token, platform FROM project_update_push_recipients
+       WHERE update_id = $1 AND token > $2 AND correction_queued_at IS NULL
+       ORDER BY token LIMIT $3`,
+      [update.id, lastToken, PUSH_CHUNK_SIZE],
+    );
+    if (rows.length === 0) break;
+
+    const claim = await pool.query(
+      `UPDATE project_update_push_recipients SET correction_queued_at = NOW()
+       WHERE update_id = $1 AND token = ANY($2::text[])
+         AND correction_queued_at IS NULL
+       RETURNING token`,
+      [update.id, rows.map((row) => row.token)],
+    );
+    const claimed = new Set(claim.rows.map((row) => row.token));
+    const tokens = rows.filter((row) => claimed.has(row.token));
+    if (tokens.length > 0) {
+      try {
+        await boss.send(
+          UPDATE_PUSH_QUEUE,
+          { project, update, tokens, kind: "removed", reason },
+          { retryLimit: RETRY_LIMIT, retryDelay: RETRY_DELAY, deadLetter: UPDATE_PUSH_DEAD_LETTER_QUEUE },
+        );
+      } catch (error) {
+        await pool.query(
+          `UPDATE project_update_push_recipients SET correction_queued_at = NULL
+           WHERE update_id = $1 AND token = ANY($2::text[])`,
+          [update.id, tokens.map((row) => row.token)],
+        );
+        throw error;
+      }
+    }
+
+    lastToken = rows[rows.length - 1].token;
+    if (rows.length < PUSH_CHUNK_SIZE) break;
+  }
+}
+
 /**
  * Send push notifications to one chunk of device tokens. Called by the
  * update-push-notify worker — throws on an Expo send failure so pg-boss
@@ -201,7 +270,7 @@ async function sendUpdatePushNotifications({ project, update }) {
  * @param {Object} params - { project, update, tokens }
  * @param {Array<{token:string,platform:string}>} params.tokens
  */
-async function sendPushToTokens({ project, update, tokens }) {
+async function sendPushToTokens({ project, update, tokens, kind = "published", reason = null }) {
   const messages = [];
   for (const row of tokens) {
     if (!Expo.isExpoPushToken(row.token)) {
@@ -212,12 +281,14 @@ async function sendPushToTokens({ project, update, tokens }) {
     messages.push({
       to: row.token,
       sound: "default",
-      title: `Update: ${project.name}`,
-      body: update.title,
+      title: kind === "removed" ? `Update correction: ${project.name}` : `Update: ${project.name}`,
+      body: kind === "removed"
+        ? `${update.title} was removed after review${reason ? `: ${reason}` : "."}`
+        : update.title,
       data: {
         projectId: project.id,
         updateId: update.id,
-        type: "project_update",
+        type: kind === "removed" ? "project_update_removed" : "project_update",
       },
     });
   }
@@ -247,6 +318,7 @@ async function sendPushToTokens({ project, update, tokens }) {
 
 module.exports = {
   sendUpdatePushNotifications,
+  sendUpdateRemovalPushNotifications,
   sendPushToTokens,
   start,
   checkPushReceipts,

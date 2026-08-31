@@ -11,7 +11,7 @@ process.env.ADMIN_PASSWORD = "testpass";
 process.env.JWT_SECRET = "test-secret-for-jest";
 
 const PROJECT_ID = "11111111-1111-1111-1111-111111111111";
-const WALLET_ADDRESS = "GDYO6GEXKXPU3UH5SWGTAVHMBBZZEKUHWHXUJ33PL2TJJVHZB7CG6BI5";
+const WALLET_ADDRESS = Keypair.random().publicKey();
 
 function makeProjectRow(overrides = {}) {
   return {
@@ -141,7 +141,7 @@ describe("PATCH /api/projects/:id/status", () => {
   it("rejects a request with no Authorization header and an arbitrary spoofed adminAddress", async () => {
     const res = await request(app)
       .patch(`/api/projects/${PROJECT_ID}/status`)
-      .send({ status: "active", adminAddress: "GSOMEUNRELATEDATTACKERADDRESSXXXXXXXXXXXXXXXXXXXXXXXXXXX" });
+      .send({ status: "active", adminAddress: Keypair.random().publicKey() });
 
     expect(res.status).toBe(401);
     expect(pool.query).not.toHaveBeenCalled();
@@ -185,11 +185,12 @@ describe("PATCH /api/projects/:id/status", () => {
 
   it("allows a valid admin JWT to change status, and records the verified admin as actor rather than any client-supplied adminAddress", async () => {
     const token = signToken({ role: "admin", sub: "admin" }, "1h");
+    const fakeAdmin = Keypair.random().publicKey();
 
     const res = await request(app)
       .patch(`/api/projects/${PROJECT_ID}/status`)
       .set("Authorization", `Bearer ${token}`)
-      .send({ status: "active", adminAddress: "GSOMEUNRELATEDATTACKERADDRESSXXXXXXXXXXXXXXXXXXXXXXXXXXX" });
+      .send({ status: "active", adminAddress: fakeAdmin });
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -198,7 +199,7 @@ describe("PATCH /api/projects/:id/status", () => {
     expect(logAdminAction).toHaveBeenCalledTimes(1);
     const call = logAdminAction.mock.calls[0][0];
     expect(call.actor).toBe("admin");
-    expect(call.actor).not.toBe("GSOMEUNRELATEDATTACKERADDRESSXXXXXXXXXXXXXXXXXXXXXXXXXXX");
+    expect(call.actor).not.toBe(fakeAdmin);
   });
 
   it("still validates the status enum for an authenticated admin", async () => {
@@ -250,7 +251,7 @@ describe("legacy on-chain verification endpoints", () => {
         name: "Reforest the Delta",
         wallet: WALLET_ADDRESS,
         co2PerXLM: 100,
-        adminAddress: "GSPOOFEDATTACKERADDRESSXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+        adminAddress: Keypair.random().publicKey(),
       });
 
     expect(res.status).toBe(410);
