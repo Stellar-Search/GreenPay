@@ -160,6 +160,9 @@ class ProjectStatusChangedEvent extends DomainEvent {
 
   constructor({ aggregateId, version, actor, previousStatus, newStatus, reason }) {
     super({ aggregateId, version, actor });
+    if (newStatus === undefined) {
+      throw new Error("newStatus is required");
+    }
     this.data = {
       previousStatus,
       newStatus,
