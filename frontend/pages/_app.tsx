@@ -1,11 +1,14 @@
 import NextApp, { type AppContext, type AppInitialProps, type AppProps } from "next/app";
 import { useState, useEffect } from "react";
 import Head from "next/head";
+import { useRouter } from "next/router";
 import { Toaster } from "sonner";
 import Navbar from "@/components/Navbar";
 import { PriceProvider } from "@/lib/priceContext";
 import { I18nProvider } from "@/lib/i18n";
 import { connectWallet, getConnectedPublicKey } from "@/lib/wallet";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+
 import { loadStarterAccount } from "@/lib/starterAccount";
 import "@/styles/globals.css";
 
@@ -22,6 +25,7 @@ App.getInitialProps = async (appContext: AppContext): Promise<AppInitialProps> =
 
 export default function App({ Component, pageProps }: AppProps) {
   const [publicKey, setPublicKey] = useState<string | null>(null);
+  const router = useRouter();
 
   useEffect(() => {
     // Test seam: e2e tests inject a public key via window.addInitScript
@@ -71,12 +75,14 @@ export default function App({ Component, pageProps }: AppProps) {
         <meta name="viewport" content="width=device-width, initial-scale=1" />
       </Head>
       <Toaster position="top-right" richColors closeButton />
-      <div className="min-h-screen bg-[#f0f7f0]">
-        <Navbar publicKey={publicKey} onConnect={handleConnect} onDisconnect={() => setPublicKey(null)} />
-        <main>
-          <Component {...pageProps} publicKey={publicKey} onConnect={handleConnect} />
-        </main>
-      </div>
+      <ErrorBoundary key={router.asPath}>
+        <div className="min-h-screen bg-[#f0f7f0]">
+          <Navbar publicKey={publicKey} onConnect={handleConnect} onDisconnect={() => setPublicKey(null)} />
+          <main>
+            <Component {...pageProps} publicKey={publicKey} onConnect={handleConnect} />
+          </main>
+        </div>
+      </ErrorBoundary>
     </I18nProvider>
   );
 }

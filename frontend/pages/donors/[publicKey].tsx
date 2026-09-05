@@ -71,6 +71,7 @@ function formatDate(iso: string): string {
 
 function BadgePill({ tier, earnedAt }: { tier: BadgeTier; earnedAt: string }) {
   const meta = BADGE_META[tier];
+  if (!meta) return null; // or use optional chaining below
   return (
     <div
       title={`${meta.label} — earned ${formatDate(earnedAt)}`}
