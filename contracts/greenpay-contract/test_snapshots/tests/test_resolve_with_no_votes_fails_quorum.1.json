@@ -367,6 +367,18 @@
                         "val": {
                           "u32": 1
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -729,7 +741,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Quorum not reached: no eligible votes cast' from contract function 'Symbol(obj#161)'"
+                  "string": "caught panic 'Quorum not reached: no eligible votes cast' from contract function 'Symbol(obj#167)'"
                 },
                 {
                   "string": "proj-001"

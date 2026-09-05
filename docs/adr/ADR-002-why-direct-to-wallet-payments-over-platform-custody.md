@@ -29,7 +29,7 @@ This decision affects donor trust, operational risk, regulatory exposure, incide
 
 Chosen option: Direct-to-wallet payments.
 
-Donations are sent from the donor wallet directly to the verified project wallet. GreenPay records donation metadata in the backend and donation-derived impact state in Soroban, but does not custody the donated funds.
+Donations are sent from the donor wallet directly to the verified project wallet. GreenPay records donation metadata in the backend and donation state in Soroban, but does not custody the donated funds. Environmental claims are separately evidenced and hash-anchored; they are not derived from donation value.
 
 ## Positive Consequences
 

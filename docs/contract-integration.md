@@ -1,5 +1,14 @@
 # GreenPay Smart Contract Integration Guide
 
+> **Evidence-first update:** Donation-derived CO2 calculations in older
+> sections of this historical guide are retired. `co2_per_xlm`, donor
+> `co2_offset_grams`, `get_global_co2` and related examples are compatibility
+> fields only; new donations leave them unchanged. Current integrations read
+> ranges from `/api/v1/impact`, recompute the canonical payload SHA-256, and
+> check `verify_impact_attestation` plus revocation state. See
+> [impact accounting](impact-accounting.md) and
+> [ADR-006](adr/ADR-006-evidence-first-impact-claims.md).
+
 This guide enables third-party developers to integrate with the **GreenPay Donation Contract** on Stellar Soroban. You can record donations from your own contracts, query donor statistics, and leverage badge tiers in your dApps.
 
 **Table of Contents**
@@ -22,18 +31,18 @@ The GreenPay contract is a **climate donation tracking system** on Stellar Sorob
 
 - **Records donations** immutably on-chain with project, donor, and amount
 - **Calculates donor badges** based on cumulative lifetime donations
-- **Tracks CO₂ impact** per donation using project-specific offsets
+- **Anchors environmental claim hashes** separately from donation accounting
 - **Enables cross-contract calls** so your contracts can integrate with GreenPay
 
 Your contract can:
 1. Call `donate()` to record a climate donation on behalf of your users
-2. Query `get_donor_stats()` to show a donor's impact and badge tier
+2. Query `get_donor_stats()` to show donation totals and donation badge tier
 3. Emit events when donations are recorded
-4. Build impact-driven features on top of GreenPay data
+4. Build evidence-driven features from the claim API and on-chain anchors
 
 ### Key Advantage
 
-Unlike off-chain databases, all donation data is **cryptographically verified** on the Stellar blockchain. Users can prove their impact independently.
+Unlike off-chain databases, donation data is recorded on Stellar. Users can independently prove payment facts and the integrity/status of separately attested environmental claim payloads.
 
 ---
 
@@ -126,7 +135,7 @@ pub fn donate(
 2. Updates donor's cumulative stats (`total_donated`, `donation_count`)
 3. Recalculates and updates the donor's badge tier
 4. Increments project's `total_raised` and `donor_count`
-5. Calculates CO₂ offset: `co2_offset = (amount / 10_000_000) * project.co2_per_xlm`
+5. Leaves legacy CO₂ accumulators unchanged; outcome claims enter through the evidence and attestation flow
 6. Emits a `donated` event with (donor, project_id, amount, badge, msg_hash)
 
 ### Step 2: Call from Your Soroban Contract
@@ -258,7 +267,7 @@ async function getProjectStats(projectId: string): Promise<any> {
 
 **Functions:**
 - `get_global_total() -> i128` — Total XLM raised platform-wide
-- `get_global_co2() -> i128` — Total CO₂ offset (grams) platform-wide
+- `get_global_co2() -> i128` — Deprecated compatibility accumulator; not updated by evidence-first donations
 - `get_donation_count() -> u32` — Total number of donations recorded
 - `get_project_count() -> u32` — Total projects registered
 

@@ -3,7 +3,8 @@ import {
   setAdminToken, 
   logoutAdmin, 
   adminLogin,
-  fetchAISummaryFailures 
+  fetchAISummaryFailures,
+  versionedApiPath,
 } from "../api";
 import axios from "axios";
 import MockAdapter from "axios-mock-adapter";
@@ -63,5 +64,13 @@ describe("API Admin Session", () => {
     expect(window.sessionStorage.getItem("greenpay_admin_token")).toBeNull();
     expect(window.sessionStorage.getItem("greenpay_admin_refresh_token")).toBeNull();
     expect(isAdminAuthenticated()).toBe(false);
+  });
+});
+
+describe("API major-version path selection", () => {
+  it("moves historical paths to v1 without rewriting explicit or neutral versions", () => {
+    expect(versionedApiPath("/api/projects")).toBe("/api/v1/projects");
+    expect(versionedApiPath("/api/v2/meta")).toBe("/api/v2/meta");
+    expect(versionedApiPath("/api/versions/changelog")).toBe("/api/versions/changelog");
   });
 });

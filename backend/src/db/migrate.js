@@ -67,8 +67,10 @@ async function runMigrations() {
 
     for (const update of seedDemoData ? seedProjectUpdates : []) {
       await client.query(
-        `INSERT INTO project_updates (id, project_id, title, body, created_at)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO project_updates (
+           id, project_id, title, body, created_at, moderation_status, published_at
+         )
+         VALUES ($1, $2, $3, $4, $5, 'published', $5)
          ON CONFLICT (id) DO NOTHING`,
         [update.id, update.projectId, update.title, update.body, update.createdAt],
       );
@@ -94,6 +96,33 @@ async function runMigrations() {
         ],
       );
     }
+
+    // schema.sql runs before demo projects are inserted on a fresh database,
+    // so repeat the idempotent legacy treatment after seeding.  Existing
+    // values remain operator-stated evidence records and are never promoted to
+    // independent verification or allocated in proportion to a donation.
+    await client.query(
+      `INSERT INTO impact_claims (
+        id, project_id, methodology_id, claim_type, quantity, unit,
+        uncertainty_low, uncertainty_high, confidence_percent,
+        measurement_period_start, measurement_period_end,
+        baseline_description, asserting_party, asserting_party_type, status,
+        asserted_at, migrated_from_legacy, migration_note
+      )
+      SELECT
+        md5('legacy-impact-claim:' || p.id::text)::uuid,
+        p.id,
+        '00000000-0000-4000-8000-000000000001',
+        'offset', p.co2_offset_kg, 'kg_co2e', 0, p.co2_offset_kg * 2, NULL,
+        p.created_at::date, GREATEST(p.created_at::date, p.updated_at::date),
+        'No baseline was recorded for this legacy operator assertion.',
+        'Project operator (legacy import)', 'platform_migration', 'operator_stated',
+        p.updated_at, TRUE,
+        'Imported from projects.co2_offset_kg; unsourced, unverified, and never allocated to donors.'
+      FROM projects p
+      WHERE p.co2_offset_kg > 0
+      ON CONFLICT (id) DO NOTHING`,
+    );
 
     await client.query("COMMIT");
     console.log(

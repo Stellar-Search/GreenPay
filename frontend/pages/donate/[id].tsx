@@ -4,6 +4,7 @@ import Head from "next/head";
 import Link from "next/link";
 import DonationQRCode, { DonationQRCodeHandle } from "../../components/DonationQRCode";
 import type { DonateProject, DonatePageProps } from "../../utils/types";
+import { API_CLIENT_HEADERS } from "../../lib/api";
 
 //Category icons (matches the live site's category set)//
 
@@ -462,7 +463,9 @@ export const getServerSideProps: GetServerSideProps<DonatePageProps> = async (ct
     process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
   try {
-    const res = await fetch(`${apiBase}/api/v1/projects/${id}`);
+    const res = await fetch(`${apiBase}/api/v1/projects/${id}`, {
+      headers: API_CLIENT_HEADERS,
+    });
     if (!res.ok) {
       return { props: { project: null, presetAmount } };
     }

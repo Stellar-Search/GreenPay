@@ -13,6 +13,13 @@ spec:
     - host: {{ .Values.ingress.host }}
       http:
         paths:
+          # NOTE: /socket.io is deliberately NOT listed here. It is served by
+          # greenpay-realtime-ingress below, which carries the session-affinity
+          # annotations the polling handshake needs. Declaring the same
+          # host+path on two Ingress resources makes nginx pick one and ignore
+          # the other, so the path lives in exactly one place. A more specific
+          # prefix wins over the catch-all "/" regardless of which resource
+          # declares it, so the handshake no longer lands on the frontend.
           - path: /api
             pathType: Prefix
             backend:
@@ -27,3 +34,43 @@ spec:
                 name: frontend-svc
                 port:
                   number: {{ .Values.frontend.port }}
+---
+# Session affinity for the Socket.IO handshake.
+#
+# Kept as its own Ingress because these annotations apply to every path on the
+# resource that carries them, and pinning the REST API to a pod would undo the
+# load balancing that two-plus replicas exist to provide. See docs/realtime.md
+# for why affinity was chosen over WebSocket-only transport.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: greenpay-realtime-ingress
+  namespace: {{ .Values.namespace }}
+  annotations:
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/affinity-mode: "persistent"
+    nginx.ingress.kubernetes.io/session-cookie-name: "greenpay_realtime"
+    nginx.ingress.kubernetes.io/session-cookie-path: "/socket.io"
+    nginx.ingress.kubernetes.io/session-cookie-max-age: "86400"
+    nginx.ingress.kubernetes.io/session-cookie-expires: "86400"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: "Lax"
+    nginx.ingress.kubernetes.io/session-cookie-change-on-failure: "true"
+    # A live feed is idle between donations; the 60s nginx default would drop
+    # healthy connections and churn reconnects.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    {{- include "greenpay.ingress.tlsAnnotations" . | nindent 4 }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- include "greenpay.ingress.tls" . | nindent 2 }}
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /socket.io
+            pathType: Prefix
+            backend:
+              service:
+                name: backend-svc
+                port:
+                  number: {{ .Values.backend.port }}

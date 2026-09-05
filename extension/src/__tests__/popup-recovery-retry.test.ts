@@ -105,7 +105,7 @@ describe('Popup session recovery, timeout, and retry affordance', () => {
         name: 'Reforestation Hub',
         description: 'Planting native trees',
         category: 'Forestry',
-        walletAddress: `G${'C'.repeat(55)}`,
+        walletAddress: 'GDUQ24STT6QESP4QW33O4KDVYMRTBHWZ3ZE6HXX5TCNWUZH6MRT7PADV',
       },
     ];
 

@@ -1,6 +1,6 @@
 "use strict";
 
-const { DonationRecordedEvent, MatchAppliedEvent, MatchCreatedEvent, ProjectStatusChangedEvent, MilestoneReachedEvent, JobReleasedEvent, ProjectCreatedEvent, ProfileCreatedEvent } = require("./events");
+const { LEGACY_DONATION_MIGRATED, DonationRecordedEvent, MatchAppliedEvent, MatchCreatedEvent, ProjectStatusChangedEvent, MilestoneReachedEvent, JobReleasedEvent, ProjectCreatedEvent, ProfileCreatedEvent } = require("./events");
 const { RecordDonationCommand, ApplyMatchCommand, ChangeProjectStatusCommand, ReachMilestoneCommand, ReleaseEscrowCommand, CreateMatchOfferCommand } = require("./commands");
 const { computeBadges } = require("../services/store");
 
@@ -42,7 +42,7 @@ class ProjectAggregate {
       this.state.goalXlm = event.data.goalXlm;
       break;
     case "DonationRecorded":
-    case "MigratedDonation":
+    case LEGACY_DONATION_MIGRATED:
       if (event.data.currency === "XLM") {
         this.state.raisedXlm = round7(this.state.raisedXlm + Number.parseFloat(event.data.amountXlm));
       }
@@ -160,7 +160,7 @@ class DonorAggregate {
   apply(event, track = true) {
     switch (event.eventType) {
     case "DonationRecorded":
-    case "MigratedDonation":
+    case LEGACY_DONATION_MIGRATED:
       if (event.data.currency === "XLM") {
         this.state.totalDonatedXlm = round7(this.state.totalDonatedXlm + Number.parseFloat(event.data.amountXlm));
       }

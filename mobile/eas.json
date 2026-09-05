@@ -6,6 +6,9 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
+      "env": {
+        "EXPO_UPDATES_CHECK_ON_LAUNCH": "NEVER"
+      },
       "android": {
         "buildType": "apk"
       },
@@ -21,7 +24,12 @@
         "simulator": true
       }
     },
-    "production": {}
+    "production": {
+      "env": {
+        "EXPO_PUBLIC_SENTRY_DSN": "INJECT_FROM_EAS_SECRET",
+        "SENTRY_AUTH_TOKEN": "INJECT_FROM_EAS_SECRET"
+      }
+    }
   },
   "submit": {
     "production": {

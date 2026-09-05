@@ -22,6 +22,7 @@ const AdminAuditQuerySchema = z
     actor: z.string().optional(),
     action: z.string().optional(),
     limit: z.coerce.number().int().min(1).max(200).optional().default(50),
+    cursor: z.string().optional(),
     offset: z.coerce.number().int().min(0).max(10000).optional().default(0),
   })
   .strip();

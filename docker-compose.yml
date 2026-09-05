@@ -15,6 +15,21 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    # Backs the Socket.IO adapter and the realtime replay stream. Compose runs a
+    # single backend, where per-process delivery is already complete, so this is
+    # not required for the app to work locally — it is here so the multi-replica
+    # path can be exercised without a cluster (see docs/realtime.md).
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   frontend:
     build:
       context: ./frontend
@@ -48,8 +63,11 @@ services:
       - HORIZON_URL=https://horizon-testnet.stellar.org
       - ALLOWED_ORIGINS=http://localhost:3000
       - DATABASE_URL=postgres://postgres:postgres@postgres:5432/greenpay
+      - REDIS_URL=redis://redis:6379
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:4000/health || exit 1"]

@@ -1,5 +1,11 @@
 const rateLimit = require("express-rate-limit");
-const RedisStore = require("rate-limit-redis");
+// Destructured, not the bare module: rate-limit-redis v4 ships an ESM/CJS
+// interop namespace ({ RedisStore, default }), so `require(...)` returns the
+// namespace object and `new RedisStore()` throws "is not a constructor". The
+// branch below only runs when REDIS_URL is set, so this never fired locally or
+// in a test run without Redis — it would have thrown on the first rate-limited
+// request in any deployment that configured one.
+const { RedisStore } = require("rate-limit-redis");
 const redisClient = require("../cache/redisClient");
 const { createApiError } = require("./apiEnvelope");
 const { STELLAR_PUBLIC_KEY } = require("../schemas/common");

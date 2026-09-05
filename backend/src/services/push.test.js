@@ -58,19 +58,13 @@ describe("sendUpdatePushNotifications", () => {
     pool.query.mockReset();
   });
 
-  it("logs and does nothing when the update-push queue has not been started", async () => {
+  it("throws when the update-push queue has not been started", async () => {
     // Force `boss` back to its unstarted state by reloading the module.
     jest.resetModules();
     const freshPush = require("./push");
-    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
-
-    await freshPush.sendUpdatePushNotifications({ project, update });
-
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining("not started"),
-      project.id,
-    );
-    errorSpy.mockRestore();
+    await expect(
+      freshPush.sendUpdatePushNotifications({ project, update }),
+    ).rejects.toThrow("not started");
   });
 
   it("reads followers in bounded pages and enqueues one job per page", async () => {
@@ -83,7 +77,9 @@ describe("sendUpdatePushNotifications", () => {
           { id: "follow-2", token: "ExponentPushToken[b]", platform: "android" },
         ],
       })
-      .mockResolvedValueOnce({ rows: [] });
+      .mockResolvedValueOnce({
+        rows: [{ token: "ExponentPushToken[a]" }, { token: "ExponentPushToken[b]" }],
+      });
 
     await push.sendUpdatePushNotifications({ project, update });
 
@@ -126,15 +122,44 @@ describe("sendUpdatePushNotifications", () => {
     }));
     pool.query
       .mockResolvedValueOnce({ rows: fullPage })
+      .mockResolvedValueOnce({ rows: fullPage.map(({ token }) => ({ token })) })
       .mockResolvedValueOnce({
         rows: [{ id: "follow-100", token: "ExponentPushToken[last]", platform: "ios" }],
-      });
+      })
+      .mockResolvedValueOnce({ rows: [{ token: "ExponentPushToken[last]" }] });
 
     await push.sendUpdatePushNotifications({ project, update });
 
     const boss = getBossInstance();
     expect(boss.send).toHaveBeenCalledTimes(2);
-    expect(pool.query.mock.calls[1][1]).toEqual([project.id, "follow-099", 100]);
+    expect(pool.query.mock.calls[2][1]).toEqual([project.id, "follow-099", 100, update.id]);
+  });
+
+  it("queues removal corrections from the original device-token snapshot", async () => {
+    await push.start();
+    pool.query
+      .mockResolvedValueOnce({
+        rows: [{ token: "ExponentPushToken[former]", platform: "ios" }],
+      })
+      .mockResolvedValueOnce({ rows: [{ token: "ExponentPushToken[former]" }] });
+
+    await push.sendUpdateRemovalPushNotifications({
+      project,
+      update,
+      reason: "Unsupported claim",
+    });
+
+    expect(pool.query.mock.calls[0][0]).toContain("project_update_push_recipients");
+    expect(pool.query.mock.calls[0][0]).not.toContain("project_follows");
+    expect(getBossInstance().send).toHaveBeenCalledWith(
+      "update-push-notify",
+      expect.objectContaining({
+        kind: "removed",
+        reason: "Unsupported claim",
+        tokens: [{ token: "ExponentPushToken[former]", platform: "ios" }],
+      }),
+      expect.any(Object),
+    );
   });
 });
 
@@ -163,6 +188,24 @@ describe("sendPushToTokens", () => {
     expect(mockExpo.sendPushNotificationsAsync).toHaveBeenCalledWith([
       expect.objectContaining({ to: "ExponentPushToken[good]" }),
     ]);
+  });
+
+  it("labels a removal correction and does not repeat the removed body", async () => {
+    mockExpo.sendPushNotificationsAsync.mockResolvedValueOnce([
+      { status: "ok", id: "ticket-1" },
+    ]);
+    await push.sendPushToTokens({
+      project,
+      update: { ...update, body: "Removed body" },
+      tokens: [{ token: "ExponentPushToken[good]", platform: "ios" }],
+      kind: "removed",
+      reason: "Unsupported claim",
+    });
+    const message = mockExpo.sendPushNotificationsAsync.mock.calls[0][0][0];
+    expect(message.title).toContain("Update correction");
+    expect(message.body).toContain("Unsupported claim");
+    expect(message.body).not.toContain("Removed body");
+    expect(message.data.type).toBe("project_update_removed");
   });
 
   it("skips tokens that Expo does not recognize as valid push tokens", async () => {

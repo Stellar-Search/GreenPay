@@ -29,7 +29,7 @@ export default function AdminIndex({ publicKey, onConnect }: AdminIndexProps) {
     if (!publicKey) return;
     setLoading(true);
     fetchProjects({ limit: 100 })
-      .then(setProjects)
+      .then(({ projects }) => setProjects(projects))
       .catch((e: unknown) => setError((e as Error).message || "Failed to load projects"))
       .finally(() => setLoading(false));
   }, [publicKey, router]);

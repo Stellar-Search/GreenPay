@@ -1,0 +1,141 @@
+# Redis backing the Socket.IO adapter and the realtime replay log.
+#
+# The backend runs a minimum of two replicas (hpa.yaml). Socket.IO holds its
+# connections in per-process memory, so without a shared adapter an `io.emit`
+# from one pod reaches only that pod's clients — roughly half the audience at
+# two replicas, a tenth at ten. This Redis is what carries a broadcast between
+# pods, and what stores the bounded replay stream a reconnecting client reads to
+# recover events it missed.
+#
+# Deliberately ephemeral: no PersistentVolumeClaim, and persistence is disabled.
+# Everything here is recoverable — the replay stream is a capped, short-lived
+# catch-up buffer whose authoritative source is Postgres, and the adapter's
+# pub/sub state is meaningless across a restart. Paying for a volume would buy
+# nothing. A restart costs a brief degraded window, which the backend reports
+# rather than hiding (see backend/src/realtime/index.js).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  namespace: greenpay
+  labels:
+    app: redis
+data:
+  redis.conf: |
+    # No RDB snapshots and no AOF: this data is a cache and a capped stream.
+    save ""
+    appendonly no
+
+    # A hard ceiling matters more than usual here. The replay stream is capped
+    # by MAXLEN in the application, but pub/sub client output buffers are not,
+    # and an unbounded Redis on a shared node is a noisy-neighbour incident
+    # waiting to happen.
+    maxmemory 256mb
+    # Streams and pub/sub backlog are not idle cache entries an LRU policy can
+    # reclaim, so evicting them silently would corrupt replay. Refusing writes
+    # instead surfaces as an error the backend already handles by degrading and
+    # saying so.
+    maxmemory-policy noeviction
+
+    # A slow or dead subscriber must be disconnected rather than allowed to grow
+    # its output buffer until the server is out of memory. Without this a single
+    # wedged pod can take the shared adapter down for every replica.
+    client-output-buffer-limit pubsub 32mb 8mb 60
+
+    # The adapter's connections are long-lived and mostly idle between events;
+    # keepalive is what detects a silently dropped one.
+    tcp-keepalive 60
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-svc
+  namespace: greenpay
+  labels:
+    app: redis
+spec:
+  selector:
+    app: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: greenpay
+  labels:
+    app: redis
+    app.kubernetes.io/component: cache
+    app.kubernetes.io/part-of: greenpay
+spec:
+  # One replica on purpose. The adapter needs a single shared bus, and a second
+  # unsynchronised instance would split the fan-out — reintroducing the exact
+  # bug this exists to fix, but harder to see. Scaling this means Redis Sentinel
+  # or Cluster, which is a change of its own.
+  replicas: 1
+  strategy:
+    # Two Redis pods must never briefly overlap on one bus for the reason above.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      terminationGracePeriodSeconds: 15
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: redis:7.4-alpine
+          args: ["/etc/redis/redis.conf"]
+          ports:
+            - name: redis
+              containerPort: 6379
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 999
+            runAsGroup: 999
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/redis
+              readOnly: true
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              # Above maxmemory so Redis enforces its own limit and returns an
+              # error the backend can degrade on, rather than being OOM-killed
+              # by the kubelet mid-broadcast.
+              cpu: 500m
+              memory: 384Mi
+      volumes:
+        - name: config
+          configMap:
+            name: redis-config
+        - name: data
+          emptyDir: {}

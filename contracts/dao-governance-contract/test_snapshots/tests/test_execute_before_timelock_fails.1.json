@@ -1295,6 +1295,18 @@
                             "lo": 1000000
                           }
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -3256,7 +3268,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'timelock not elapsed' from contract function 'Symbol(obj#1265)'"
+                  "string": "caught panic 'timelock not elapsed' from contract function 'Symbol(obj#1283)'"
                 },
                 {
                   "u64": 1

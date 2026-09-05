@@ -11,6 +11,7 @@ const { AdminLoginSchema, AdminRefreshSchema, AdminAuditQuerySchema } = require(
 const { logAdminAction } = require("../services/audit");
 const { enqueueAISummary } = require("../services/summaryQueue");
 const { env } = require("../config/env");
+const { getUsageSnapshot } = require("../middleware/apiUsage");
 
 // Per-IP floor on login attempts (10 per 15 minutes per address). The real
 // anti-brute-force barrier is the per-account progressive delay below, which
@@ -62,9 +63,27 @@ router.post("/login", loginLimiter, loginAccountDelay, validate(AdminLoginSchema
   });
 });
 
+const { decodeCursor, formatPaginatedResponse } = require("../utils/pagination");
+
+// Ceiling on the deprecated `offset` path. Matches the bound AdminAuditQuerySchema
+// and LeaderboardQuerySchema already enforce, and exists for the same reason the
+// cursor path replaced offsets: a deep offset makes Postgres walk and discard every
+// skipped row, so an unbounded one is an arbitrarily expensive query for a caller
+// to ask for. Requests past it are clamped rather than rejected, so an old client
+// paging deep gets a slow-but-correct answer instead of an error.
+const MAX_OFFSET = 10000;
+
+// Live operational view of client/version adoption. Durable history comes
+// from the matching `event=api_request` structured log records.
+router.get("/api-usage", adminRequired, adminSubjectLimiter, (_req, res) => {
+  res.json(getUsageSnapshot());
+});
+
 router.get("/audit", adminRequired, adminSubjectLimiter, validate(AdminAuditQuerySchema, { source: "query" }), async (req, res, next) => {
   try {
-    const { actor, action, limit = 50, offset = 0 } = req.query;
+    const { actor, action, cursor, offset } = req.query;
+    const parsedLimit = Math.min(Number.parseInt(req.query.limit, 10) || 50, 200);
+    const parsedOffset = Math.min(Math.max(Number.parseInt(offset, 10) || 0, 0), MAX_OFFSET);
     const where = [];
     const values = [];
 
@@ -77,24 +96,61 @@ router.get("/audit", adminRequired, adminSubjectLimiter, validate(AdminAuditQuer
       where.push(`action = $${values.length}`);
     }
 
-    values.push(Math.min(Number.parseInt(limit, 10) || 50, 200));
-    values.push(Math.max(Number.parseInt(offset, 10) || 0, 0));
+    // The count reflects the actor/action filters only. Snapshotting the
+    // values here — before the keyset predicate is appended — is what keeps
+    // `total` the size of the filtered set rather than the size of what is
+    // left after the cursor, which would shrink on every page.
+    const countValues = [...values];
+    const countWhereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+    const cursorObj = decodeCursor(cursor);
+    let useOffset = false;
+
+    if (cursorObj) {
+      if (cursorObj.createdAt && cursorObj.id) {
+        values.push(cursorObj.createdAt, cursorObj.id);
+        where.push(`(created_at, id) < ($${values.length - 1}::timestamptz, $${values.length}::uuid)`);
+      } else if (cursorObj.createdAt) {
+        values.push(cursorObj.createdAt);
+        where.push(`created_at < $${values.length}::timestamptz`);
+      }
+    } else if (parsedOffset > 0) {
+      useOffset = true;
+    }
 
     const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
-    const result = await pool.query(
-      `SELECT id, actor, action, target_type, target_id, metadata, ip_address, created_at
+
+    let query;
+    if (useOffset) {
+      values.push(parsedLimit + 1, parsedOffset);
+      query = `SELECT id, actor, action, target_type, target_id, metadata, ip_address, created_at
        FROM admin_audit_log ${whereClause}
-       ORDER BY created_at DESC
-       LIMIT $${values.length - 1} OFFSET $${values.length}`,
-      values,
-    );
+       ORDER BY created_at DESC, id DESC
+       LIMIT $${values.length - 1} OFFSET $${values.length}`;
+    } else {
+      values.push(parsedLimit + 1);
+      query = `SELECT id, actor, action, target_type, target_id, metadata, ip_address, created_at
+       FROM admin_audit_log ${whereClause}
+       ORDER BY created_at DESC, id DESC
+       LIMIT $${values.length}`;
+    }
 
+    const result = await pool.query(query, values);
     const countResult = await pool.query(
-      `SELECT COUNT(*) AS total FROM admin_audit_log ${whereClause}`,
-      values.slice(0, -2),
+      `SELECT COUNT(*) AS total FROM admin_audit_log ${countWhereClause}`,
+      countValues,
     );
+    const totalCount = parseInt(countResult.rows[0].total, 10);
 
-    const rows = result.rows.map(row => ({
+    const { data, meta } = formatPaginatedResponse({
+      rows: result.rows,
+      limit: parsedLimit,
+      getCursorPayload: (row) => ({ createdAt: row.created_at, id: row.id }),
+      totalCount,
+      isTotalExact: true,
+    });
+
+    const rows = data.map(row => ({
       id: row.id,
       actor: row.actor,
       action: row.action,
@@ -106,10 +162,11 @@ router.get("/audit", adminRequired, adminSubjectLimiter, validate(AdminAuditQuer
     }));
 
     res.apiMeta({
+      ...meta,
       pagination: {
-        total: parseInt(countResult.rows[0].total, 10),
-        limit: Number.parseInt(limit, 10) || 50,
-        offset: Number.parseInt(offset, 10) || 0,
+        ...meta.pagination,
+        total: totalCount,
+        offset: parsedOffset,
       },
     });
     res.json(rows);
@@ -128,22 +185,59 @@ router.get("/audit", adminRequired, adminSubjectLimiter, validate(AdminAuditQuer
  */
 router.get("/ai-summary-failures", adminRequired, adminSubjectLimiter, async (req, res, next) => {
   try {
-    const limit = Math.min(Number.parseInt(req.query.limit, 10) || 50, 200);
-    const offset = Math.max(Number.parseInt(req.query.offset, 10) || 0, 0);
+    const { cursor, offset } = req.query;
+    const parsedLimit = Math.min(Number.parseInt(req.query.limit, 10) || 50, 200);
+    const parsedOffset = Math.min(Math.max(Number.parseInt(offset, 10) || 0, 0), MAX_OFFSET);
 
-    const result = await pool.query(
-      `SELECT id, project_id, payload, error_message, error_stack, status, created_at, resolved_at
-       FROM ai_summary_job_failures
-       ORDER BY created_at DESC
-       LIMIT $1 OFFSET $2`,
-      [limit, offset],
-    );
+    const cursorObj = decodeCursor(cursor);
+    const where = [];
+    const values = [];
 
+    let useOffset = false;
+    if (cursorObj) {
+      if (cursorObj.createdAt && cursorObj.id) {
+        values.push(cursorObj.createdAt, cursorObj.id);
+        where.push(`(created_at, id) < ($${values.length - 1}::timestamptz, $${values.length}::uuid)`);
+      } else if (cursorObj.createdAt) {
+        values.push(cursorObj.createdAt);
+        where.push(`created_at < $${values.length}::timestamptz`);
+      }
+    } else if (parsedOffset > 0) {
+      useOffset = true;
+    }
+
+    const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+    let query;
+    if (useOffset) {
+      values.push(parsedLimit + 1, parsedOffset);
+      query = `SELECT id, project_id, payload, error_message, error_stack, status, created_at, resolved_at
+       FROM ai_summary_job_failures ${whereClause}
+       ORDER BY created_at DESC, id DESC
+       LIMIT $${values.length - 1} OFFSET $${values.length}`;
+    } else {
+      values.push(parsedLimit + 1);
+      query = `SELECT id, project_id, payload, error_message, error_stack, status, created_at, resolved_at
+       FROM ai_summary_job_failures ${whereClause}
+       ORDER BY created_at DESC, id DESC
+       LIMIT $${values.length}`;
+    }
+
+    const result = await pool.query(query, values);
     const countResult = await pool.query(
       "SELECT COUNT(*) AS total FROM ai_summary_job_failures",
     );
+    const totalCount = parseInt(countResult.rows[0].total, 10);
 
-    const rows = result.rows.map(row => ({
+    const { data, meta } = formatPaginatedResponse({
+      rows: result.rows,
+      limit: parsedLimit,
+      getCursorPayload: (row) => ({ createdAt: row.created_at, id: row.id }),
+      totalCount,
+      isTotalExact: true,
+    });
+
+    const rows = data.map(row => ({
       id: row.id,
       projectId: row.project_id,
       payload: row.payload || {},
@@ -155,10 +249,11 @@ router.get("/ai-summary-failures", adminRequired, adminSubjectLimiter, async (re
     }));
 
     res.apiMeta({
+      ...meta,
       pagination: {
-        total: parseInt(countResult.rows[0].total, 10),
-        limit,
-        offset,
+        ...meta.pagination,
+        total: totalCount,
+        offset: parsedOffset,
       },
     });
     res.json(rows);

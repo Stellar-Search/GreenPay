@@ -52,7 +52,7 @@ describe("GET /api/leaderboard", () => {
   });
 
   describe("period=all", () => {
-    it("reads from donor_stats and returns rank, entries, and X-Total-Count", async () => {
+    it("reads from donor_stats and returns rank, entries, and pagination meta", async () => {
       pool.query
         .mockResolvedValueOnce({
           rows: [
@@ -71,7 +71,7 @@ describe("GET /api/leaderboard", () => {
       const res = await request(app).get("/api/leaderboard").query({ period: "all", limit: 10, offset: 0 });
 
       expect(res.status).toBe(200);
-      expect(res.body.meta.pagination).toEqual({ total: 42, limit: 10, offset: 0 });
+      expect(res.body.meta.pagination).toMatchObject({ total: 42, limit: 10, offset: 0, hasMore: false, isTotalExact: true });
       expect(res.body.data).toEqual([
         {
           rank: 1,
@@ -85,19 +85,34 @@ describe("GET /api/leaderboard", () => {
 
       const [sql, params] = pool.query.mock.calls[0];
       expect(sql).toMatch(/FROM donor_stats/);
-      expect(sql).toMatch(/ROW_NUMBER\(\) OVER \(ORDER BY ds\.total_donated_xlm DESC, ds\.public_key ASC\)/);
-      expect(params).toEqual([10, 0]);
+      expect(sql).toMatch(/GREATEST\(ds\.total_donated_xlm - COALESCE\(ia\.excluded_xlm, 0\), 0\)/);
+      expect(sql).toMatch(/exclude_from_leaderboard = TRUE/);
+      expect(params).toEqual([11]);
       expect(pool.query.mock.calls[1][0]).toMatch(/FROM donor_stats/);
     });
 
-    it("passes limit and offset through to the query for absolute-position pagination", async () => {
+    it("passes limit and offset through to the query for absolute-position pagination when offset is given", async () => {
       pool.query
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [{ total: "0" }] });
 
       await request(app).get("/api/leaderboard").query({ period: "all", limit: 20, offset: 40 });
 
-      expect(pool.query.mock.calls[0][1]).toEqual([20, 40]);
+      expect(pool.query.mock.calls[0][1]).toEqual([21, 40]);
+    });
+
+    it("supports opaque versioned cursor for keyset pagination", async () => {
+      const { encodeCursor } = require("../utils/pagination");
+      const cursor = encodeCursor({ totalDonatedXlm: "150.0000000", publicKey: "GDONOR1AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" });
+
+      pool.query
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ total: "42" }] });
+
+      const res = await request(app).get("/api/leaderboard").query({ period: "all", limit: 10, cursor });
+
+      expect(res.status).toBe(200);
+      expect(pool.query.mock.calls[0][0]).toMatch(/total_donated_xlm < \$1::numeric OR \(total_donated_xlm = \$1::numeric AND public_key > \$2\)/);
     });
   });
 
@@ -121,14 +136,17 @@ describe("GET /api/leaderboard", () => {
       const res = await request(app).get("/api/leaderboard").query({ period, limit: 5, offset: 5 });
 
       expect(res.status).toBe(200);
-      expect(res.body.meta.pagination).toEqual({ total: 7, limit: 5, offset: 5 });
+      expect(res.body.meta.pagination).toMatchObject({ total: 7, limit: 5, offset: 5, hasMore: false, isTotalExact: true });
       expect(res.body.data[0]).toMatchObject({ rank: 2, publicKey: "GDONOR2AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" });
 
       const [sql, params] = pool.query.mock.calls[0];
-      expect(sql).toMatch(/LEFT JOIN donations d/);
+      expect(sql).toMatch(/LEFT JOIN surface_donations d/);
+      expect(sql).toMatch(/event_type = 'DonationRecorded'/);
       expect(sql).toMatch(/ROW_NUMBER\(\) OVER \(\s*ORDER BY COALESCE\(SUM\(d\.amount_xlm\), 0\) DESC, p\.public_key ASC\s*\)/);
-      expect(sql).toContain(period === "month" ? "30 days" : "1 year");
-      expect(params).toEqual([5, 5]);
+      // The window is bound as a parameter rather than interpolated, so the
+      // interval literal appears in the values array, not the SQL text.
+      expect(sql).toContain("NOW() - ($1::interval)");
+      expect(params).toEqual([period === "month" ? "30 days" : "1 year", 6, 5]);
       expect(pool.query.mock.calls[1][0]).toMatch(/FROM profiles/);
     });
   });

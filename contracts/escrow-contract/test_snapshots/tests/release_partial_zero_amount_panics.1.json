@@ -352,6 +352,30 @@
                             }
                           ]
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "JobCount"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -1269,7 +1293,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Release amount must be positive' from contract function 'Symbol(obj#291)'"
+                  "string": "caught panic 'Release amount must be positive' from contract function 'Symbol(obj#307)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"

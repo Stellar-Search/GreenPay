@@ -1,6 +1,6 @@
 /**
  * src/routes/stats.js
- * GET /api/stats/global — platform-wide totals (donations count, XLM raised, CO2 offset)
+ * GET /api/stats/global — platform-wide donation and claim-record counts.
  */
 "use strict";
 const express = require("express");
@@ -12,19 +12,32 @@ router.get("/global", async (req, res, next) => {
   try {
     const result = await pool.query(`
       SELECT
-        COUNT(d.id)::int            AS "totalDonations",
-        COALESCE(SUM(d.amount), 0)  AS "totalXLMRaised",
-        COALESCE(SUM(p.co2_offset_kg), 0)::int AS "totalCO2OffsetKg"
-      FROM donations d
-      JOIN projects p ON p.id = d.project_id
-      WHERE d.currency = 'XLM' OR d.currency IS NULL
+        (SELECT COUNT(*)::int
+           FROM donations d
+          WHERE d.status = 'committed'
+            AND (d.currency = 'XLM' OR d.currency IS NULL)) AS "totalDonations",
+        (SELECT COALESCE(SUM(d.amount_xlm), 0)
+           FROM donations d
+          WHERE d.status = 'committed'
+            AND (d.currency = 'XLM' OR d.currency IS NULL)) AS "totalXLMRaised",
+        (SELECT COUNT(*)::int FROM impact_claims) AS "publishedImpactClaims",
+        (SELECT COUNT(*)::int
+           FROM impact_claims c
+          WHERE c.status = 'verified'
+            AND EXISTS (
+              SELECT 1 FROM impact_attestations a
+               WHERE a.claim_id = c.id
+                 AND a.status = 'verified'
+                 AND a.expires_at > NOW()
+            )) AS "verifiedImpactClaims"
     `);
 
     const row = result.rows[0];
     res.json({
       totalDonations: row.totalDonations,
       totalXLMRaised: parseFloat(row.totalXLMRaised).toFixed(7),
-      totalCO2OffsetKg: row.totalCO2OffsetKg,
+      publishedImpactClaims: row.publishedImpactClaims,
+      verifiedImpactClaims: row.verifiedImpactClaims,
     });
   } catch (e) {
     next(e);

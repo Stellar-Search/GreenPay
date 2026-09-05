@@ -10,6 +10,7 @@ exports[`ProjectCard RTL (Arabic locale) matches snapshot with RTL layout (logic
     >
       <div
         class="card-hover group animate-fade-in flex flex-col h-full relative overflow-hidden"
+        data-testid="project-card"
       >
         <div
           class="flex items-center justify-between mb-4"
@@ -50,16 +51,23 @@ exports[`ProjectCard RTL (Arabic locale) matches snapshot with RTL layout (logic
             </span>
           </div>
         </div>
-        <h3
-          class="font-display font-semibold text-forest-900 text-base leading-snug mb-2 group-hover:text-forest-600 transition-colors line-clamp-2"
+        <div
+          class="text-start"
         >
-          Amazon Reforestation Initiative
-        </h3>
-        <p
-          class="text-[#4b654b] text-sm leading-relaxed line-clamp-3 mb-4 flex-1 font-body"
-        >
-          Restoring native tree cover across degraded rainforest land.
-        </p>
+          <h3
+            class="font-display font-semibold text-forest-900 text-base leading-snug mb-2 group-hover:text-forest-600 transition-colors line-clamp-2"
+          >
+            Amazon Reforestation Initiative
+          </h3>
+          <p
+            class="text-[#4b654b] text-sm leading-relaxed line-clamp-3 mb-3 flex-1 font-body"
+          >
+            Restoring native tree cover across degraded rainforest land.
+          </p>
+        </div>
+        <div
+          class="mb-4"
+        />
         <div
           class="mb-4"
         >
@@ -139,28 +147,8 @@ exports[`ProjectCard RTL (Arabic locale) matches snapshot with RTL layout (logic
               👥 
               ٤٢ متبرعًا
             </span>
-            <span
-              class="flex items-center gap-1"
-            >
-              ♻️ 
-              ١٫٢k kg CO₂
-              <span
-                class="tooltip"
-              >
-                <button
-                  aria-label="CO2 offset estimate methodology info"
-                  class="w-3.5 h-3.5 flex items-center justify-center rounded-full bg-forest-100 text-[8px] text-forest-600 border border-forest-200 hover:bg-forest-200 transition-colors focus:outline-none focus:ring-1 focus:ring-forest-400"
-                  type="button"
-                >
-                  ℹ️
-                </button>
-                <span
-                  class="tooltip-text"
-                  role="tooltip"
-                >
-                  Estimated CO₂ offset based on this project's declared impact rate per XLM donated. Actual results may vary.
-                </span>
-              </span>
+            <span>
+              📋 Evidence & outcome claims on project page
             </span>
           </div>
           <span
@@ -203,6 +191,7 @@ exports[`ProjectCard matches snapshot for a fully-funded project 1`] = `
     >
       <div
         class="card-hover group animate-fade-in flex flex-col h-full relative overflow-hidden"
+        data-testid="project-card"
       >
         <div
           class="flex items-center justify-between mb-4"
@@ -238,16 +227,23 @@ exports[`ProjectCard matches snapshot for a fully-funded project 1`] = `
             </span>
           </div>
         </div>
-        <h3
-          class="font-display font-semibold text-forest-900 text-base leading-snug mb-2 group-hover:text-forest-600 transition-colors line-clamp-2"
+        <div
+          class="text-start"
         >
-          Amazon Reforestation Initiative
-        </h3>
-        <p
-          class="text-[#4b654b] text-sm leading-relaxed line-clamp-3 mb-4 flex-1 font-body"
-        >
-          Restoring native tree cover across degraded rainforest land.
-        </p>
+          <h3
+            class="font-display font-semibold text-forest-900 text-base leading-snug mb-2 group-hover:text-forest-600 transition-colors line-clamp-2"
+          >
+            Amazon Reforestation Initiative
+          </h3>
+          <p
+            class="text-[#4b654b] text-sm leading-relaxed line-clamp-3 mb-3 flex-1 font-body"
+          >
+            Restoring native tree cover across degraded rainforest land.
+          </p>
+        </div>
+        <div
+          class="mb-4"
+        />
         <div
           class="mb-4"
         >
@@ -267,28 +263,8 @@ exports[`ProjectCard matches snapshot for a fully-funded project 1`] = `
               👥 
               42 donors
             </span>
-            <span
-              class="flex items-center gap-1"
-            >
-              ♻️ 
-              1.2k kg CO₂
-              <span
-                class="tooltip"
-              >
-                <button
-                  aria-label="CO2 offset estimate methodology info"
-                  class="w-3.5 h-3.5 flex items-center justify-center rounded-full bg-forest-100 text-[8px] text-forest-600 border border-forest-200 hover:bg-forest-200 transition-colors focus:outline-none focus:ring-1 focus:ring-forest-400"
-                  type="button"
-                >
-                  ℹ️
-                </button>
-                <span
-                  class="tooltip-text"
-                  role="tooltip"
-                >
-                  Estimated CO₂ offset based on this project's declared impact rate per XLM donated. Actual results may vary.
-                </span>
-              </span>
+            <span>
+              📋 Evidence & outcome claims on project page
             </span>
           </div>
           <span
@@ -331,6 +307,7 @@ exports[`ProjectCard matches snapshot for an active, partially-funded project 1`
     >
       <div
         class="card-hover group animate-fade-in flex flex-col h-full relative overflow-hidden"
+        data-testid="project-card"
       >
         <div
           class="flex items-center justify-between mb-4"
@@ -371,16 +348,23 @@ exports[`ProjectCard matches snapshot for an active, partially-funded project 1`
             </span>
           </div>
         </div>
-        <h3
-          class="font-display font-semibold text-forest-900 text-base leading-snug mb-2 group-hover:text-forest-600 transition-colors line-clamp-2"
+        <div
+          class="text-start"
         >
-          Amazon Reforestation Initiative
-        </h3>
-        <p
-          class="text-[#4b654b] text-sm leading-relaxed line-clamp-3 mb-4 flex-1 font-body"
-        >
-          Restoring native tree cover across degraded rainforest land.
-        </p>
+          <h3
+            class="font-display font-semibold text-forest-900 text-base leading-snug mb-2 group-hover:text-forest-600 transition-colors line-clamp-2"
+          >
+            Amazon Reforestation Initiative
+          </h3>
+          <p
+            class="text-[#4b654b] text-sm leading-relaxed line-clamp-3 mb-3 flex-1 font-body"
+          >
+            Restoring native tree cover across degraded rainforest land.
+          </p>
+        </div>
+        <div
+          class="mb-4"
+        />
         <div
           class="mb-4"
         >
@@ -460,28 +444,8 @@ exports[`ProjectCard matches snapshot for an active, partially-funded project 1`
               👥 
               42 donors
             </span>
-            <span
-              class="flex items-center gap-1"
-            >
-              ♻️ 
-              1.2k kg CO₂
-              <span
-                class="tooltip"
-              >
-                <button
-                  aria-label="CO2 offset estimate methodology info"
-                  class="w-3.5 h-3.5 flex items-center justify-center rounded-full bg-forest-100 text-[8px] text-forest-600 border border-forest-200 hover:bg-forest-200 transition-colors focus:outline-none focus:ring-1 focus:ring-forest-400"
-                  type="button"
-                >
-                  ℹ️
-                </button>
-                <span
-                  class="tooltip-text"
-                  role="tooltip"
-                >
-                  Estimated CO₂ offset based on this project's declared impact rate per XLM donated. Actual results may vary.
-                </span>
-              </span>
+            <span>
+              📋 Evidence & outcome claims on project page
             </span>
           </div>
           <span

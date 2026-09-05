@@ -249,6 +249,18 @@
                         "val": {
                           "u32": 1
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -501,7 +513,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Voting duration too short' from contract function 'Symbol(obj#99)'"
+                  "string": "caught panic 'Voting duration too short' from contract function 'Symbol(obj#103)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
