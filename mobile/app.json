@@ -4,7 +4,7 @@
     "slug": "stellar-greenpay",
     "version": "1.0.0",
     "runtimeVersion": {
-      "policy": "appVersion"
+      "policy": "fingerprintExperimental"
     },
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -65,6 +65,21 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-updates",
+        {
+          "url": "https://u.expo.dev/REPLACE_WITH_PROJECT_ID",
+          "checkAutomatically": "ON_LOAD",
+          "fallbackToCacheTimeout": 10000
+        }
+      ],
+      [
+        "@sentry/react-native/expo",
+        {
+          "organization": "greenpay",
+          "project": "greenpay-mobile"
+        }
+      ],
       [
         "expo-notifications",
         {

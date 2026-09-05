@@ -5,6 +5,9 @@ metadata:
   namespace: {{ .Values.namespace }}
   labels:
     app: backend
+  annotations:
+    reloader.stakater.com/auto: "true"
+    secret.reloader.stakater.com/reload: {{ include "greenpay.secretName" . | quote }}
 spec:
   replicas: {{ .Values.backend.replicas }}
   revisionHistoryLimit: 5

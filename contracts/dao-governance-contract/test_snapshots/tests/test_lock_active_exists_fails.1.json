@@ -488,6 +488,18 @@
                             "lo": 5000
                           }
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -1392,7 +1404,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'existing lock must be extended or expired' from contract function 'Symbol(obj#343)'"
+                  "string": "caught panic 'existing lock must be extended or expired' from contract function 'Symbol(obj#347)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"

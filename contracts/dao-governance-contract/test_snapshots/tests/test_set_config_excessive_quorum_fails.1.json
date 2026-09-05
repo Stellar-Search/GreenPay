@@ -203,6 +203,18 @@
                             "lo": 0
                           }
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -685,7 +697,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'quorum too high' from contract function 'Symbol(obj#137)'"
+                  "string": "caught panic 'quorum too high' from contract function 'Symbol(obj#139)'"
                 },
                 {
                   "map": [

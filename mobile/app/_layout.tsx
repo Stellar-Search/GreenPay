@@ -17,6 +17,9 @@ import { useDeepLink } from '../hooks/useDeepLink';
 import { useRecurringReminders } from '../hooks/useRecurringReminders';
 import { AppInitProvider, useAppInit } from '../src/context/AppInitContext';
 import { assertStellarNetworkConfigConsistency } from '../utils/stellarNetwork';
+import { initCrashReporter } from '../utils/crashReporter';
+import * as Updates from 'expo-updates';
+import Constants from 'expo-constants';
 
 SplashScreen.preventAutoHideAsync();
 import { useWallet } from '../src/hooks/useWallet';
@@ -40,6 +43,24 @@ function AppShell() {
   const [fontsLoaded, fontError] = useFonts({
     Lora_700Bold,
   });
+
+  // Initialise crash reporting before any navigation or wallet hooks execute.
+  // Wrapped in try/catch so a bad config can never propagate as a boot crash
+  // (Requirement 5.6). dryRun is true in dev and preview builds (Req 5.7).
+  useEffect(() => {
+    try {
+      initCrashReporter({
+        dsn: process.env.EXPO_PUBLIC_SENTRY_DSN ?? '',
+        updateId: Updates.updateId ?? null,
+        runtimeVersion: Updates.runtimeVersion ?? null,
+        dryRun:
+          __DEV__ ||
+          Constants.expoConfig?.extra?.buildProfile === 'preview',
+      });
+    } catch (err) {
+      console.error('[AppShell] initCrashReporter failed:', err);
+    }
+  }, []);
 
   useEffect(() => {
     // Fail fast if Horizon URL and STELLAR_NETWORK disagree (issue #145).

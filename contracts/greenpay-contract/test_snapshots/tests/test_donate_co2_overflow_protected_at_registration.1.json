@@ -366,6 +366,18 @@
                         "val": {
                           "u32": 1
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -943,7 +955,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'co2_per_xlm exceeds maximum allowed' from contract function 'Symbol(obj#229)'"
+                  "string": "caught panic 'co2_per_xlm exceeds maximum allowed' from contract function 'Symbol(obj#235)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"

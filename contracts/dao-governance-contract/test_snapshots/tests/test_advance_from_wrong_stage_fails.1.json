@@ -833,6 +833,18 @@
                             "lo": 500000
                           }
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -2145,7 +2157,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'invalid stage transition' from contract function 'Symbol(obj#685)'"
+                  "string": "caught panic 'invalid stage transition' from contract function 'Symbol(obj#697)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"

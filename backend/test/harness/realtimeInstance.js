@@ -72,27 +72,27 @@ async function main() {
 
 async function handle(message, { server, io }) {
   switch (message.cmd) {
-    case "publish": {
-      const published = await realtime.publish(message.name, message.payload);
-      send({ id: message.id, published: true, cursor: published.cursor, degraded: published.degraded });
-      break;
-    }
-    case "status": {
-      send({ id: message.id, status: realtime.describeStatus(), metrics: realtime.metrics.snapshot() });
-      break;
-    }
-    case "shutdown": {
-      send({ id: message.id, shuttingDown: true });
-      await realtime.shutdownRealtime();
-      io.close();
-      server.close(() => process.exit(0));
-      // The adapter's Redis sockets can outlive close() if Redis is wedged;
-      // this bounds the harness rather than hanging a CI job.
-      setTimeout(() => process.exit(0), 2000).unref();
-      break;
-    }
-    default:
-      send({ id: message.id, error: `unknown command ${message.cmd}` });
+  case "publish": {
+    const published = await realtime.publish(message.name, message.payload);
+    send({ id: message.id, published: true, cursor: published.cursor, degraded: published.degraded });
+    break;
+  }
+  case "status": {
+    send({ id: message.id, status: realtime.describeStatus(), metrics: realtime.metrics.snapshot() });
+    break;
+  }
+  case "shutdown": {
+    send({ id: message.id, shuttingDown: true });
+    await realtime.shutdownRealtime();
+    io.close();
+    server.close(() => process.exit(0));
+    // The adapter's Redis sockets can outlive close() if Redis is wedged;
+    // this bounds the harness rather than hanging a CI job.
+    setTimeout(() => process.exit(0), 2000).unref();
+    break;
+  }
+  default:
+    send({ id: message.id, error: `unknown command ${message.cmd}` });
   }
 }
 
