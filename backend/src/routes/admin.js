@@ -11,6 +11,7 @@ const { AdminLoginSchema, AdminRefreshSchema, AdminAuditQuerySchema } = require(
 const { logAdminAction } = require("../services/audit");
 const { enqueueAISummary } = require("../services/summaryQueue");
 const { env } = require("../config/env");
+const { getUsageSnapshot } = require("../middleware/apiUsage");
 
 // Per-IP floor on login attempts (10 per 15 minutes per address). The real
 // anti-brute-force barrier is the per-account progressive delay below, which
@@ -71,6 +72,12 @@ const { decodeCursor, formatPaginatedResponse } = require("../utils/pagination")
 // to ask for. Requests past it are clamped rather than rejected, so an old client
 // paging deep gets a slow-but-correct answer instead of an error.
 const MAX_OFFSET = 10000;
+
+// Live operational view of client/version adoption. Durable history comes
+// from the matching `event=api_request` structured log records.
+router.get("/api-usage", adminRequired, adminSubjectLimiter, (_req, res) => {
+  res.json(getUsageSnapshot());
+});
 
 router.get("/audit", adminRequired, adminSubjectLimiter, validate(AdminAuditQuerySchema, { source: "query" }), async (req, res, next) => {
   try {

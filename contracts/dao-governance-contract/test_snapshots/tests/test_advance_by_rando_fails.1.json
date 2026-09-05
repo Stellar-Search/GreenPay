@@ -811,6 +811,18 @@
                             "lo": 500000
                           }
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -2006,7 +2018,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'not authorised to advance proposal' from contract function 'Symbol(obj#555)'"
+                  "string": "caught panic 'not authorised to advance proposal' from contract function 'Symbol(obj#565)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"

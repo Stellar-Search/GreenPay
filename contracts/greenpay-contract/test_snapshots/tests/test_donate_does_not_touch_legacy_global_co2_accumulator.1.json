@@ -90,10 +90,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "max-co2-donate"
+                  "string": "co2-cap-proj"
                 },
                 {
-                  "string": "Stress"
+                  "string": "CO2 cap"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
@@ -122,8 +122,8 @@
                 },
                 {
                   "i128": {
-                    "hi": 9223372036854775807,
-                    "lo": 18446744073709551615
+                    "hi": 0,
+                    "lo": 10000000
                   }
                 }
               ]
@@ -133,6 +133,8 @@
         }
       ]
     ],
+    [],
+    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
@@ -149,12 +151,12 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                 },
                 {
-                  "string": "max-co2-donate"
+                  "string": "co2-cap-proj"
                 },
                 {
                   "i128": {
-                    "hi": 9223372036854775807,
-                    "lo": 18446744073709551615
+                    "hi": 0,
+                    "lo": 10000000
                   }
                 },
                 {
@@ -178,8 +180,8 @@
                     },
                     {
                       "i128": {
-                        "hi": 9223372036854775807,
-                        "lo": 18446744073709551615
+                        "hi": 0,
+                        "lo": 10000000
                       }
                     }
                   ]
@@ -191,6 +193,8 @@
         }
       ]
     ],
+    [],
+    [],
     [],
     []
   ],
@@ -309,7 +313,7 @@
                       "val": {
                         "vec": [
                           {
-                            "symbol": "EarthGuardian"
+                            "symbol": "None"
                           }
                         ]
                       }
@@ -320,8 +324,8 @@
                       },
                       "val": {
                         "i128": {
-                          "hi": 9223372036854775807,
-                          "lo": 18446744073705445888
+                          "hi": 0,
+                          "lo": 0
                         }
                       }
                     },
@@ -339,8 +343,8 @@
                       },
                       "val": {
                         "i128": {
-                          "hi": 9223372036854775807,
-                          "lo": 18446744073709551615
+                          "hi": 0,
+                          "lo": 10000000
                         }
                       }
                     }
@@ -363,7 +367,7 @@
                   "symbol": "HasDonated"
                 },
                 {
-                  "string": "max-co2-donate"
+                  "string": "co2-cap-proj"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
@@ -386,7 +390,7 @@
                       "symbol": "HasDonated"
                     },
                     {
-                      "string": "max-co2-donate"
+                      "string": "co2-cap-proj"
                     },
                     {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
@@ -411,243 +415,10 @@
             "key": {
               "vec": [
                 {
-                  "symbol": "ImpactNFT"
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "EarthGuardian"
-                    }
-                  ]
-                }
-              ]
-            },
-            "durability": "persistent"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-                "key": {
-                  "vec": [
-                    {
-                      "symbol": "ImpactNFT"
-                    },
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
-                    },
-                    {
-                      "vec": [
-                        {
-                          "symbol": "EarthGuardian"
-                        }
-                      ]
-                    }
-                  ]
-                },
-                "durability": "persistent",
-                "val": {
-                  "map": [
-                    {
-                      "key": {
-                        "symbol": "minted_at_ledger"
-                      },
-                      "val": {
-                        "u32": 0
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "owner"
-                      },
-                      "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "tier"
-                      },
-                      "val": {
-                        "vec": [
-                          {
-                            "symbol": "EarthGuardian"
-                          }
-                        ]
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "total_donated"
-                      },
-                      "val": {
-                        "i128": {
-                          "hi": 9223372036854775807,
-                          "lo": 18446744073709551615
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            },
-            "ext": "v0"
-          },
-          2102400
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-            "key": {
-              "vec": [
-                {
-                  "symbol": "NftMeta"
-                },
-                {
-                  "u32": 1
-                }
-              ]
-            },
-            "durability": "persistent"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-                "key": {
-                  "vec": [
-                    {
-                      "symbol": "NftMeta"
-                    },
-                    {
-                      "u32": 1
-                    }
-                  ]
-                },
-                "durability": "persistent",
-                "val": {
-                  "map": [
-                    {
-                      "key": {
-                        "symbol": "minted_at_ledger"
-                      },
-                      "val": {
-                        "u32": 0
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "owner"
-                      },
-                      "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "tier"
-                      },
-                      "val": {
-                        "vec": [
-                          {
-                            "symbol": "EarthGuardian"
-                          }
-                        ]
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "total_donated"
-                      },
-                      "val": {
-                        "i128": {
-                          "hi": 9223372036854775807,
-                          "lo": 18446744073709551615
-                        }
-                      }
-                    }
-                  ]
-                }
-              }
-            },
-            "ext": "v0"
-          },
-          2102400
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-            "key": {
-              "vec": [
-                {
-                  "symbol": "NftOwnerTokens"
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
-                }
-              ]
-            },
-            "durability": "persistent"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-                "key": {
-                  "vec": [
-                    {
-                      "symbol": "NftOwnerTokens"
-                    },
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
-                    }
-                  ]
-                },
-                "durability": "persistent",
-                "val": {
-                  "vec": [
-                    {
-                      "u32": 1
-                    }
-                  ]
-                }
-              }
-            },
-            "ext": "v0"
-          },
-          2102400
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-            "key": {
-              "vec": [
-                {
                   "symbol": "Project"
                 },
                 {
-                  "string": "max-co2-donate"
+                  "string": "co2-cap-proj"
                 }
               ]
             },
@@ -667,7 +438,7 @@
                       "symbol": "Project"
                     },
                     {
-                      "string": "max-co2-donate"
+                      "string": "co2-cap-proj"
                     }
                   ]
                 },
@@ -703,7 +474,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "max-co2-donate"
+                        "string": "co2-cap-proj"
                       }
                     },
                     {
@@ -711,7 +482,7 @@
                         "symbol": "name"
                       },
                       "val": {
-                        "string": "Stress"
+                        "string": "CO2 cap"
                       }
                     },
                     {
@@ -728,8 +499,8 @@
                       },
                       "val": {
                         "i128": {
-                          "hi": 9223372036854775807,
-                          "lo": 18446744073709551615
+                          "hi": 0,
+                          "lo": 10000000
                         }
                       }
                     },
@@ -936,7 +707,7 @@
                         "val": {
                           "i128": {
                             "hi": 9223372036854775807,
-                            "lo": 18446744073705445888
+                            "lo": 18446744073704551615
                           }
                         }
                       },
@@ -950,21 +721,9 @@
                         },
                         "val": {
                           "i128": {
-                            "hi": 9223372036854775807,
-                            "lo": 18446744073709551615
+                            "hi": 0,
+                            "lo": 10000000
                           }
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "NftCount"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u32": 1
                         }
                       },
                       {
@@ -977,6 +736,18 @@
                         },
                         "val": {
                           "u32": 2
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
                         }
                       }
                     ]
@@ -1197,8 +968,8 @@
                       },
                       "val": {
                         "i128": {
-                          "hi": 9223372036854775807,
-                          "lo": 18446744073709551615
+                          "hi": 0,
+                          "lo": 10000000
                         }
                       }
                     },
@@ -1767,10 +1538,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "max-co2-donate"
+                  "string": "co2-cap-proj"
                 },
                 {
-                  "string": "Stress"
+                  "string": "CO2 cap"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
@@ -1801,7 +1572,7 @@
               }
             ],
             "data": {
-              "string": "max-co2-donate"
+              "string": "co2-cap-proj"
             }
           }
         }
@@ -1854,8 +1625,8 @@
                 },
                 {
                   "i128": {
-                    "hi": 9223372036854775807,
-                    "lo": 18446744073709551615
+                    "hi": 0,
+                    "lo": 10000000
                   }
                 }
               ]
@@ -1888,8 +1659,8 @@
             ],
             "data": {
               "i128": {
-                "hi": 9223372036854775807,
-                "lo": 18446744073709551615
+                "hi": 0,
+                "lo": 10000000
               }
             }
           }
@@ -1933,6 +1704,56 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
+                "symbol": "get_global_co2"
+              }
+            ],
+            "data": "void"
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_return"
+              },
+              {
+                "symbol": "get_global_co2"
+              }
+            ],
+            "data": {
+              "i128": {
+                "hi": 9223372036854775807,
+                "lo": 18446744073704551615
+              }
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": null,
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_call"
+              },
+              {
+                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
+              },
+              {
                 "symbol": "donate"
               }
             ],
@@ -1945,43 +1766,16 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                 },
                 {
-                  "string": "max-co2-donate"
+                  "string": "co2-cap-proj"
                 },
                 {
                   "i128": {
-                    "hi": 9223372036854775807,
-                    "lo": 18446744073709551615
+                    "hi": 0,
+                    "lo": 10000000
                   }
                 },
                 {
                   "u32": 0
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-        "type_": "contract",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "nft_mint"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
-              }
-            ],
-            "data": {
-              "vec": [
-                {
-                  "symbol": "EarthGuardian"
                 }
               ]
             }
@@ -2018,8 +1812,8 @@
                 },
                 {
                   "i128": {
-                    "hi": 9223372036854775807,
-                    "lo": 18446744073709551615
+                    "hi": 0,
+                    "lo": 10000000
                   }
                 }
               ]
@@ -2052,8 +1846,8 @@
             ],
             "data": {
               "i128": {
-                "hi": 9223372036854775807,
-                "lo": 18446744073709551615
+                "hi": 0,
+                "lo": 10000000
               }
             }
           }
@@ -2097,21 +1891,21 @@
                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
               },
               {
-                "string": "max-co2-donate"
+                "string": "co2-cap-proj"
               }
             ],
             "data": {
               "vec": [
                 {
                   "i128": {
-                    "hi": 9223372036854775807,
-                    "lo": 18446744073709551615
+                    "hi": 0,
+                    "lo": 10000000
                   }
                 },
                 {
                   "vec": [
                     {
-                      "symbol": "EarthGuardian"
+                      "symbol": "None"
                     }
                   ]
                 },
@@ -2161,123 +1955,6 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "get_project"
-              }
-            ],
-            "data": {
-              "string": "max-co2-donate"
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_return"
-              },
-              {
-                "symbol": "get_project"
-              }
-            ],
-            "data": {
-              "map": [
-                {
-                  "key": {
-                    "symbol": "active"
-                  },
-                  "val": {
-                    "bool": true
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "co2_per_xlm"
-                  },
-                  "val": {
-                    "u32": 10000000
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "donor_count"
-                  },
-                  "val": {
-                    "u32": 1
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "id"
-                  },
-                  "val": {
-                    "string": "max-co2-donate"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "name"
-                  },
-                  "val": {
-                    "string": "Stress"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "registered_at"
-                  },
-                  "val": {
-                    "u32": 0
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "total_raised"
-                  },
-                  "val": {
-                    "i128": {
-                      "hi": 9223372036854775807,
-                      "lo": 18446744073709551615
-                    }
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "wallet"
-                  },
-                  "val": {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
-                  }
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": null,
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_call"
-              },
-              {
-                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
-              },
-              {
                 "symbol": "get_global_co2"
               }
             ],
@@ -2305,7 +1982,156 @@
             "data": {
               "i128": {
                 "hi": 9223372036854775807,
-                "lo": 18446744073705445888
+                "lo": 18446744073704551615
+              }
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": null,
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_call"
+              },
+              {
+                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
+              },
+              {
+                "symbol": "get_global_total"
+              }
+            ],
+            "data": "void"
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_return"
+              },
+              {
+                "symbol": "get_global_total"
+              }
+            ],
+            "data": {
+              "i128": {
+                "hi": 0,
+                "lo": 10000000
+              }
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": null,
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_call"
+              },
+              {
+                "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
+              },
+              {
+                "symbol": "get_donation_count"
+              }
+            ],
+            "data": "void"
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_return"
+              },
+              {
+                "symbol": "get_donation_count"
+              }
+            ],
+            "data": {
+              "u32": 1
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": null,
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_call"
+              },
+              {
+                "bytes": "d63a954726751a876d37290072af1ee723d7d761eec3bf4191849d2116acdc73"
+              },
+              {
+                "symbol": "balance"
+              }
+            ],
+            "data": {
+              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "d63a954726751a876d37290072af1ee723d7d761eec3bf4191849d2116acdc73",
+        "type_": "diagnostic",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "fn_return"
+              },
+              {
+                "symbol": "balance"
+              }
+            ],
+            "data": {
+              "i128": {
+                "hi": 0,
+                "lo": 0
               }
             }
           }

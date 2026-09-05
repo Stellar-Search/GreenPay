@@ -4,7 +4,7 @@ This Soroban smart contract provides **on-chain transparency** for every climate
 
 ## What it does
 
-Every donation is recorded permanently on the Stellar blockchain. Anyone can query project totals, donor statistics, CO₂ offsets, and badge tiers — with no central authority controlling the data.
+Every donation is recorded permanently on Stellar. Anyone can query project totals, donor statistics, and donation badge tiers. Environmental outcomes are separate evidence-backed project claims; approved verifiers anchor their canonical SHA-256 values and revocations in this contract.
 
 ## Functions
 
@@ -18,8 +18,13 @@ Every donation is recorded permanently on the Stellar blockchain. Anyone can que
 | `get_donor_stats(donor)` | Anyone | Read donor stats + badge |
 | `get_badge(donor)` | Anyone | Get current badge tier |
 | `get_global_total()` | Anyone | Total XLM raised platform-wide |
-| `get_global_co2()` | Anyone | Total CO₂ offset in grams |
+| `get_global_co2()` | Anyone | Deprecated compatibility accumulator (new donations do not update it) |
 | `get_donation_count()` | Anyone | Total donations recorded |
+| `set_impact_verifier(admin, verifier, approved)` | Admin | Manage independent impact verifiers |
+| `anchor_impact_attestation(verifier, claim_id, hash, expires_at)` | Approved verifier | Anchor a canonical claim SHA-256 |
+| `verify_impact_attestation(claim_id, expected_hash)` | Anyone | Check hash, expiry and revocation state |
+| `revoke_impact_attestation(caller, claim_id, reason_hash)` | Verifier/admin | Permanently mark an attestation withdrawn |
+| `get_impact_attestation(claim_id)` | Anyone | Read the historical anchor and current status |
 | `set_dao_contract(admin, dao)` | Admin | Register the DAO contract for project verification (Issue #112) |
 | `get_dao_contract()` | Anyone | Get the registered DAO contract address |
 | `verify_project(caller, project_id)` | DAO contract only | Mark a project as DAO-verified; must be called via `dao-governance-contract.execute_proposal` |
@@ -94,12 +99,14 @@ stellar contract invoke \
   --project_id "amazon-001" \
   --name "Amazon Reforestation" \
   --wallet <PROJECT_WALLET> \
-  --co2_per_xlm 8500
+  --co2_per_xlm 0
 ```
 
-`co2_per_xlm` = estimated grams of CO₂ offset per XLM donated (8,500 ≈ 8.5 kg per XLM).
-Must be ≤ `MAX_CO2_PER_XLM` (10_000_000 g/XLM); values above that are rejected at registration.
-See [`SECURITY.md`](SECURITY.md#accumulator-bounds-at-max_co2_per_xlm) for formal overflow horizons.
+`co2_per_xlm` is a deprecated ABI parameter and should be `0`. It remains in
+`register_project` so deployed clients can upgrade without an incompatible
+signature change. `donate` does not read it and the compatibility
+`get_global_co2` accumulator is not updated by new donations. Publish outcome
+claims through the evidence API and anchor their canonical hashes instead.
 
 ## Storage choice for future contributors
 
@@ -108,8 +115,8 @@ pick the correct one:
 
 | Storage type | Use for | Examples |
 | --- | --- | --- |
-| **Instance** | Small, contract-wide configuration with a single shared TTL/footprint. Loaded on every invocation. | `Admin`, `ProjectCount`, `DonationCount`, `GlobalTotalRaised`, `GlobalCO2OffsetGrams`, `AllowedToken(Address)`, `NftCount` |
-| **Persistent** | Per-entity records that grow unbounded (per project/donor/proposal/token). Each key has its own TTL. | `Project(String)`, `DonorStats(Address)`, `ImpactNFT(Address, BadgeTier)`, `HasDonated(String, Address)`, `Proposal(String)`, `HasVoted(String, Address)`, `NftMeta(u32)`, `NftOwnerTokens(Address)` |
+| **Instance** | Small, contract-wide configuration with a single shared TTL/footprint. Loaded on every invocation. | `Admin`, `ProjectCount`, `DonationCount`, `GlobalTotalRaised`, deprecated `GlobalCO2OffsetGrams`, `AllowedToken(Address)`, `NftCount` |
+| **Persistent** | Per-entity records that grow unbounded (per project/donor/proposal/token/claim). Each key has its own TTL. | `Project(String)`, `DonorStats(Address)`, `ImpactNFT(Address, BadgeTier)`, `HasDonated(String, Address)`, `Proposal(String)`, `HasVoted(String, Address)`, `NftMeta(u32)`, `NftOwnerTokens(Address)`, `ImpactVerifier(Address)`, `ImpactAttestation(String)` |
 
 **Rule of thumb:** if the key contains a `String` project id or an `Address`
 donor/voter, it is per-entity and belongs in **persistent** storage. If it is a

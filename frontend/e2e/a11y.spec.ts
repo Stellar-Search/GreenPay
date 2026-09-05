@@ -55,7 +55,7 @@ async function mockApi(page: Page) {
     r.fulfill({ json: { _embedded: { records: [] }, balances: [{ asset_type: "native", balance: "500.0000000" }] } })
   );
 
-  await page.route("**/api/v1/stats/global",   (r) => r.fulfill(ok({ totalDonations: 1, totalXLMRaised: "100", totalCO2OffsetKg: 1000 })));
+  await page.route("**/api/v1/stats/global",   (r) => r.fulfill(ok({ totalDonations: 1, totalXLMRaised: "100", publishedImpactClaims: 1, verifiedImpactClaims: 0 })));
   await page.route("**/api/v1/stats/categories", (r) => r.fulfill(ok([{ category: "Reforestation", count: 1 }])));
   await page.route("**/api/v1/leaderboard**",  (r) => r.fulfill(ok([])));
   await page.route("**/api/v1/donations/**",   (r) => r.fulfill(ok([])));

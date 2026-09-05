@@ -78,12 +78,15 @@ if (!dbAvailable) {
 const TIE_TOTAL = "999999999.0000000";
 const BELOW_TIE_TOTAL = "999999998.0000000";
 
-const KEY_TIE_LOW = "G" + "1".repeat(55); // sorts before KEY_TIE_HIGH on the tie-break
-const KEY_TIE_HIGH = "G" + "2".repeat(55);
-const KEY_THIRD = "G" + "3".repeat(55);
+const { Keypair } = require("@stellar/stellar-sdk");
+const _sortedKeys = Array.from({ length: 10 }, () => Keypair.random().publicKey()).sort();
+const KEY_TIE_LOW = _sortedKeys[0]; // sorts before KEY_TIE_HIGH on the tie-break
+const KEY_TIE_HIGH = _sortedKeys[1];
+const KEY_THIRD = _sortedKeys[2];
 
-const KEY_IN_WINDOW = "G" + "4".repeat(55);
-const KEY_OUT_OF_WINDOW = "G" + "5".repeat(55);
+const KEY_IN_WINDOW = _sortedKeys[3];
+const KEY_OUT_OF_WINDOW = _sortedKeys[4];
+const KEY_OTHER = _sortedKeys[5];
 
 function makeTxHash(seed) {
   return createHash("sha256").update(seed).digest("hex");
@@ -178,7 +181,7 @@ describe("GET /api/leaderboard real-Postgres behavior", () => {
         await pool.query(
           `INSERT INTO projects (id, name, description, category, location, wallet_address, goal_xlm, raised_xlm, donor_count, status)
            VALUES ($1, 'Leaderboard Integration Test Project', 'Seeded by leaderboard.integration.test.js', 'environment', 'Test Location', $2, 1000, 0, 0, 'active')`,
-          [projectId, "G" + "9".repeat(55)]
+          [projectId, KEY_OTHER]
         );
 
         for (const key of keys) {

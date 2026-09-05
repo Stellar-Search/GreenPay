@@ -1,8 +1,8 @@
 /// fuzz_tests.rs — Property-based tests for the GreenPay Soroban contract.
 ///
 /// Uses `proptest` to drive thousands of iterations of `donate`, asserting that
-/// with `co2_per_xlm <= MAX_CO2_PER_XLM` and realistic donation sizes:
-///   - Per-donation CO₂ math never panics
+/// with legacy `co2_per_xlm` inputs and realistic donation sizes:
+///   - Donation amount and project-authored rates never create impact outcomes
 ///   - Global totals stay consistent with per-project totals
 ///   - Counters remain monotonic and non-negative
 ///
@@ -65,16 +65,12 @@ mod fuzz {
         (env, client, admin, token, token_client, project_id)
     }
 
-    fn co2_increment(amount: i128, co2_per_xlm: u32) -> i128 {
-        (amount / STROOP) * (co2_per_xlm as i128)
-    }
-
     proptest! {
         #![proptest_config(ProptestConfig::default())]
 
-        /// Realistic donation volume at a typical `co2_per_xlm` must never panic.
+        /// A legacy rate has no effect on the evidence-first impact registry.
         #[test]
-        fn prop_realistic_co2_and_amount_no_overflow(
+        fn prop_realistic_donation_never_derives_impact(
             amount in STROOP..=MAX_REALISTIC_DONATION_STROOPS,
         ) {
             let (env, client, _admin, token, token_client, project_id) =
@@ -84,15 +80,15 @@ mod fuzz {
 
             client.donate(&token, &donor, &project_id, &amount, &0u32);
 
-            let expected_co2 = co2_increment(amount, REALISTIC_CO2_PER_XLM);
             prop_assert_eq!(client.get_global_total(), amount);
-            prop_assert_eq!(client.get_global_co2(), expected_co2);
+            prop_assert_eq!(client.get_global_co2(), 0);
+            prop_assert_eq!(client.get_donor_stats(&donor).co2_offset_grams, 0);
             prop_assert_eq!(client.get_project(&project_id).total_raised, amount);
         }
 
-        /// At the enforced ceiling, realistic volumes still fit all i128 accumulators.
+        /// Even the largest accepted legacy rate creates no outcome quantity.
         #[test]
-        fn prop_max_co2_per_xlm_with_realistic_volume(
+        fn prop_max_legacy_rate_never_derives_impact(
             amount in STROOP..=MAX_REALISTIC_DONATION_STROOPS,
         ) {
             let (env, client, _admin, token, token_client, project_id) =
@@ -102,14 +98,13 @@ mod fuzz {
 
             client.donate(&token, &donor, &project_id, &amount, &0u32);
 
-            let expected_co2 = co2_increment(amount, MAX_CO2_PER_XLM);
-            prop_assert_eq!(client.get_global_co2(), expected_co2);
+            prop_assert_eq!(client.get_global_co2(), 0);
+            prop_assert_eq!(client.get_donor_stats(&donor).co2_offset_grams, 0);
         }
 
-        /// Many small donations at max `co2_per_xlm` stay within u32 donation-count
-        /// and i128 CO₂ accumulator bounds for realistic batch sizes.
+        /// Many donations still cannot manufacture a project outcome.
         #[test]
-        fn prop_many_small_donations_at_max_co2(
+        fn prop_many_donations_never_derive_impact(
             n in 1u32..=16u32,
             amount in STROOP..=(100 * STROOP),
         ) {
@@ -117,20 +112,16 @@ mod fuzz {
                 setup_with_co2(MAX_CO2_PER_XLM);
 
             let mut expected_total: i128 = 0;
-            let mut expected_co2: i128 = 0;
 
             for _ in 0..n {
                 let donor = Address::generate(&env);
                 token_client.mint(&donor, &amount);
                 client.donate(&token, &donor, &project_id, &amount, &0u32);
                 expected_total = expected_total.checked_add(amount).unwrap();
-                expected_co2 = expected_co2
-                    .checked_add(co2_increment(amount, MAX_CO2_PER_XLM))
-                    .unwrap();
             }
 
             prop_assert_eq!(client.get_global_total(), expected_total);
-            prop_assert_eq!(client.get_global_co2(), expected_co2);
+            prop_assert_eq!(client.get_global_co2(), 0);
             prop_assert_eq!(client.get_donation_count(), n);
         }
 
@@ -151,12 +142,8 @@ mod fuzz {
             client.donate(&token, &donor_b, &project_id, &b, &0u32);
 
             let expected_total = a.checked_add(b).expect("test helper overflow");
-            let expected_co2 = co2_increment(a, REALISTIC_CO2_PER_XLM)
-                .checked_add(co2_increment(b, REALISTIC_CO2_PER_XLM))
-                .unwrap();
-
             prop_assert_eq!(client.get_global_total(), expected_total);
-            prop_assert_eq!(client.get_global_co2(), expected_co2);
+            prop_assert_eq!(client.get_global_co2(), 0);
             prop_assert_eq!(client.get_project(&project_id).donor_count, 2u32);
         }
 
@@ -169,7 +156,6 @@ mod fuzz {
                 setup_with_co2(REALISTIC_CO2_PER_XLM);
 
             let mut expected_total: i128 = 0;
-            let mut expected_co2: i128 = 0;
             let mut donor_count: u32 = 0;
 
             for amount in amounts {
@@ -177,22 +163,19 @@ mod fuzz {
                 token_client.mint(&donor, &amount);
                 client.donate(&token, &donor, &project_id, &amount, &0u32);
                 expected_total = expected_total.checked_add(amount).unwrap();
-                expected_co2 = expected_co2
-                    .checked_add(co2_increment(amount, REALISTIC_CO2_PER_XLM))
-                    .unwrap();
                 donor_count += 1;
             }
 
             prop_assert_eq!(client.get_global_total(), expected_total);
-            prop_assert_eq!(client.get_global_co2(), expected_co2);
+            prop_assert_eq!(client.get_global_co2(), 0);
             prop_assert_eq!(client.get_project(&project_id).total_raised, expected_total);
             prop_assert_eq!(client.get_donation_count(), donor_count);
             prop_assert_eq!(client.get_project(&project_id).donor_count, donor_count);
         }
 
-        /// CO₂ truncation: sub-stroop remainder does not accrue CO₂.
+        /// Neither whole XLM nor a sub-stroop remainder creates an outcome.
         #[test]
-        fn prop_co2_truncates_sub_stroop_remainder(
+        fn prop_donation_amount_never_derives_co2(
             whole_xlm in 1i128..=1000i128,
             remainder in 1i128..=(STROOP - 1),
         ) {
@@ -204,8 +187,8 @@ mod fuzz {
 
             client.donate(&token, &donor, &project_id, &amount, &0u32);
 
-            let expected_co2 = whole_xlm * (REALISTIC_CO2_PER_XLM as i128);
-            prop_assert_eq!(client.get_global_co2(), expected_co2);
+            prop_assert_eq!(client.get_global_co2(), 0);
+            prop_assert_eq!(client.get_donor_stats(&donor).co2_offset_grams, 0);
         }
 
         /// Global total equals the sum of per-project totals across projects.

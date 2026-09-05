@@ -15,6 +15,10 @@ const { DonationCreateSchema } = require("../schemas/donations");
 const { stellarPublicKey } = require("../schemas/common");
 const donorKeyParamsSchema = z.object({ publicKey: stellarPublicKey });
 const { computeBadges, mapDonationRow } = require("../services/store");
+const { addressesFor } = require("../services/onboarding/accountUpgrade");
+const { assessSponsoredDonation } = require("../services/onboarding/sponsorshipPolicy");
+const { findActiveSponsorship } = require("../services/onboarding/sponsoredAccounts");
+const { env } = require("../config/env");
 // Layered: a coarse per-IP floor (so donors behind a shared NAT/carrier egress
 // don't starve each other), the real per-wallet cap, and a global cap on this
 // expensive endpoint so a distributed flood is bounded even when no single
@@ -30,6 +34,7 @@ const { execute, DonationReplayConflictError } = require("../eventSourcing/comma
 const { DonationRecordedEvent, MatchAppliedEvent } = require("../eventSourcing/events"); // 10 requests per minute
 const { logger: rootLogger } = require("../utils/logger");
 const { recordDonationOutcome } = require("../utils/metrics");
+const { queueDonationAssessment } = require("../services/donationIntegrity");
 
 const logger = rootLogger.child({ service: "donations-route" });
 
@@ -48,6 +53,65 @@ function classifyDonationFailure(err) {
   if (err.code === "DONATION_TX_CONFLICT") return "tx_conflict";
   if (err.code === "DONATION_EVENT_MISSING") return "event_missing";
   return (err.status && err.status < 500) ? "client_error" : "internal_error";
+}
+
+/**
+ * Applies the sponsored-account donation limits, and only those.
+ *
+ * This is the laundering control described in sponsorshipPolicy.js: an account
+ * the platform sponsored into existence may only pay a *verified* project, and
+ * only up to a cap. A donation from any other address takes the early return
+ * and is untouched, which is what keeps the existing flow byte-for-byte the
+ * same for donors who already had a wallet.
+ *
+ * A lookup failure is deliberately not fatal. Refusing a legitimate donation
+ * because a policy table was briefly unreadable would be a worse outcome than
+ * letting one sponsored donation through unchecked, and the caps are a
+ * defence-in-depth measure rather than the only one — the reserve limits and
+ * the verified-destination rule both still apply on-chain.
+ */
+async function enforceSponsoredDonationCap({ donorAddress, amountXLM, currency, destinationVerified }) {
+  let sponsorship;
+  try {
+    sponsorship = await findActiveSponsorship(donorAddress, pool);
+  } catch (err) {
+    logger.warn({ msg: "sponsored-account lookup failed; skipping cap", error: err.message });
+    return;
+  }
+  if (!sponsorship) return;
+
+  let lifetimeXlm = 0;
+  try {
+    const { rows } = await pool.query(
+      "SELECT COALESCE(SUM(amount), 0) AS total FROM donations WHERE donor_address = $1",
+      [donorAddress],
+    );
+    lifetimeXlm = Number.parseFloat(rows[0]?.total ?? 0) || 0;
+  } catch (err) {
+    logger.warn({ msg: "sponsored lifetime lookup failed", error: err.message });
+  }
+
+  const decision = assessSponsoredDonation(
+    {
+      amountXlm: Number.parseFloat(amountXLM ?? 0),
+      lifetimeXlm,
+      destinationVerified,
+    },
+    {
+      maxSponsoredDonationXlm: env.sponsorshipMaxDonationXlm,
+      maxSponsoredLifetimeXlm: env.sponsorshipMaxLifetimeXlm,
+    },
+  );
+
+  if (!decision.allowed) {
+    logger.warn({
+      msg: "sponsored donation refused",
+      donorAddress,
+      code: decision.code,
+      currency,
+    });
+    throw createApiError(403, decision.code, decision.message, decision.details);
+  }
 }
 
 // POST /api/donations — record a donation after on-chain tx via Event Sourcing CQRS
@@ -72,10 +136,24 @@ async function recordDonation(req, res, next) {
       transactionHash,
     });
 
-    const projectResult = await pool.query("SELECT id FROM projects WHERE id = $1", [projectId]);
+    const projectResult = await pool.query(
+      "SELECT id, verified, wallet_address FROM projects WHERE id = $1",
+      [projectId],
+    );
     if (!projectResult.rows[0]) {
       throw createApiError(404, "PROJECT_NOT_FOUND", "Project not found");
     }
+
+    // Caps apply only to accounts GreenPay brought into existence. A donor who
+    // funded their own wallet is unconstrained here exactly as before — the
+    // limit exists because the platform created the rail, not because the donor
+    // is suspect.
+    await enforceSponsoredDonationCap({
+      donorAddress,
+      amountXLM: amountXLM ?? amount,
+      currency,
+      destinationVerified: Boolean(projectResult.rows[0].verified),
+    });
 
     let result;
     try {
@@ -107,6 +185,17 @@ async function recordDonation(req, res, next) {
       }
       throw err;
     }
+
+    await queueDonationAssessment(pool, {
+      transactionHash,
+      projectId,
+      donorAddress,
+      destinationAddress: projectResult.rows[0].wallet_address,
+      amountXlm: amountXLM ?? amount,
+      observedSource: "api",
+    }).catch((error) => {
+      logger.warn({ msg: "integrity assessment enqueue failed", transactionHash, error: error.message });
+    });
 
     if (result.deduplicated) {
       logger.info({ msg: "donation deduplicated", transactionHash });
@@ -258,8 +347,13 @@ router.get("/donor/:publicKey", validate(donorKeyParamsSchema, { source: "params
     const parsedLimit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
     const cursorObj = decodeCursor(cursor);
 
-    const where = ["donor_address = $1"];
-    const values = [req.params.publicKey];
+    // A donor who upgraded from a starter account to a full wallet has history
+    // under both addresses. Donations keep the donor_address the ledger recorded
+    // — rewriting them would make the database disagree with the chain — so the
+    // merge happens here, on read.
+    const addresses = await addressesFor(req.params.publicKey, pool);
+    const where = ["donor_address = ANY($1::text[])"];
+    const values = [addresses];
 
     if (cursorObj) {
       if (cursorObj.createdAt && cursorObj.id) {

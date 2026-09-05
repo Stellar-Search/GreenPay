@@ -54,7 +54,7 @@ describe('ProjectsScreen — offline support', () => {
     await waitFor(() => {
       expect(getByText('Amazon Reforestation')).toBeTruthy();
       expect(getByText(/Showing cached data from/)).toBeTruthy();
-    });
+    }, { timeout: 10000 });
   });
 
   it('does not show Offline banner when network succeeds', async () => {

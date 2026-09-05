@@ -26,7 +26,7 @@ exports[`ImpactCertificate RTL (Arabic locale) matches snapshot under RTL 1`] = 
           <p
             class="text-forest-100 text-sm mt-2 font-body"
           >
-            This certificate recognizes climate impact achieved through on-chain donations.
+            On-chain donations, shown beside separately evidenced project outcomes.
           </p>
         </div>
         <div
@@ -87,17 +87,17 @@ exports[`ImpactCertificate RTL (Arabic locale) matches snapshot under RTL 1`] = 
           <p
             class="text-2xl mb-2"
           >
-            ♻️
+            📋
           </p>
           <p
             class="font-display font-bold text-forest-900 text-lg"
           >
-            ٢٫٤k kg CO₂
+            1
           </p>
           <p
             class="text-xs text-[#547454] mt-1 font-body uppercase tracking-wider font-bold opacity-60"
           >
-            CO₂ Offset
+            Project Outcome Claims
           </p>
         </div>
         <div
@@ -118,6 +118,112 @@ exports[`ImpactCertificate RTL (Arabic locale) matches snapshot under RTL 1`] = 
           >
             Badge Tier
           </p>
+        </div>
+      </div>
+      <div
+        class="mb-8 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950"
+      >
+        <p
+          class="font-bold"
+        >
+          No donor-level outcome attribution
+        </p>
+        <p
+          class="mt-1"
+        >
+          Project-level outcomes are not allocated to this donor.
+        </p>
+      </div>
+      <div
+        class="mb-8"
+      >
+        <h3
+          class="font-display font-bold text-forest-900 mb-3"
+        >
+          Current project outcome records
+        </h3>
+        <div
+          class="space-y-3"
+        >
+          <article
+            class="rounded-2xl border p-5 border-forest-100 bg-white"
+          >
+            <div
+              class="flex flex-wrap items-start justify-between gap-3"
+            >
+              <div>
+                <p
+                  class="text-xs font-bold uppercase tracking-wider text-forest-500"
+                >
+                  Sequestration
+                </p>
+                <p
+                  class="mt-1 font-display text-xl font-bold text-forest-900"
+                >
+                  ٨٠–١٣٠ kg CO₂e
+                </p>
+                <p
+                  class="mt-1 text-xs text-forest-600"
+                >
+                  90
+                  % confidence range
+                </p>
+              </div>
+              <span
+                class="inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-bold border-amber-300 bg-amber-50 text-amber-900"
+              >
+                Operator-stated
+              </span>
+            </div>
+            <dl
+              class="mt-4 grid gap-3 text-sm grid-cols-1"
+            >
+              <div>
+                <dt
+                  class="text-xs font-bold uppercase tracking-wide text-forest-500"
+                >
+                  Methodology
+                </dt>
+                <dd
+                  class="mt-1 text-forest-900"
+                >
+                  Forest plots v1.0
+                </dd>
+              </div>
+              <div>
+                <dt
+                  class="text-xs font-bold uppercase tracking-wide text-forest-500"
+                >
+                  Measured
+                </dt>
+                <dd
+                  class="mt-1 text-forest-900"
+                >
+                  2025-01-01 — 2025-12-31
+                </dd>
+              </div>
+            </dl>
+            <div
+              class="mt-4 border-t border-forest-100 pt-3 text-xs text-forest-600"
+            >
+              <p
+                class="font-mono break-all"
+              >
+                Claim 11111111-1111-4111-8111-111111111111
+              </p>
+              <p
+                class="mt-1"
+              >
+                No independent on-chain attestation is recorded.
+              </p>
+              <a
+                class="mt-2 inline-block font-bold text-forest-700 underline underline-offset-2"
+                href="/api/v1/impact/claims/11111111-1111-4111-8111-111111111111/verification"
+              >
+                Verify current claim and revocation status
+              </a>
+            </div>
+          </article>
         </div>
       </div>
       <div
@@ -173,7 +279,7 @@ exports[`ImpactCertificate RTL (Arabic locale) matches snapshot under RTL 1`] = 
         <p
           class="text-xs text-[#547454] font-body"
         >
-          Verified by on-chain donation history
+          Donation history is on-chain. Each outcome claim carries its own current provenance.
         </p>
       </div>
     </div>
@@ -207,7 +313,7 @@ exports[`ImpactCertificate matches snapshot 1`] = `
           <p
             class="text-forest-100 text-sm mt-2 font-body"
           >
-            This certificate recognizes climate impact achieved through on-chain donations.
+            On-chain donations, shown beside separately evidenced project outcomes.
           </p>
         </div>
         <div
@@ -268,17 +374,17 @@ exports[`ImpactCertificate matches snapshot 1`] = `
           <p
             class="text-2xl mb-2"
           >
-            ♻️
+            📋
           </p>
           <p
             class="font-display font-bold text-forest-900 text-lg"
           >
-            2.4k kg CO₂
+            1
           </p>
           <p
             class="text-xs text-[#547454] mt-1 font-body uppercase tracking-wider font-bold opacity-60"
           >
-            CO₂ Offset
+            Project Outcome Claims
           </p>
         </div>
         <div
@@ -299,6 +405,112 @@ exports[`ImpactCertificate matches snapshot 1`] = `
           >
             Badge Tier
           </p>
+        </div>
+      </div>
+      <div
+        class="mb-8 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950"
+      >
+        <p
+          class="font-bold"
+        >
+          No donor-level outcome attribution
+        </p>
+        <p
+          class="mt-1"
+        >
+          Project-level outcomes are not allocated to this donor.
+        </p>
+      </div>
+      <div
+        class="mb-8"
+      >
+        <h3
+          class="font-display font-bold text-forest-900 mb-3"
+        >
+          Current project outcome records
+        </h3>
+        <div
+          class="space-y-3"
+        >
+          <article
+            class="rounded-2xl border p-5 border-forest-100 bg-white"
+          >
+            <div
+              class="flex flex-wrap items-start justify-between gap-3"
+            >
+              <div>
+                <p
+                  class="text-xs font-bold uppercase tracking-wider text-forest-500"
+                >
+                  Sequestration
+                </p>
+                <p
+                  class="mt-1 font-display text-xl font-bold text-forest-900"
+                >
+                  80–130 kg CO₂e
+                </p>
+                <p
+                  class="mt-1 text-xs text-forest-600"
+                >
+                  90
+                  % confidence range
+                </p>
+              </div>
+              <span
+                class="inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-bold border-amber-300 bg-amber-50 text-amber-900"
+              >
+                Operator-stated
+              </span>
+            </div>
+            <dl
+              class="mt-4 grid gap-3 text-sm grid-cols-1"
+            >
+              <div>
+                <dt
+                  class="text-xs font-bold uppercase tracking-wide text-forest-500"
+                >
+                  Methodology
+                </dt>
+                <dd
+                  class="mt-1 text-forest-900"
+                >
+                  Forest plots v1.0
+                </dd>
+              </div>
+              <div>
+                <dt
+                  class="text-xs font-bold uppercase tracking-wide text-forest-500"
+                >
+                  Measured
+                </dt>
+                <dd
+                  class="mt-1 text-forest-900"
+                >
+                  2025-01-01 — 2025-12-31
+                </dd>
+              </div>
+            </dl>
+            <div
+              class="mt-4 border-t border-forest-100 pt-3 text-xs text-forest-600"
+            >
+              <p
+                class="font-mono break-all"
+              >
+                Claim 11111111-1111-4111-8111-111111111111
+              </p>
+              <p
+                class="mt-1"
+              >
+                No independent on-chain attestation is recorded.
+              </p>
+              <a
+                class="mt-2 inline-block font-bold text-forest-700 underline underline-offset-2"
+                href="/api/v1/impact/claims/11111111-1111-4111-8111-111111111111/verification"
+              >
+                Verify current claim and revocation status
+              </a>
+            </div>
+          </article>
         </div>
       </div>
       <div
@@ -354,7 +566,7 @@ exports[`ImpactCertificate matches snapshot 1`] = `
         <p
           class="text-xs text-[#547454] font-body"
         >
-          Verified by on-chain donation history
+          Donation history is on-chain. Each outcome claim carries its own current provenance.
         </p>
       </div>
     </div>

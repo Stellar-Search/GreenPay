@@ -64,6 +64,27 @@ function connect(url, options = {}) {
   });
 }
 
+/** Register for the handshake status before opening the socket. */
+async function connectWithInitialStatus(url, timeoutMs = 15000) {
+  const socket = connectClient(url, {
+    transports: ["websocket"],
+    forceNew: true,
+    autoConnect: false,
+  });
+  const statusPromise = nextEvent(socket, "realtime:status", timeoutMs);
+  const connected = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      socket.close();
+      reject(new Error(`client did not connect to ${url}`));
+    }, timeoutMs);
+    socket.on("connect", () => { clearTimeout(timer); resolve(); });
+    socket.on("connect_error", (error) => { clearTimeout(timer); reject(error); });
+  });
+  socket.connect();
+  await connected;
+  return { socket, status: await statusPromise };
+}
+
 /** Resolve with the first matching event, or reject on timeout. */
 function nextEvent(socket, name, timeoutMs = 10000) {
   return new Promise((resolve, reject) => {
@@ -284,12 +305,11 @@ describeIfRedis("cross-replica realtime delivery", () => {
       // Configured for a shared store, pointed at a port with nothing on it.
       node = await startInstance({ redisUrl: "redis://127.0.0.1:6399" });
 
-      const socket = await connect(node.url);
+      const { socket, status } = await connectWithInitialStatus(node.url);
       try {
         // The contract: a client is told the delivery scope, so it can decide to
         // fall back to polling REST instead of trusting a feed that will not
         // reach it. Silence here is what the old code did.
-        const status = await nextEvent(socket, "realtime:status", 15000);
         expect(status.degraded).toBe(true);
         expect(status.delivery).toBe("instance");
 
@@ -319,9 +339,8 @@ describeIfRedis("cross-replica realtime delivery", () => {
       node = await startInstance({ redisUrl: null });
       expect(node.mode).toBe("single-process");
 
-      const socket = await connect(node.url);
+      const { socket, status } = await connectWithInitialStatus(node.url);
       try {
-        const status = await nextEvent(socket, "realtime:status");
         // Not degraded: one process delivering to its own clients is complete
         // delivery, which is what local development is.
         expect(status.degraded).toBe(false);

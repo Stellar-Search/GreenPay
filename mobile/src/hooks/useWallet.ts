@@ -6,6 +6,7 @@ import {
   setWalletPublicKey,
   clearWalletPublicKey,
 } from '../../utils/walletKeyStorage';
+import { syncPushTokenWithWallet } from '../../utils/notifications';
 
 export function useWallet() {
   const [publicKey, setPublicKey] = useState<string | null>(null);
@@ -36,6 +37,7 @@ export function useWallet() {
     await setWalletPublicKey(trimmed);
     setPublicKey(trimmed);
     DeviceEventEmitter.emit('WALLET_CHANGED');
+    void syncPushTokenWithWallet(trimmed);
     return true;
   }, []);
 
@@ -43,6 +45,7 @@ export function useWallet() {
     await clearWalletPublicKey();
     setPublicKey(null);
     DeviceEventEmitter.emit('WALLET_CHANGED');
+    void syncPushTokenWithWallet(undefined);
   }, []);
 
   return { publicKey, loading, error, connect, disconnect };

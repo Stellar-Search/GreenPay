@@ -16,9 +16,10 @@ mod overflow_property_tests;
  *   1. Admin registers verified climate projects on-chain
  *   2. Donors call donate() — XLM sent directly to project wallet
  *   3. Contract records every donation immutably
- *   4. Anyone can query total raised, donor count, CO2 offset per project
- *   5. Impact badges auto-calculated based on cumulative donor totals
- *   6. Community governance: badge holders vote to verify new projects
+ *   4. Independent verifiers anchor hashes of evidence-backed impact claims
+ *   5. Anyone can check an attestation hash and its revocation state
+ *   6. Impact badges auto-calculated based on cumulative donor totals
+ *   7. Community governance: badge holders vote to verify new projects
  *
  * Build:
  *   cargo build --target wasm32-unknown-unknown --release
@@ -53,6 +54,7 @@ pub struct Project {
     pub id: String,
     pub name: String,
     pub wallet: Address,
+    /// Deprecated ABI field. Donations no longer derive outcomes from it.
     pub co2_per_xlm: u32,
     pub total_raised: i128,
     pub donor_count: u32,
@@ -77,6 +79,27 @@ pub struct DonorStats {
     pub donation_count: u32,
     pub badge: BadgeTier,
     pub co2_offset_grams: i128,
+}
+
+/// Hash-only on-chain record for an off-chain environmental impact claim.
+///
+/// The canonical claim payload (quantity range, unit, methodology, baseline,
+/// measurement period, asserting party and evidence hashes) remains in the
+/// public API. Storing its SHA-256 here lets a donor prove the payload has not
+/// changed since an approved verifier attested it, without putting documents
+/// or personally identifying metadata on-chain.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImpactAttestation {
+    pub claim_id: String,
+    pub attestation_hash: BytesN<32>,
+    pub verifier: Address,
+    pub anchored_at: u64,
+    pub expires_at: u64,
+    pub revoked: bool,
+    pub revoked_at: u64,
+    /// All-zero until revoked; `revoked` disambiguates that sentinel.
+    pub revocation_reason_hash: BytesN<32>,
 }
 
 #[contracttype]
@@ -107,8 +130,32 @@ pub struct VoteProposal {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MigrationState {
+    pub target_version: u32,
+    pub cursor: u32,
+    pub total_items: u32,
+    pub completed: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProjectV1 {
+    pub id: String,
+    pub name: String,
+    pub wallet: Address,
+    pub co2_per_xlm: u32,
+    pub total_raised: i128,
+    pub donor_count: u32,
+    pub active: bool,
+    pub registered_at: u32,
+}
+
+#[contracttype]
 pub enum DataKey {
     Admin,
+    Version,
+    MigrationState,
     Project(String),
     ProjectCount,
     DonorStats(Address),
@@ -135,32 +182,22 @@ pub enum DataKey {
     NftCount,
     NftMeta(u32),
     NftOwnerTokens(Address),
+    // Evidence-first impact accounting. Verifier entries and attestations are
+    // persistent per-entity records so the registry cannot inflate instance
+    // storage as it grows.
+    ImpactVerifier(Address),
+    ImpactAttestation(String),
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
+pub const CONTRACT_VERSION: u32 = 1;
 pub const STROOP: i128 = 10_000_000;
 
-/// Upper bound on admin-supplied `co2_per_xlm` (grams credited per 1 XLM).
-///
-/// # Why `STROOP`
-///
-/// For any donation amount `a: i128`, let `x = a / STROOP`. Then
-/// `x <= i128::MAX / STROOP`, so
-/// `x * MAX_CO2_PER_XLM <= i128::MAX / STROOP * STROOP <= i128::MAX`.
-/// The per-donation `checked_mul` in `donate()` therefore cannot overflow
-/// when `co2_per_xlm <= MAX_CO2_PER_XLM`.
-///
-/// Realistic project values (e.g. 8_500 g/XLM per README) sit ~1_000× below
-/// this ceiling.
-///
-/// # Accumulator overflow horizons at `MAX_CO2_PER_XLM`
-///
-/// | Accumulator | Width | First overflow (worst case) | Reachable? |
-/// | --- | --- | --- | --- |
-/// | `co2_increment` (mul) | i128 | N/A — blocked by this cap | No |
-/// | `GlobalCO2OffsetGrams` | i128 | `i128::MAX / STROOP` donations of 1 XLM (~1.7×10³¹) | No (`DonationCount` is u32) |
-/// | `GlobalCO2OffsetGrams` @ u32::MAX | i128 | `u32::MAX` donations of 1 XLM → ~4.3×10¹⁶ g | Yes, far below `i128::MAX` |
+/// Compatibility bound on the deprecated `co2_per_xlm` registration field.
+/// Evidence-first builds do not read this value in `donate`; the cap remains
+/// so an emergency rollback to an older ABI cannot encounter an unbounded
+/// administrator-supplied multiplier.
 /// | `GlobalTotalRaised` | i128 | `i128::MAX` stroops total (e.g. 1-stroop donations) | No (needs > u32::MAX txs) |
 /// | `GlobalTotalRaised` @ u32::MAX | i128 | `u32::MAX` × (`i128::MAX` / `u32::MAX`) stroops/donation | Theoretical per-invocation bound |
 /// | `DonationCount` | u32 | `u32::MAX + 1` successful donations | Yes |
@@ -469,6 +506,9 @@ impl GreenPayContract {
             panic!("Contract already initialized");
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::Version, &CONTRACT_VERSION);
         env.storage().instance().set(&DataKey::ProjectCount, &0u32);
         env.storage().instance().set(&DataKey::DonationCount, &0u32);
         env.storage()
@@ -477,6 +517,19 @@ impl GreenPayContract {
         env.storage()
             .instance()
             .set(&DataKey::GlobalCO2OffsetGrams, &0i128);
+    }
+
+    /// Exposes the contract's current schema version to off-chain consumers and scripts.
+    pub fn get_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::Version)
+            .unwrap_or(1u32)
+    }
+
+    /// Alias for get_version.
+    pub fn version(env: Env) -> u32 {
+        Self::get_version(env)
     }
 
     // ─── Token allowlist ──────────────────────────────────────────────────────
@@ -605,13 +658,6 @@ impl GreenPayContract {
             panic!("Project is not accepting donations");
         }
 
-        // Pre-compute CO2 increment with checked multiplication so an attacker
-        // can't trigger a silent wrap via a project with a huge co2_per_xlm.
-        let xlm_units = amount / STROOP;
-        let co2_increment = xlm_units
-            .checked_mul(project.co2_per_xlm as i128)
-            .expect("CO2 calculation overflow");
-
         let mut donor_stats: DonorStats =
             read_persistent(&env, &DataKey::DonorStats(donor.clone())).unwrap_or(DonorStats {
                 total_donated: 0,
@@ -646,10 +692,11 @@ impl GreenPayContract {
             .donation_count
             .checked_add(1)
             .expect("Donor donation_count overflow");
-        donor_stats.co2_offset_grams = donor_stats
-            .co2_offset_grams
-            .checked_add(co2_increment)
-            .expect("Donor co2_offset overflow");
+        // Environmental outcomes are project-level evidence claims, not a
+        // deterministic side-effect of transferring XLM. The legacy field is
+        // retained at zero for ABI compatibility; new impact is represented by
+        // ImpactAttestation records below.
+        donor_stats.co2_offset_grams = 0;
         donor_stats.badge = calculate_badge(donor_stats.total_donated);
         write_persistent(&env, &DataKey::DonorStats(donor.clone()), &donor_stats);
 
@@ -693,16 +740,6 @@ impl GreenPayContract {
         env.storage()
             .instance()
             .set(&DataKey::GlobalTotalRaised, &new_gr);
-
-        let gc: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::GlobalCO2OffsetGrams)
-            .unwrap_or(0);
-        let new_gc = gc.checked_add(co2_increment).expect("GlobalCO2 overflow");
-        env.storage()
-            .instance()
-            .set(&DataKey::GlobalCO2OffsetGrams, &new_gc);
 
         // ── Interaction: external call happens after every effect is durable.
         let token_client = token::Client::new(&env, &token);
@@ -748,6 +785,9 @@ impl GreenPayContract {
     }
 
     pub fn get_global_co2(env: Env) -> i128 {
+        // Deprecated compatibility getter. Donation-derived environmental
+        // accounting ended with the evidence-first claim model; this remains
+        // frozen at its migration value (zero on new deployments).
         env.storage()
             .instance()
             .get(&DataKey::GlobalCO2OffsetGrams)
@@ -773,6 +813,129 @@ impl GreenPayContract {
             .instance()
             .get(&DataKey::Admin)
             .expect("Not initialized")
+    }
+
+    // ─── Environmental impact attestations ─────────────────────────────────
+
+    /// Add or remove an independent verifier from the impact allowlist.
+    pub fn set_impact_verifier(env: Env, admin: Address, verifier: Address, approved: bool) {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if stored_admin != admin {
+            panic!("Only admin can manage impact verifiers");
+        }
+        let key = DataKey::ImpactVerifier(verifier.clone());
+        if approved {
+            write_persistent(&env, &key, &true);
+        } else {
+            env.storage().persistent().remove(&key);
+            env.storage().instance().remove(&key);
+        }
+        env.events()
+            .publish((symbol_short!("imp_ver"), verifier), approved);
+    }
+
+    pub fn is_impact_verifier(env: Env, verifier: Address) -> bool {
+        read_persistent(&env, &DataKey::ImpactVerifier(verifier)).unwrap_or(false)
+    }
+
+    /// Anchor the SHA-256 of a canonical claim payload.
+    ///
+    /// A claim id is immutable: corrections create a new claim id and the old
+    /// claim is revoked, so old certificates always resolve to their historical
+    /// record instead of silently changing underneath the donor.
+    pub fn anchor_impact_attestation(
+        env: Env,
+        verifier: Address,
+        claim_id: String,
+        attestation_hash: BytesN<32>,
+        expires_at: u64,
+    ) {
+        verifier.require_auth();
+        if !Self::is_impact_verifier(env.clone(), verifier.clone()) {
+            panic!("Verifier is not approved");
+        }
+        if expires_at <= env.ledger().timestamp() {
+            panic!("Attestation expiry must be in the future");
+        }
+        let key = DataKey::ImpactAttestation(claim_id.clone());
+        if has_persistent(&env, &key) {
+            panic!("Impact claim already anchored");
+        }
+        let record = ImpactAttestation {
+            claim_id: claim_id.clone(),
+            attestation_hash: attestation_hash.clone(),
+            verifier: verifier.clone(),
+            anchored_at: env.ledger().timestamp(),
+            expires_at,
+            revoked: false,
+            revoked_at: 0,
+            revocation_reason_hash: BytesN::from_array(&env, &[0u8; 32]),
+        };
+        write_persistent(&env, &key, &record);
+        env.events().publish(
+            (symbol_short!("imp_att"), verifier, claim_id),
+            (attestation_hash, expires_at),
+        );
+    }
+
+    /// Revoke a bad or withdrawn attestation without erasing its hash.
+    /// The original verifier or the contract admin may perform the revocation.
+    pub fn revoke_impact_attestation(
+        env: Env,
+        caller: Address,
+        claim_id: String,
+        reason_hash: BytesN<32>,
+    ) {
+        caller.require_auth();
+        let key = DataKey::ImpactAttestation(claim_id.clone());
+        let mut record: ImpactAttestation =
+            read_persistent(&env, &key).expect("Impact attestation not found");
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if caller != record.verifier && caller != admin {
+            panic!("Only verifier or admin can revoke attestation");
+        }
+        if record.revoked {
+            panic!("Impact attestation already revoked");
+        }
+        record.revoked = true;
+        record.revoked_at = env.ledger().timestamp();
+        record.revocation_reason_hash = reason_hash.clone();
+        write_persistent(&env, &key, &record);
+        env.events()
+            .publish((symbol_short!("imp_rev"), caller, claim_id), reason_hash);
+    }
+
+    pub fn get_impact_attestation(env: Env, claim_id: String) -> ImpactAttestation {
+        read_persistent(&env, &DataKey::ImpactAttestation(claim_id))
+            .expect("Impact attestation not found")
+    }
+
+    /// True only while the stored hash is current, unrevoked and byte-for-byte
+    /// equal to the hash independently calculated by the donor.
+    pub fn verify_impact_attestation(
+        env: Env,
+        claim_id: String,
+        expected_hash: BytesN<32>,
+    ) -> bool {
+        let record: Option<ImpactAttestation> =
+            read_persistent(&env, &DataKey::ImpactAttestation(claim_id));
+        match record {
+            Some(value) => {
+                !value.revoked
+                    && value.expires_at > env.ledger().timestamp()
+                    && value.attestation_hash == expected_hash
+            }
+            None => false,
+        }
     }
 
     // ─── Impact NFT interface ─────────────────────────────────────────────────
@@ -1248,7 +1411,7 @@ impl GreenPayContract {
         read_persistent(&env, &DataKey::Proposal(project_id)).expect("Proposal not found")
     }
 
-    // ─── Upgrade ──────────────────────────────────────────────────────────────────
+    // ─── Upgrade & Migration ──────────────────────────────────────────────────
 
     /// Replaces the contract's WASM with a new hash.
     /// Only the admin (set at `initialize`) may call this.
@@ -1267,6 +1430,113 @@ impl GreenPayContract {
             .update_current_contract_wasm(new_wasm_hash.clone());
         env.events()
             .publish((symbol_short!("upgraded"), admin), new_wasm_hash);
+    }
+
+    /// Replaces contract WASM and initializes an incremental schema migration.
+    /// Returns the number of un-migrated items remaining (0 when complete).
+    pub fn upgrade_and_migrate(
+        env: Env,
+        admin: Address,
+        new_wasm_hash: BytesN<32>,
+        new_version: u32,
+        batch_limit: u32,
+    ) -> u32 {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if stored_admin != admin {
+            panic!("Only admin can upgrade");
+        }
+        let current_v = Self::get_version(env.clone());
+        if new_version <= current_v {
+            panic!("New version must be greater than current version");
+        }
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+        env.events()
+            .publish((symbol_short!("upgraded"), admin.clone()), new_wasm_hash);
+
+        let total_projects: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProjectCount)
+            .unwrap_or(0);
+
+        let state = MigrationState {
+            target_version: new_version,
+            cursor: 0,
+            total_items: total_projects,
+            completed: total_projects == 0,
+        };
+
+        if state.completed {
+            env.storage()
+                .instance()
+                .set(&DataKey::Version, &new_version);
+            env.storage()
+                .instance()
+                .set(&DataKey::MigrationState, &state);
+            0
+        } else {
+            env.storage()
+                .instance()
+                .set(&DataKey::MigrationState, &state);
+            Self::execute_migration_batch(&env, state, batch_limit)
+        }
+    }
+
+    /// Executes the next batch of pending schema migrations.
+    /// Returns the number of un-migrated items remaining (0 when complete).
+    pub fn migrate_schema(env: Env, admin: Address, batch_limit: u32) -> u32 {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if stored_admin != admin {
+            panic!("Only admin can migrate");
+        }
+        let state: MigrationState = env
+            .storage()
+            .instance()
+            .get(&DataKey::MigrationState)
+            .expect("No pending migration");
+
+        if state.completed {
+            return 0;
+        }
+
+        Self::execute_migration_batch(&env, state, batch_limit)
+    }
+
+    /// Returns the current pending or completed migration state.
+    pub fn get_migration_state(env: Env) -> Option<MigrationState> {
+        env.storage().instance().get(&DataKey::MigrationState)
+    }
+
+    fn execute_migration_batch(env: &Env, mut state: MigrationState, batch_limit: u32) -> u32 {
+        let batch_size = if batch_limit == 0 { 1 } else { batch_limit };
+        let mut processed = 0u32;
+
+        while processed < batch_size && state.cursor < state.total_items {
+            state.cursor += 1;
+            processed += 1;
+        }
+
+        if state.cursor >= state.total_items {
+            state.completed = true;
+            env.storage()
+                .instance()
+                .set(&DataKey::Version, &state.target_version);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::MigrationState, &state);
+        state.total_items.saturating_sub(state.cursor)
     }
 }
 
@@ -1296,6 +1566,48 @@ mod tests {
         assert_eq!(client.get_project_count(), 0);
         assert_eq!(client.get_donation_count(), 0);
         assert_eq!(client.get_global_total(), 0);
+    }
+
+    #[test]
+    fn test_impact_attestation_anchor_verify_and_revoke() {
+        let (env, _cid, client, admin, _pid) = setup();
+        let verifier = Address::generate(&env);
+        let claim_id = String::from_str(&env, "claim-2026-001");
+        let attestation_hash = BytesN::from_array(&env, &[7u8; 32]);
+        let wrong_hash = BytesN::from_array(&env, &[8u8; 32]);
+        let reason_hash = BytesN::from_array(&env, &[9u8; 32]);
+        let expires_at = env.ledger().timestamp() + 86_400;
+
+        client.set_impact_verifier(&admin, &verifier, &true);
+        assert!(client.is_impact_verifier(&verifier));
+        client.anchor_impact_attestation(&verifier, &claim_id, &attestation_hash, &expires_at);
+
+        assert!(client.verify_impact_attestation(&claim_id, &attestation_hash));
+        assert!(!client.verify_impact_attestation(&claim_id, &wrong_hash));
+        let anchored = client.get_impact_attestation(&claim_id);
+        assert_eq!(anchored.claim_id, claim_id);
+        assert_eq!(anchored.attestation_hash, attestation_hash);
+        assert_eq!(anchored.verifier, verifier);
+        assert!(!anchored.revoked);
+
+        client.revoke_impact_attestation(&verifier, &claim_id, &reason_hash);
+        let revoked = client.get_impact_attestation(&claim_id);
+        assert!(revoked.revoked);
+        assert_eq!(revoked.revocation_reason_hash, reason_hash);
+        assert!(!client.verify_impact_attestation(&claim_id, &attestation_hash));
+    }
+
+    #[test]
+    #[should_panic(expected = "Verifier is not approved")]
+    fn test_unapproved_impact_verifier_cannot_anchor() {
+        let (env, _cid, client, _admin, _pid) = setup();
+        let verifier = Address::generate(&env);
+        client.anchor_impact_attestation(
+            &verifier,
+            &String::from_str(&env, "claim-unapproved"),
+            &BytesN::from_array(&env, &[1u8; 32]),
+            &(env.ledger().timestamp() + 100),
+        );
     }
 
     #[test]
@@ -1417,7 +1729,7 @@ mod tests {
     }
 
     #[test]
-    fn test_donate_at_max_co2_with_largest_amount_succeeds() {
+    fn test_donate_at_legacy_max_rate_does_not_create_impact() {
         let (env, _cid, client, admin, _pid, token, token_client) = setup_donation();
         let wallet = Address::generate(&env);
         let pid = String::from_str(&env, "max-co2-donate");
@@ -1433,9 +1745,9 @@ mod tests {
         mint_to(&env, &token_client, &donor, amount);
         client.donate(&token, &donor, &pid, &amount, &0u32);
 
-        let expected_co2 = (amount / STROOP) * (MAX_CO2_PER_XLM as i128);
         assert_eq!(client.get_project(&pid).total_raised, amount);
-        assert_eq!(client.get_global_co2(), expected_co2);
+        assert_eq!(client.get_global_co2(), 0);
+        assert_eq!(client.get_donor_stats(&donor).co2_offset_grams, 0);
     }
 
     #[test]
@@ -1451,7 +1763,8 @@ mod tests {
         assert_eq!(project.total_raised, amount);
         assert_eq!(project.donor_count, 1);
         assert_eq!(client.get_global_total(), amount);
-        assert_eq!(client.get_global_co2(), 25 * 100);
+        assert_eq!(client.get_global_co2(), 0);
+        assert_eq!(client.get_donor_stats(&donor).co2_offset_grams, 0);
         assert_eq!(client.get_donation_count(), 1);
         assert_eq!(token_balance(&env, &token, &donor), 0);
         assert_eq!(token_balance(&env, &token, &project.wallet), amount);
@@ -1538,7 +1851,7 @@ mod tests {
     }
 
     #[test]
-    fn test_donate_global_co2_overflow_rolls_back_state_and_token() {
+    fn test_donate_does_not_touch_legacy_global_co2_accumulator() {
         let (env, cid, client, admin, _pid, token, token_client) = setup_donation();
         let wallet = Address::generate(&env);
         let pid = String::from_str(&env, "co2-cap-proj");
@@ -1562,16 +1875,12 @@ mod tests {
         });
 
         let global_co2_before = client.get_global_co2();
-        let global_total_before = client.get_global_total();
-        let donor_balance_before = token_balance(&env, &token, &donor);
-
-        let result = client.try_donate(&token, &donor, &pid, &amount, &0u32);
-        assert!(result.is_err(), "donate must fail on GlobalCO2 overflow");
+        client.donate(&token, &donor, &pid, &amount, &0u32);
 
         assert_eq!(client.get_global_co2(), global_co2_before);
-        assert_eq!(client.get_global_total(), global_total_before);
-        assert_eq!(client.get_donation_count(), 0);
-        assert_eq!(token_balance(&env, &token, &donor), donor_balance_before);
+        assert_eq!(client.get_global_total(), amount);
+        assert_eq!(client.get_donation_count(), 1);
+        assert_eq!(token_balance(&env, &token, &donor), 0);
     }
 
     #[test]
@@ -1712,7 +2021,7 @@ mod tests {
             .address();
         let token_client = StellarAssetClient::new(&env, &token);
         let amount = 25 * STROOP;
-        let expected_co2 = 25 * 100i128;
+        let expected_co2 = 0i128;
 
         client_v1.allow_token(&_admin, &token);
 
@@ -2772,5 +3081,37 @@ mod tests {
         assert_eq!(client.balance_of(&donor), 0);
         assert_eq!(client.balance_of(&friend), 1);
         assert!(client.has_nft(&friend, &BadgeTier::Seedling));
+    }
+
+    #[test]
+    fn test_version_exposed_and_default_v1() {
+        let env = Env::default();
+        let cid = env.register_contract(None, GreenPayContract);
+        let client = GreenPayContractClient::new(&env, &cid);
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        assert_eq!(client.get_version(), 1);
+        assert_eq!(client.version(), 1);
+    }
+
+    #[test]
+    fn test_storage_lifetimes_instance_vs_persistent() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let cid = env.register_contract(None, GreenPayContract);
+        let client = GreenPayContractClient::new(&env, &cid);
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        let p1 = String::from_str(&env, "proj-ttl-1");
+        let w = Address::generate(&env);
+        client.register_project(&admin, &p1, &String::from_str(&env, "P TTL"), &w, &10);
+
+        // Verify version key lives in instance storage, project in persistent
+        env.as_contract(&cid, || {
+            assert!(env.storage().instance().has(&DataKey::Version));
+            assert!(env.storage().persistent().has(&DataKey::Project(p1)));
+        });
     }
 }

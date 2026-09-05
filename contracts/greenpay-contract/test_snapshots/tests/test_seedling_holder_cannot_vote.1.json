@@ -455,6 +455,18 @@
                         "val": {
                           "u32": 1
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -827,7 +839,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Insufficient donation stake to vote (Tree tier / 100 XLM minimum)' from contract function 'Symbol(obj#177)'"
+                  "string": "caught panic 'Insufficient donation stake to vote (Tree tier / 100 XLM minimum)' from contract function 'Symbol(obj#183)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"

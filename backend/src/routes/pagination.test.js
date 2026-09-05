@@ -8,6 +8,9 @@ const { decodeCursor } = require("../utils/pagination");
 jest.mock("../db/pool", () => ({
   query: jest.fn(),
 }));
+jest.mock("../services/donationIntegrity", () => ({
+  queueDonationAssessment: jest.fn().mockResolvedValue({}),
+}));
 
 const pool = require("../db/pool");
 

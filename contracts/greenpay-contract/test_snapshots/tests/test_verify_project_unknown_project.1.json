@@ -283,6 +283,18 @@
                         "val": {
                           "u32": 1
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -642,7 +654,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Project not found' from contract function 'Symbol(obj#141)'"
+                  "string": "caught panic 'Project not found' from contract function 'Symbol(obj#147)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"

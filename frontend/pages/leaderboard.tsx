@@ -25,13 +25,13 @@ export default function LeaderboardPage() {
           Top Climate Donors
         </h1>
         <p className="text-[#4b654b] max-w-xl mx-auto font-body leading-relaxed">
-          Celebrating the community members who are driving the most impact. Every XLM donated is recorded permanently on the Stellar blockchain.
+          Ranked only by XLM donated, which is recorded on Stellar. Project outcome claims are separate evidence records and are not allocated to donors on this leaderboard.
         </p>
       </div>
 
       {/* Badge legend */}
       <div className="card mb-8 bg-forest-50 border-forest-200">
-        <p className="font-display font-semibold text-forest-900 mb-3 text-center">Impact Badge Tiers</p>
+        <p className="font-display font-semibold text-forest-900 mb-3 text-center">Donation Badge Tiers</p>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
           {[
             { emoji: "🌱", name: "Seedling",       req: "10+ XLM" },

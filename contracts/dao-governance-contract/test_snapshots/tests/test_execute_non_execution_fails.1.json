@@ -811,6 +811,18 @@
                             "lo": 500000
                           }
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -1999,7 +2011,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'proposal not executable' from contract function 'Symbol(obj#553)'"
+                  "string": "caught panic 'proposal not executable' from contract function 'Symbol(obj#563)'"
                 },
                 {
                   "u64": 1

@@ -6,7 +6,7 @@ import { useRouter } from "next/router";
 import Link from "next/link";
 import CircularProgress from "@/components/CircularProgress";
 import { fetchProject } from "@/lib/api";
-import { formatXLM, formatCO2, progressPercent } from "@/utils/format";
+import { formatXLM, progressPercent } from "@/utils/format";
 import type { ClimateProject } from "@/utils/types";
 import { useI18n } from "@/lib/i18n";
 import ContentLanguageNotice from "@/components/ContentLanguageNotice";
@@ -91,8 +91,8 @@ export default function WidgetPage() {
               <p className={`text-lg font-bold ${textClass}`}>{project.donorCount}</p>
             </div>
             <div className={`p-2 rounded bg-opacity-10 bg-emerald-600`}>
-              <p className={`text-xs ${secondaryClass} font-semibold`}>CO₂ Offset</p>
-              <p className={`text-lg font-bold ${textClass}`}>{formatCO2(project.co2OffsetKg)}</p>
+              <p className={`text-xs ${secondaryClass} font-semibold`}>Outcome evidence</p>
+              <p className={`text-sm font-bold ${textClass}`}>View claims →</p>
             </div>
           </div>
 

@@ -9,6 +9,7 @@
     "./locales/*": "./locales/*"
   },
   "dependencies": {
+    "@stellar/stellar-sdk": "^12.0.0",
     "intl-messageformat": "^11.2.14"
   },
   "peerDependencies": {

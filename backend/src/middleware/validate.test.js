@@ -11,8 +11,11 @@ const { apiEnvelope, errorHandler } = require("./apiEnvelope");
 const { DonationCreateSchema } = require("../schemas/donations");
 const { stellarPublicKey } = require("../schemas/common");
 
+const { Keypair } = require("@stellar/stellar-sdk");
+const _keys = Array.from({ length: 26 }, () => Keypair.random().publicKey());
 function makeKey(char = "A") {
-  return `G${char.repeat(55)}`;
+  const index = Math.abs(char.charCodeAt(0) - 65) % 26;
+  return _keys[index];
 }
 function makeTx(char = "a") {
   return char.repeat(64);

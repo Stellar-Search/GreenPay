@@ -3,7 +3,7 @@
  */
 import Link from "next/link";
 import type { ClimateProject } from "@/utils/types";
-import { formatXLM, formatUSDEquivalent, formatCO2, progressPercent, statusClass, statusLabel, CATEGORY_ICONS, timeAgo } from "@/utils/format";
+import { formatXLM, formatUSDEquivalent, progressPercent, statusClass, statusLabel, CATEGORY_ICONS, timeAgo } from "@/utils/format";
 import CircularProgress from "./CircularProgress";
 import { useXlmPriceInfo } from "@/lib/priceContext";
 import { useWishlist } from "@/hooks/useWishlist";
@@ -116,28 +116,7 @@ export default function ProjectCard({ project }: { project: ClimateProject }) {
           <div className="flex items-center justify-between pt-3 border-t border-[rgba(34,114,57,0.07)]">
             <div className="flex items-center gap-3 text-xs text-[#4b654b] font-body">
               <span>👥 {t("project.donorsCount", { count: project.donorCount })}</span>
-              <span className="flex items-center gap-1">
-                ♻️ {formatCO2(project.co2OffsetKg, localeTag)}
-                <span
-                  className="tooltip"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    e.preventDefault();
-                  }}
-                >
-                  <button
-                    type="button"
-                    className="w-3.5 h-3.5 flex items-center justify-center rounded-full bg-forest-100 text-[8px] text-forest-600 border border-forest-200 hover:bg-forest-200 transition-colors focus:outline-none focus:ring-1 focus:ring-forest-400"
-                    aria-label="CO2 offset estimate methodology info"
-                  >
-                    ℹ️
-                  </button>
-                  <span className="tooltip-text" role="tooltip">
-                    Estimated CO₂ offset based on this project&apos;s declared impact
-                    rate per XLM donated. Actual results may vary.
-                  </span>
-                </span>
-              </span>
+              <span>📋 Evidence &amp; outcome claims on project page</span>
             </div>
             <span className="text-xs font-semibold text-forest-600 font-body group-hover:text-forest-700">
               Donate →

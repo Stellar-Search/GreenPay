@@ -19,8 +19,11 @@ const { execute, loadAggregateStream } = require("./commandBus");
 const { RecordDonationCommand } = require("./commands");
 const { ProjectAggregate, DonorAggregate } = require("./aggregates");
 
+const { Keypair } = require("@stellar/stellar-sdk");
+const _keys = Array.from({ length: 26 }, () => Keypair.random().publicKey());
 function makePublicKey(char = "A") {
-  return `G${char.repeat(55)}`;
+  const index = Math.abs(char.charCodeAt(0) - 65) % 26;
+  return _keys[index];
 }
 
 function makeTxHash(char = "a") {

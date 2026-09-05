@@ -3,10 +3,11 @@ import { useRouter } from "next/router";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import WalletConnect from "@/components/WalletConnect";
-import { createProjectUpdate, createProjectVerificationApplication, csrfFetch, fetchProject, fetchProjectDonations, fetchProjectMatches, fetchProjectVerification, isAdminAuthenticated, parseApiFetchResponse, recordProjectVerificationDecision, requestProjectVerificationChallenge, submitProjectVerificationWalletProof, updateProjectStatus, updateProjectVerificationApplicationStatus } from "@/lib/api";
+import { API_CLIENT_HEADERS, createProjectUpdate, createProjectVerificationApplication, csrfFetch, fetchImpactProject, fetchProject, fetchProjectDonations, fetchProjectMatches, fetchProjectVerification, isAdminAuthenticated, parseApiFetchResponse, recordProjectVerificationDecision, requestProjectVerificationChallenge, submitProjectVerificationWalletProof, updateProjectStatus, updateProjectVerificationApplicationStatus } from "@/lib/api";
+import type { ImpactProjectStats } from "@/lib/api";
 import { buildMilestoneTransaction, submitTransaction } from "@/lib/stellar";
 import { useDonationSocket } from "@/hooks/useDonationSocket";
-import { formatCO2, formatXLM, shortenAddress, timeAgo } from "@/utils/format";
+import { formatXLM, shortenAddress, timeAgo } from "@/utils/format";
 import { useI18n } from "@/lib/i18n";
 import type { ClimateProject, Donation, ProjectVerificationStatus, ProjectVerificationStatusResponse } from "@/utils/types";
 
@@ -50,6 +51,7 @@ export default function ProjectAdmin({ publicKey, onConnect }: AdminProps) {
   const { projectId } = router.query;
 
   const [project, setProject] = useState<ClimateProject | null>(null);
+  const [projectImpact, setProjectImpact] = useState<ImpactProjectStats | null>(null);
   const [donations, setDonations] = useState<Donation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -97,12 +99,16 @@ export default function ProjectAdmin({ publicKey, onConnect }: AdminProps) {
     Promise.all([
       fetchProject(projectId),
       fetchProjectDonations(projectId, 200).then((r) => r.donations),
-      fetch(`${process.env.NEXT_PUBLIC_API_URL || ""}/api/v1/projects/${projectId}/milestones`).then(r => r.json()),
+      fetch(`${process.env.NEXT_PUBLIC_API_URL || ""}/api/v1/projects/${projectId}/milestones`, {
+        headers: API_CLIENT_HEADERS,
+      }).then(r => r.json()),
       fetchProjectMatches(projectId).catch(() => []),
       fetchProjectVerification(projectId).catch(() => null),
+      fetchImpactProject(projectId).catch(() => null),
     ])
-      .then(([p, d, m, mt, verificationStatus]) => {
+      .then(([p, d, m, mt, verificationStatus, impact]) => {
         setProject(p);
+        setProjectImpact(impact);
         setDonations(d);
         setMilestones(m.data || []);
         setMatches(mt);
@@ -493,7 +499,7 @@ export default function ProjectAdmin({ publicKey, onConnect }: AdminProps) {
         {[
           { icon: "💚", label: "Total Raised", value: formatXLM(project.raisedXLM, 2, localeTag) },
           { icon: "👥", label: "Donors", value: String(project.donorCount) },
-          { icon: "♻️", label: "CO₂ Offset", value: formatCO2(project.co2OffsetKg) },
+          { icon: "📋", label: "Outcome Claims", value: `${projectImpact?.claimSummary.total ?? 0} (${projectImpact?.claimSummary.verified ?? 0} verified)` },
           { icon: "🧾", label: "Recent Donations", value: String(donations.length) },
         ].map((stat) => (
           <div key={stat.label} className="card text-center shadow-sm border border-forest-100/50">
