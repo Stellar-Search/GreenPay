@@ -320,6 +320,25 @@ func (p *MLWorkloadPreemption) PostFilter(
 
 	if bestCost != nil {
 		logger.V(3).Info("MLWorkloadPreemption: found node for preemption", "pod", klog.KObj(pod), "nominatedNode", bestCost.nodeName, "victims", bestCost.victimCount, "highestPriority", bestCost.highestPriority, "sumPriorities", bestCost.sumPriorities)
+
+		// Evict selected victim pods so the preemptor can be scheduled.
+		if p.handle != nil {
+			for _, victim := range bestCost.victims {
+				eviction := &policyv1.Eviction{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      victim.Name,
+						Namespace: victim.Namespace,
+					},
+				}
+				err := p.handle.ClientSet().CoreV1().Pods(victim.Namespace).EvictV1(ctx, eviction)
+				if err != nil {
+					logger.V(2).Info("MLWorkloadPreemption: failed to evict victim pod", "victim", klog.KObj(victim), "err", err)
+				} else {
+					logger.V(3).Info("MLWorkloadPreemption: evicted victim pod", "victim", klog.KObj(victim))
+				}
+			}
+		}
+
 		return framework.NewPostFilterResultWithNominatedNode(bestCost.nodeName), framework.NewStatus(framework.Success)
 	}
 

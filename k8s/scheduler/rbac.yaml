@@ -6,6 +6,7 @@
 #   - Write access to Events (to record scheduling decisions).
 #   - Lease permissions (leader-election when running HA replicas).
 #   - Binding/StatusUpdate on Pods (to actually assign pods to nodes).
+#   - Eviction/Delete on Pods (to evict lower-priority victims during preemption).
 #
 # We use a dedicated ServiceAccount + ClusterRole rather than re-using the
 # system:kube-scheduler role so permissions are explicit and auditable.
@@ -38,6 +39,14 @@ rules:
   - apiGroups: [""]
     resources: ["pods/binding"]
     verbs: ["create"]
+  # Pod eviction — required by the preemption plugin to evict lower-priority victims.
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
+  # Pod deletion — fallback eviction mechanism via direct delete.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
   # Pod status updates — required by the scheduling framework for pod conditions.
   - apiGroups: [""]
     resources: ["pods/status"]
