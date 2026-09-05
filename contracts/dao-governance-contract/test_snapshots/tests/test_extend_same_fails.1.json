@@ -489,6 +489,18 @@
                             "lo": 5000
                           }
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -1464,7 +1476,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'new unlock must be later' from contract function 'Symbol(obj#365)'"
+                  "string": "caught panic 'new unlock must be later' from contract function 'Symbol(obj#369)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"

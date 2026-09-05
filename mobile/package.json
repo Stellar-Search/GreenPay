@@ -17,6 +17,8 @@
     "@stellar/stellar-sdk": "^12.0.0",
     "axios": "^1.7.0",
     "expo": "~51.0.0",
+    "expo-constants": "~16.0.0",
+    "expo-updates": "~0.25.0",
     "expo-barcode-scanner": "~13.0.1",
     "expo-font": "^57.0.1",
     "expo-linking": "~6.3.0",
@@ -27,6 +29,7 @@
     "expo-sharing": "~12.0.0",
     "expo-splash-screen": "^57.0.7",
     "expo-status-bar": "~1.12.0",
+    "@sentry/react-native": "^5.22.0",
     "jail-monkey": "^2.8.5",
     "react": "18.2.0",
     "react-native": "0.74.1",
@@ -60,7 +63,10 @@
     "moduleNameMapper": {
       "^axios$": "<rootDir>/__mocks__/axios.js",
       "^expo-local-authentication$": "<rootDir>/__mocks__/expo-local-authentication.js",
-      "^expo-barcode-scanner$": "<rootDir>/__mocks__/expo-barcode-scanner.js"
+      "^expo-barcode-scanner$": "<rootDir>/__mocks__/expo-barcode-scanner.js",
+      "^@sentry/react-native$": "<rootDir>/__mocks__/@sentry/react-native.js",
+      "^expo-updates$": "<rootDir>/__mocks__/expo-updates.js",
+      "^expo-constants$": "<rootDir>/__mocks__/expo-constants.js"
     }
   }
 }

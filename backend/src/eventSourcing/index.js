@@ -2,7 +2,7 @@
 
 const pool = require("../db/pool");
 const { eventStore } = require("./eventStore");
-const { runLegacyMigration, rebuildReadModels, normalizeDoublePrefixedStreamIds } = require("./migrate");
+const { runLegacyMigration, rebuildReadModels, normalizeDoublePrefixedStreamIds, replayUnprojectedMigratedEvents } = require("./migrate");
 
 async function initializeEventSourcing() {
   console.log("[EventSourcing] Initializing...");
@@ -16,6 +16,9 @@ async function initializeEventSourcing() {
   // the legacy migration below, or the live write path) are added.
   const normalizationResult = await normalizeDoublePrefixedStreamIds();
   console.log(`[EventSourcing] Stream id normalization: ${JSON.stringify(normalizationResult)}`);
+
+  const replayResult = await replayUnprojectedMigratedEvents();
+  console.log(`[EventSourcing] Migrated donation replay: ${JSON.stringify(replayResult)}`);
 
   const migrationResult = await runLegacyMigration();
   console.log(`[EventSourcing] Legacy migration: ${JSON.stringify(migrationResult)}`);

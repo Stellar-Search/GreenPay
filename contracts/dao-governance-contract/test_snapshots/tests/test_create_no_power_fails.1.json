@@ -313,6 +313,18 @@
                             "lo": 0
                           }
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -945,7 +957,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'insufficient voting power to propose' from contract function 'Symbol(obj#231)'"
+                  "string": "caught panic 'insufficient voting power to propose' from contract function 'Symbol(obj#237)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"

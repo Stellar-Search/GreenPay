@@ -116,8 +116,19 @@ pub struct LockCheckpoint {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MigrationState {
+    pub target_version: u32,
+    pub cursor: u32,
+    pub total_items: u64,
+    pub completed: bool,
+}
+
+#[contracttype]
 pub enum DataKey {
     Config,
+    Version,
+    MigrationState,
     Lock(Address),
     Proposal(u64),
     Snapshot(u64, Address),
@@ -133,6 +144,8 @@ pub enum DataKey {
     /// proportional quorum so it never requires iterating over lockers.
     TotalLocked,
 }
+
+pub const CONTRACT_VERSION: u32 = 1;
 
 // ─── Contract ────────────────────────────────────────────────────────────────
 
@@ -171,12 +184,28 @@ impl DaoGovernanceContract {
             dao_admin,
         };
         env.storage().instance().set(&DataKey::Config, &config);
+        env.storage()
+            .instance()
+            .set(&DataKey::Version, &CONTRACT_VERSION);
         env.storage().instance().set(&DataKey::ProposalCount, &0u64);
         env.storage().instance().set(&DataKey::TotalLocked, &0i128);
         env.storage()
             .instance()
             .extend_ttl(MIN_VOTING_WINDOW, MAX_LOCK_LEDGERS);
         env.events().publish((Symbol::new(&env, "init"),), config);
+    }
+
+    /// Exposes the contract's current schema version to off-chain consumers and governance tools.
+    pub fn get_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::Version)
+            .unwrap_or(1u32)
+    }
+
+    /// Alias for get_version.
+    pub fn version(env: Env) -> u32 {
+        Self::get_version(env)
     }
 
     pub fn get_config(env: Env) -> Config {
@@ -791,7 +820,7 @@ impl DaoGovernanceContract {
             .publish((Symbol::new(&env, "executed"), proposal_id), ());
     }
 
-    // ─── Requirement 11: On-Chain Upgrade ──────────────────────────────────────
+    // ─── Requirement 11: On-Chain Upgrade & Schema Migration ───────────────────
 
     /// Replaces the contract's WASM with a new hash.
     /// Only the `dao_admin` (set at `initialize`) may call this.
@@ -811,6 +840,119 @@ impl DaoGovernanceContract {
             .update_current_contract_wasm(new_wasm_hash.clone());
         env.events()
             .publish((Symbol::new(&env, "upgraded"), caller), new_wasm_hash);
+    }
+
+    /// Replaces contract WASM and initiates an incremental schema migration.
+    /// Returns the number of un-migrated items remaining (0 when complete).
+    pub fn upgrade_and_migrate(
+        env: Env,
+        caller: Address,
+        new_wasm_hash: BytesN<32>,
+        new_version: u32,
+        batch_limit: u32,
+    ) -> u64 {
+        caller.require_auth();
+        let config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .expect("not initialized");
+        if caller != config.dao_admin {
+            panic!("only dao_admin can upgrade");
+        }
+        let current_v = Self::get_version(env.clone());
+        if new_version <= current_v {
+            panic!("new version must be greater than current version");
+        }
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+        env.events().publish(
+            (Symbol::new(&env, "upgraded"), caller.clone()),
+            new_wasm_hash,
+        );
+
+        let total_proposals: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProposalCount)
+            .unwrap_or(0);
+
+        let state = MigrationState {
+            target_version: new_version,
+            cursor: 0,
+            total_items: total_proposals,
+            completed: total_proposals == 0,
+        };
+
+        if state.completed {
+            env.storage()
+                .instance()
+                .set(&DataKey::Version, &new_version);
+            env.storage()
+                .instance()
+                .set(&DataKey::MigrationState, &state);
+            0
+        } else {
+            env.storage()
+                .instance()
+                .set(&DataKey::MigrationState, &state);
+            Self::execute_migration_batch(&env, state, batch_limit)
+        }
+    }
+
+    /// Executes the next batch of pending schema migrations.
+    /// Returns the number of un-migrated items remaining (0 when complete).
+    pub fn migrate_schema(env: Env, caller: Address, batch_limit: u32) -> u64 {
+        caller.require_auth();
+        let config: Config = env
+            .storage()
+            .instance()
+            .get(&DataKey::Config)
+            .expect("not initialized");
+        if caller != config.dao_admin {
+            panic!("only dao_admin can migrate");
+        }
+        let state: MigrationState = env
+            .storage()
+            .instance()
+            .get(&DataKey::MigrationState)
+            .expect("no pending migration");
+
+        if state.completed {
+            return 0;
+        }
+
+        Self::execute_migration_batch(&env, state, batch_limit)
+    }
+
+    /// Returns the current pending or completed migration state.
+    pub fn get_migration_state(env: Env) -> Option<MigrationState> {
+        env.storage().instance().get(&DataKey::MigrationState)
+    }
+
+    fn execute_migration_batch(env: &Env, mut state: MigrationState, batch_limit: u32) -> u64 {
+        let batch_size = if batch_limit == 0 {
+            1
+        } else {
+            batch_limit as u64
+        };
+        let mut processed = 0u64;
+
+        while processed < batch_size && (state.cursor as u64) < state.total_items {
+            state.cursor += 1;
+            processed += 1;
+        }
+
+        if (state.cursor as u64) >= state.total_items {
+            state.completed = true;
+            env.storage()
+                .instance()
+                .set(&DataKey::Version, &state.target_version);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::MigrationState, &state);
+        state.total_items.saturating_sub(state.cursor as u64)
     }
 
     // ─── Requirement 12: DAO-Governed Config Update ───────────────────────────
@@ -2527,5 +2669,25 @@ mod tests {
         env.ledger().set_sequence_number(p.executable_from_ledger);
         client.execute_proposal(&pid);
         assert_eq!(client.get_proposal(&pid).stage, ProposalStage::Executed);
+    }
+
+    #[test]
+    fn test_version_exposed_and_default_v1() {
+        let env = Env::default();
+        let (_cid, _cfg, client) = deploy(&env);
+        assert_eq!(client.get_version(), 1);
+        assert_eq!(client.version(), 1);
+    }
+
+    #[test]
+    fn test_storage_lifetimes_and_version_key() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (cid, _cfg, client) = deploy(&env);
+        assert_eq!(client.get_version(), 1);
+
+        env.as_contract(&cid, || {
+            assert!(env.storage().instance().has(&DataKey::Version));
+        });
     }
 }

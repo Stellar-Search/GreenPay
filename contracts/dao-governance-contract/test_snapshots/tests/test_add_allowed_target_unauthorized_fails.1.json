@@ -203,6 +203,18 @@
                             "lo": 0
                           }
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -651,7 +663,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'not authorised to modify allowlist' from contract function 'Symbol(obj#141)'"
+                  "string": "caught panic 'not authorised to modify allowlist' from contract function 'Symbol(obj#143)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"

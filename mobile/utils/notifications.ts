@@ -1,20 +1,28 @@
 /**
  * utils/notifications.ts
- * Push notification setup and helpers
+ * Push notification setup, permissions, channels, and token lifecycle helpers.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
-import { AppState, Platform } from 'react-native';
+import { AppState, Linking, Platform } from 'react-native';
 import { apiFetch, parseApiFetchResponse } from './api';
 
-const PENDING_REGISTRATION_KEY = 'greenpay:pendingPushRegistration';
+export const PENDING_REGISTRATION_KEY = 'greenpay:pendingPushRegistration';
+export const STORED_PUSH_TOKEN_KEY = 'greenpay:storedPushToken';
 
-type PendingRegistration = {
+export type PendingRegistration = {
   token: string;
   walletAddress?: string;
 };
 
-// Configure notification behavior
+export interface NotificationPermissionResult {
+  granted: boolean;
+  status: Notifications.PermissionStatus | 'granted' | 'denied' | 'undetermined';
+  canAskAgain: boolean;
+  needsSettings: boolean;
+}
+
+// Configure notification behavior for foreground presentation
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
@@ -23,18 +31,64 @@ Notifications.setNotificationHandler({
   }),
 });
 
-async function savePendingRegistration(token: string, walletAddress?: string) {
+/**
+ * Set up the Android notification channel before any notification arrives.
+ * Required on Android 8.0+ (API 26+) for notification display settings to take effect.
+ */
+export async function setupNotificationChannel(): Promise<void> {
+  if (Platform.OS === 'android') {
+    try {
+      await Notifications.setNotificationChannelAsync('default', {
+        name: 'Default',
+        importance: Notifications.AndroidImportance.HIGH,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: '#227239',
+        sound: 'default',
+        enableLights: true,
+        enableVibrate: true,
+      });
+    } catch (error) {
+      console.warn('Failed to set up Android notification channel:', error);
+    }
+  }
+}
+
+export async function getStoredPushToken(): Promise<string | null> {
+  try {
+    return await AsyncStorage.getItem(STORED_PUSH_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export async function saveStoredPushToken(token: string): Promise<void> {
+  try {
+    await AsyncStorage.setItem(STORED_PUSH_TOKEN_KEY, token);
+  } catch (error) {
+    console.error('Error saving stored push token:', error);
+  }
+}
+
+export async function clearStoredPushToken(): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(STORED_PUSH_TOKEN_KEY);
+  } catch (error) {
+    console.error('Error clearing stored push token:', error);
+  }
+}
+
+export async function savePendingRegistration(token: string, walletAddress?: string) {
   await AsyncStorage.setItem(
     PENDING_REGISTRATION_KEY,
     JSON.stringify({ token, walletAddress })
   );
 }
 
-async function clearPendingRegistration() {
+export async function clearPendingRegistration() {
   await AsyncStorage.removeItem(PENDING_REGISTRATION_KEY);
 }
 
-async function retryPendingRegistration() {
+export async function retryPendingRegistration(): Promise<void> {
   const pendingRegistration = await AsyncStorage.getItem(PENDING_REGISTRATION_KEY);
   if (!pendingRegistration) return;
 
@@ -68,13 +122,38 @@ async function postJson(path: string, body: Record<string, unknown>): Promise<bo
 }
 
 /**
+ * Check current notification permission status without prompting.
+ */
+export async function checkNotificationPermissions(): Promise<NotificationPermissionResult> {
+  try {
+    const result = await Notifications.getPermissionsAsync();
+    const granted = result.status === 'granted';
+    const canAskAgain = result.canAskAgain ?? true;
+    return {
+      granted,
+      status: result.status,
+      canAskAgain,
+      needsSettings: !granted && !canAskAgain,
+    };
+  } catch (error) {
+    console.error('Error checking notification permissions:', error);
+    return {
+      granted: false,
+      status: 'undetermined' as any,
+      canAskAgain: true,
+      needsSettings: false,
+    };
+  }
+}
+
+/**
  * Request notification permissions
  */
 export async function requestNotificationPermissions(): Promise<string | null> {
-  const { status: existingStatus } = await Notifications.getPermissionsAsync();
+  const { status: existingStatus, canAskAgain } = await Notifications.getPermissionsAsync();
   let finalStatus = existingStatus;
   
-  if (existingStatus !== 'granted') {
+  if (existingStatus !== 'granted' && canAskAgain !== false) {
     const { status } = await Notifications.requestPermissionsAsync();
     finalStatus = status;
   }
@@ -88,18 +167,81 @@ export async function requestNotificationPermissions(): Promise<string | null> {
 }
 
 /**
- * Get the device's push token
+ * Request notification permissions on explicit user intent with rationale.
+ * Returns structured result indicating whether settings need to be opened for recoverable denial.
+ */
+export async function requestNotificationPermissionsWithRationale(
+  _rationale?: string
+): Promise<NotificationPermissionResult> {
+  try {
+    await setupNotificationChannel();
+    const current = await Notifications.getPermissionsAsync();
+    if (current.status === 'granted') {
+      return {
+        granted: true,
+        status: current.status,
+        canAskAgain: current.canAskAgain ?? true,
+        needsSettings: false,
+      };
+    }
+
+    if (current.canAskAgain === false) {
+      return {
+        granted: false,
+        status: current.status,
+        canAskAgain: false,
+        needsSettings: true,
+      };
+    }
+
+    const requested = await Notifications.requestPermissionsAsync();
+    const granted = requested.status === 'granted';
+    return {
+      granted,
+      status: requested.status,
+      canAskAgain: requested.canAskAgain ?? true,
+      needsSettings: !granted && requested.canAskAgain === false,
+    };
+  } catch (error) {
+    console.error('Error requesting notification permissions with rationale:', error);
+    return {
+      granted: false,
+      status: 'denied' as any,
+      canAskAgain: false,
+      needsSettings: false,
+    };
+  }
+}
+
+/**
+ * Direct the user to the device app settings screen to recover from denied permissions.
+ */
+export async function openNotificationSettings(): Promise<void> {
+  try {
+    await Linking.openSettings();
+  } catch (error) {
+    console.error('Error opening notification settings:', error);
+  }
+}
+
+/**
+ * Get the device's push token and save it locally.
  */
 export async function getPushToken(): Promise<string | null> {
   try {
+    await setupNotificationChannel();
     const permissionStatus = await requestNotificationPermissions();
     if (!permissionStatus) return null;
     
-    const token = await Notifications.getExpoPushTokenAsync({
+    const tokenResult = await Notifications.getExpoPushTokenAsync({
       projectId: process.env.EXPO_PUBLIC_PROJECT_ID || '',
     });
     
-    return token.data;
+    const token = tokenResult?.data;
+    if (token) {
+      await saveStoredPushToken(token);
+    }
+    return token ?? null;
   } catch (error) {
     console.error('Error getting push token:', error);
     return null;
@@ -107,7 +249,7 @@ export async function getPushToken(): Promise<string | null> {
 }
 
 /**
- * Register device token with backend
+ * Register device token with backend and link to walletAddress if provided.
  */
 export async function registerDeviceToken(
   token: string,
@@ -119,7 +261,7 @@ export async function registerDeviceToken(
     const registered = await postJson('/api/notifications/register', {
       token,
       platform,
-      walletAddress,
+      walletAddress: walletAddress || null,
     });
 
     if (!registered) {
@@ -127,6 +269,7 @@ export async function registerDeviceToken(
       return false;
     }
 
+    await saveStoredPushToken(token);
     await clearPendingRegistration();
     console.log('Device token registered successfully');
     return true;
@@ -135,6 +278,58 @@ export async function registerDeviceToken(
     await savePendingRegistration(token, walletAddress);
     return false;
   }
+}
+
+/**
+ * Synchronize the active push token with a newly connected or disconnected wallet.
+ * Passing undefined/null as walletAddress disassociates the device token from any wallet.
+ */
+export async function syncPushTokenWithWallet(
+  walletAddress?: string | null
+): Promise<boolean> {
+  const storedToken = await getStoredPushToken();
+  if (!storedToken) {
+    const pending = await AsyncStorage.getItem(PENDING_REGISTRATION_KEY);
+    if (pending) {
+      try {
+        const parsed = JSON.parse(pending) as PendingRegistration;
+        if (parsed.token) {
+          return await registerDeviceToken(parsed.token, walletAddress || undefined);
+        }
+      } catch {}
+    }
+    return false;
+  }
+  return await registerDeviceToken(storedToken, walletAddress || undefined);
+}
+
+/**
+ * Handle push token rotation: updates local storage, registers the new token,
+ * and clears wallet association on the previous token so no stale registrations remain.
+ */
+export async function handleTokenRotation(
+  newToken: string,
+  walletAddress?: string | null
+): Promise<boolean> {
+  if (!newToken) return false;
+  const oldToken = await getStoredPushToken();
+
+  await saveStoredPushToken(newToken);
+  const success = await registerDeviceToken(newToken, walletAddress || undefined);
+
+  if (oldToken && oldToken !== newToken) {
+    try {
+      await postJson('/api/notifications/register', {
+        token: oldToken,
+        platform: Platform.OS,
+        walletAddress: null,
+      });
+    } catch {
+      // Non-fatal: backend Expo receipt checking prunes dead tokens
+    }
+  }
+
+  return success;
 }
 
 /**
@@ -199,14 +394,41 @@ export async function getFollowedProjects(token: string): Promise<any[]> {
 }
 
 /**
- * Set up notification listener
+ * Set up notification listener and background retry handlers.
  */
-export function setupNotificationListener() {
-  const notificationSubscription = Notifications.addNotificationReceivedListener(notification => {
+export function setupNotificationListener(options?: {
+  onNotificationReceived?: (notification: Notifications.Notification) => void;
+  onNotificationResponse?: (response: Notifications.NotificationResponse) => void;
+  onPushTokenRotated?: (newToken: string) => void;
+  getWalletAddress?: () => Promise<string | null>;
+}) {
+  void setupNotificationChannel();
+
+  const notificationSubscription = Notifications.addNotificationReceivedListener((notification) => {
     console.log('Notification received:', notification);
+    options?.onNotificationReceived?.(notification);
   });
 
-  const appStateSubscription = AppState.addEventListener('change', state => {
+  let responseSubscription: Notifications.Subscription | null = null;
+  if (options?.onNotificationResponse) {
+    responseSubscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      options.onNotificationResponse!(response);
+    });
+  }
+
+  let tokenSubscription: Notifications.Subscription | null = null;
+  if (typeof Notifications.addPushTokenListener === 'function') {
+    tokenSubscription = Notifications.addPushTokenListener(async (tokenData) => {
+      const newToken = tokenData?.data;
+      if (newToken) {
+        const walletAddress = options?.getWalletAddress ? await options.getWalletAddress() : null;
+        await handleTokenRotation(newToken, walletAddress);
+        options?.onPushTokenRotated?.(newToken);
+      }
+    });
+  }
+
+  const appStateSubscription = AppState.addEventListener('change', (state) => {
     if (state === 'active') {
       retryPendingRegistration();
     }
@@ -215,6 +437,8 @@ export function setupNotificationListener() {
   return {
     remove: () => {
       notificationSubscription.remove();
+      responseSubscription?.remove();
+      tokenSubscription?.remove();
       appStateSubscription.remove();
     },
   };

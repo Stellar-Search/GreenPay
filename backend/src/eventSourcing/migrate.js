@@ -3,6 +3,7 @@
 const pool = require("../db/pool");
 const { v4: uuid } = require("uuid");
 const {
+  LEGACY_DONATION_MIGRATED,
   MigratedDonationEvent,
   MilestoneReachedEvent,
   JobReleasedEvent,
@@ -280,6 +281,11 @@ async function runLegacyMigration() {
     const verification = await verifyMigration(seenTxHashes.size, donationCount);
     console.log(`[Migration] ✓ Verification: ${JSON.stringify(verification)}`);
 
+    const isValid = verification.uniqueTxHashesMatch && verification.xlmTotalMatch && verification.uniqueDonorsMatch;
+    if (!isValid) {
+      throw new Error(`Migration verification failed: ${JSON.stringify(verification)}`);
+    }
+
     // === 9. Record migration state ===
     await pool.query(
       "INSERT INTO event_store_migration_state (id, migrated_at, event_count) VALUES ('legacy', NOW(), $1) ON CONFLICT (id) DO UPDATE SET migrated_at = NOW(), event_count = EXCLUDED.event_count",
@@ -300,7 +306,7 @@ async function rebuildReadModels() {
     await client.query("BEGIN");
 
     const result = await client.query("SELECT COUNT(*) AS total FROM event_stream WHERE processed = false");
-    const totalEvents = parseInt(result.rows[0].total, 10);
+    const totalEvents = parseInt(result.rows[0]?.total || "0", 10);
     console.log(`[Rebuild] Processing ${totalEvents} unprocessed events...`);
 
     const { dispatchToProjections } = require("./projections");
@@ -345,14 +351,16 @@ async function verifyMigration(expectedUniqueTxCount, expectedDonationCount) {
   const uniqueTxResult = await pool.query(
     `SELECT COUNT(DISTINCT (payload->'data'->>'transactionHash')) AS count
      FROM event_stream
-     WHERE event_type IN ('DonationRecorded', 'MigratedDonation') AND payload->'data'->>'isMatch' = 'false'`
+     WHERE event_type IN ('DonationRecorded', $1) AND payload->'data'->>'isMatch' = 'false'`,
+    [LEGACY_DONATION_MIGRATED]
   );
   const actualUniqueTxCount = parseInt(uniqueTxResult.rows[0]?.count || "0", 10);
 
   const donationResult = await pool.query(
     `SELECT SUM((payload->'data'->>'amountXlm')::numeric) AS total
      FROM event_stream
-     WHERE event_type IN ('DonationRecorded', 'MigratedDonation') AND payload->'data'->>'isMatch' = 'false'`
+     WHERE event_type IN ('DonationRecorded', $1) AND payload->'data'->>'isMatch' = 'false'`,
+    [LEGACY_DONATION_MIGRATED]
   );
   const eventTotalXlm = parseFloat(donationResult.rows[0]?.total?.toString() || "0");
 
@@ -360,7 +368,8 @@ async function verifyMigration(expectedUniqueTxCount, expectedDonationCount) {
   const legacyTotalXlm = parseFloat(legacyTotalResult.rows[0]?.total?.toString() || "0");
 
   const donorEventsResult = await pool.query(
-    "SELECT COUNT(DISTINCT (payload->'data'->>'donorAddress')) AS count FROM event_stream WHERE aggregate_type IN ('Donation', 'MigratedDonation')"
+    "SELECT COUNT(DISTINCT (payload->'data'->>'donorAddress')) AS count FROM event_stream WHERE aggregate_type IN ('Donation', $1)",
+    [LEGACY_DONATION_MIGRATED]
   );
   const eventUniqueDonors = parseInt(donorEventsResult.rows[0]?.count || "0", 10);
 
@@ -370,7 +379,8 @@ async function verifyMigration(expectedUniqueTxCount, expectedDonationCount) {
   const legacyUniqueDonors = parseInt(legacyUniqueDonorsResult.rows[0]?.count || "0", 10);
 
   const matchInEventsResult = await pool.query(
-    "SELECT COUNT(*) AS count FROM event_stream WHERE event_type = 'MigratedDonation' AND payload->'data'->>'isMatch' = 'true'"
+    "SELECT COUNT(*) AS count FROM event_stream WHERE event_type = $1 AND payload->'data'->>'isMatch' = 'true'",
+    [LEGACY_DONATION_MIGRATED]
   );
   const eventMatchCount = parseInt(matchInEventsResult.rows[0]?.count || "0", 10);
 
@@ -394,4 +404,63 @@ async function verifyMigration(expectedUniqueTxCount, expectedDonationCount) {
   };
 }
 
-module.exports = { runLegacyMigration, rebuildReadModels, verifyMigration, normalizeDoublePrefixedStreamIds };
+async function replayUnprojectedMigratedEvents() {
+  const alreadyDone = await pool.query(
+    "SELECT id FROM event_store_migration_state WHERE id = 'migrated-donation-replay'"
+  );
+  if (alreadyDone.rows[0]) {
+    console.log("[Migration] Migrated donation replay already applied. Skipping.");
+    return { status: "already_migrated", eventsReplayed: 0 };
+  }
+
+  console.log("[Migration] Replaying unprojected migrated donation events...");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    await client.query(
+      `UPDATE event_stream
+       SET event_type = $1,
+           payload = jsonb_set(payload, '{eventType}', to_jsonb($1::text))
+       WHERE event_type = 'LegacyDonationMigrated' OR payload->>'eventType' = 'LegacyDonationMigrated'`,
+      [LEGACY_DONATION_MIGRATED]
+    );
+
+    const resetResult = await client.query(
+      `UPDATE event_stream
+       SET processed = false
+       WHERE (aggregate_type = 'MigratedDonation' OR event_type = $1)
+         AND processed = true`,
+      [LEGACY_DONATION_MIGRATED]
+    );
+    const eventsReplayed = resetResult.rowCount || 0;
+
+    await client.query(
+      "INSERT INTO event_store_migration_state (id, migrated_at, event_count) VALUES ('migrated-donation-replay', NOW(), $1) ON CONFLICT (id) DO UPDATE SET migrated_at = NOW(), event_count = EXCLUDED.event_count",
+      [eventsReplayed]
+    );
+
+    await client.query("COMMIT");
+
+    if (eventsReplayed > 0) {
+      console.log(`[Migration] Replaying projections for ${eventsReplayed} migrated donation event(s)...`);
+      await rebuildReadModels();
+    }
+
+    return { status: "completed", eventsReplayed };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("[Migration] Replay of migrated events failed:", err.message);
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+module.exports = {
+  runLegacyMigration,
+  rebuildReadModels,
+  verifyMigration,
+  normalizeDoublePrefixedStreamIds,
+  replayUnprojectedMigratedEvents,
+};

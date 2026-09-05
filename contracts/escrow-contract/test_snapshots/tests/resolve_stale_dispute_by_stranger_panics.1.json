@@ -377,6 +377,30 @@
                             }
                           ]
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "JobCount"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -1530,7 +1554,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Only the client or freelancer can trigger the fallback' from contract function 'Symbol(obj#409)'"
+                  "string": "caught panic 'Only the client or freelancer can trigger the fallback' from contract function 'Symbol(obj#433)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"

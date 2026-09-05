@@ -2,12 +2,20 @@
  * app/projects/[id].tsx
  * Project detail screen
  */
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { apiFetch, apiGet, parseApiFetchResponse } from '../../utils/api';
-import { getPushToken, followProject, unfollowProject } from '../../utils/notifications';
+import {
+  getPushToken,
+  getStoredPushToken,
+  followProject,
+  unfollowProject,
+  requestNotificationPermissionsWithRationale,
+  openNotificationSettings,
+} from '../../utils/notifications';
 import { parseProjectUpdates, type MobileProjectUpdate } from '../../utils/projectUpdates';
+import { useWallet } from '../../src/hooks/useWallet';
 import { useTheme } from '../theme';
 
 interface ClimateProject {
@@ -29,6 +37,7 @@ export default function ProjectDetailScreen() {
   const { colors } = useTheme();
   const router = useRouter();
   const { id } = useLocalSearchParams();
+  const { publicKey } = useWallet();
   const [project, setProject] = useState<ClimateProject | null>(null);
   const [projectUpdates, setProjectUpdates] = useState<MobileProjectUpdate[]>([]);
   const [loading, setLoading] = useState(true);
@@ -45,14 +54,13 @@ export default function ProjectDetailScreen() {
 
   const initializeNotifications = async () => {
     try {
-      const token = await getPushToken();
+      const token = await getStoredPushToken();
       if (token) {
         setPushToken(token);
-        // Check if already following this project
         checkFollowStatus(id as string, token);
       }
     } catch (error) {
-      console.error('Error initializing notifications:', error);
+      console.error('Error initializing notifications state:', error);
     }
   };
 
@@ -83,16 +91,44 @@ export default function ProjectDetailScreen() {
   };
 
   const handleToggleFollow = async () => {
-    if (!pushToken || !project) return;
+    if (!project) return;
 
     setFollowLoading(true);
     try {
       if (isFollowing) {
-        await unfollowProject(project.id, pushToken);
-        setIsFollowing(false);
+        const token = pushToken || (await getStoredPushToken());
+        if (token) {
+          await unfollowProject(project.id, token);
+          setIsFollowing(false);
+        }
       } else {
-        await followProject(project.id, pushToken);
-        setIsFollowing(true);
+        let token = pushToken || (await getStoredPushToken());
+        if (!token) {
+          const permResult = await requestNotificationPermissionsWithRationale(
+            'Enable notifications to receive updates about this project.'
+          );
+          if (!permResult.granted) {
+            if (permResult.needsSettings) {
+              Alert.alert(
+                'Notifications Disabled',
+                'Notification permissions are currently disabled. Please enable them in your device settings to follow project updates.',
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  { text: 'Open Settings', onPress: () => void openNotificationSettings() },
+                ]
+              );
+            }
+            return;
+          }
+          token = await getPushToken();
+        }
+
+        if (token) {
+          setPushToken(token);
+          const walletAddr = publicKey || undefined;
+          await followProject(project.id, token, walletAddr);
+          setIsFollowing(true);
+        }
       }
     } catch (error) {
       console.error('Error toggling follow:', error);
@@ -184,17 +220,15 @@ export default function ProjectDetailScreen() {
         ))}
       </View>
 
-      {pushToken && (
-        <TouchableOpacity
-          style={[styles.followButton, isFollowing && styles.followButtonActive]}
-          onPress={handleToggleFollow}
-          disabled={followLoading}
-        >
-          <Text style={styles.followButtonText}>
-            {followLoading ? 'Loading...' : isFollowing ? '🔔 Following' : '🔔 Follow for Updates'}
-          </Text>
-        </TouchableOpacity>
-      )}
+      <TouchableOpacity
+        style={[styles.followButton, isFollowing && styles.followButtonActive]}
+        onPress={handleToggleFollow}
+        disabled={followLoading}
+      >
+        <Text style={[styles.followButtonText, isFollowing && { color: '#fff' }]}>
+          {followLoading ? 'Loading...' : isFollowing ? '🔔 Following' : '🔔 Follow for Updates'}
+        </Text>
+      </TouchableOpacity>
 
       <TouchableOpacity
         style={[styles.donateButton, { backgroundColor: colors.buttonBackground }]}
