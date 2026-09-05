@@ -41,6 +41,13 @@
     "GHSA-23hp-3jrh-7fpw",
     "GHSA-8x88-c5mf-7j5w",
     "GHSA-w3rx-r6r6-pgpr",
-    "GHSA-5p2g-fcmc-qvqq"
+    "GHSA-5p2g-fcmc-qvqq",
+
+    // @stellar/stellar-sdk@12.x bundles a vulnerable `toml` version; the fix
+    // ships only in stellar-sdk@17.x, a breaking major-version upgrade out
+    // of scope for this CI-hygiene change. Flagged for a maintainer-led
+    // Stellar SDK migration.
+    "GHSA-82x6-q7mm-w9cf",
+    "GHSA-v5mp-jgw5-2x6j"
   ]
 }

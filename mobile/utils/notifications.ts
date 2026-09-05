@@ -152,17 +152,17 @@ export async function checkNotificationPermissions(): Promise<NotificationPermis
 export async function requestNotificationPermissions(): Promise<string | null> {
   const { status: existingStatus, canAskAgain } = await Notifications.getPermissionsAsync();
   let finalStatus = existingStatus;
-  
+
   if (existingStatus !== 'granted' && canAskAgain !== false) {
     const { status } = await Notifications.requestPermissionsAsync();
     finalStatus = status;
   }
-  
+
   if (finalStatus !== 'granted') {
     console.log('Push notification permission denied by user');
     return null;
   }
-  
+
   return finalStatus;
 }
 
@@ -232,11 +232,11 @@ export async function getPushToken(): Promise<string | null> {
     await setupNotificationChannel();
     const permissionStatus = await requestNotificationPermissions();
     if (!permissionStatus) return null;
-    
+
     const tokenResult = await Notifications.getExpoPushTokenAsync({
       projectId: process.env.EXPO_PUBLIC_PROJECT_ID || '',
     });
-    
+
     const token = tokenResult?.data;
     if (token) {
       await saveStoredPushToken(token);
@@ -257,7 +257,7 @@ export async function registerDeviceToken(
 ): Promise<boolean> {
   try {
     const platform = Platform.OS;
-    
+
     const registered = await postJson('/api/notifications/register', {
       token,
       platform,
@@ -348,7 +348,7 @@ export async function followProject(
     });
 
     if (!followed) return false;
-    
+
     console.log(`Followed project ${projectId}`);
     return true;
   } catch (error) {
@@ -371,7 +371,7 @@ export async function unfollowProject(
     });
 
     if (!unfollowed) return false;
-    
+
     console.log(`Unfollowed project ${projectId}`);
     return true;
   } catch (error) {
@@ -433,7 +433,7 @@ export function setupNotificationListener(options?: {
       retryPendingRegistration();
     }
   });
-  
+
   return {
     remove: () => {
       notificationSubscription.remove();

@@ -146,7 +146,7 @@ export default function ProjectDetailScreen() {
 
   if (loading) {
     return (
-      <View style={[styles.container, { backgroundColor: colors.background }]}> 
+      <View style={[styles.container, { backgroundColor: colors.background }]}>
         <Text style={[styles.loadingText, { color: colors.secondaryText }]}>Loading project...</Text>
       </View>
     );
@@ -154,21 +154,21 @@ export default function ProjectDetailScreen() {
 
   if (!project) {
     return (
-      <View style={[styles.container, { backgroundColor: colors.background }]}> 
+      <View style={[styles.container, { backgroundColor: colors.background }]}>
         <Text style={[styles.errorText, { color: colors.secondaryText }]}>Project not found</Text>
       </View>
     );
   }
 
   return (
-    <ScrollView style={[styles.container, { backgroundColor: colors.background }]}> 
-      <View style={[styles.header, { backgroundColor: colors.primary }]}> 
+    <ScrollView style={[styles.container, { backgroundColor: colors.background }]}>
+      <View style={[styles.header, { backgroundColor: colors.primary }]}>
         <Text style={[styles.category, { color: colors.headerText }]}>{project.category}</Text>
         <Text style={[styles.name, { color: colors.headerText }]}>{project.name}</Text>
         <Text style={[styles.location, { color: colors.headerText }]}>📍 {project.location}</Text>
       </View>
 
-      <View style={[styles.statsCard, { backgroundColor: colors.surface, shadowColor: colors.cardShadow, borderColor: colors.cardBorder }]}> 
+      <View style={[styles.statsCard, { backgroundColor: colors.surface, shadowColor: colors.cardShadow, borderColor: colors.cardBorder }]}>
         <View style={styles.statRow}>
           <View style={styles.stat}>
             <Text style={[styles.statValue, { color: colors.accent }]}>{parseFloat(project.raisedXLM).toFixed(2)}</Text>
@@ -185,9 +185,9 @@ export default function ProjectDetailScreen() {
         </View>
       </View>
 
-      <View style={[styles.progressCard, { backgroundColor: colors.surface, shadowColor: colors.cardShadow, borderColor: colors.cardBorder }]}> 
+      <View style={[styles.progressCard, { backgroundColor: colors.surface, shadowColor: colors.cardShadow, borderColor: colors.cardBorder }]}>
         <Text style={[styles.progressTitle, { color: colors.primaryText }]}>Fundraising Progress</Text>
-        <View style={[styles.progressBar, { backgroundColor: colors.border }]}> 
+        <View style={[styles.progressBar, { backgroundColor: colors.border }]}>
           <View
             style={[
               styles.progressFill,
@@ -195,10 +195,10 @@ export default function ProjectDetailScreen() {
             ]}
           />
         </View>
-        <Text style={[styles.progressText, { color: colors.secondaryText }]}> 
+        <Text style={[styles.progressText, { color: colors.secondaryText }]}>
           {progressPercent(project.raisedXLM, project.goalXLM)}% complete
         </Text>
-        <Text style={[styles.goalText, { color: colors.muted }]}> 
+        <Text style={[styles.goalText, { color: colors.muted }]}>
           Goal: {parseFloat(project.goalXLM).toFixed(2)} XLM
         </Text>
       </View>
