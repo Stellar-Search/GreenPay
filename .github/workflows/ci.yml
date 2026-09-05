@@ -41,9 +41,71 @@ jobs:
       # the function-ordering regression that broke nightly backups for months,
       # which `bash -n` cannot catch, and needs no database.
       - run: bash scripts/tests/test-backup-restore.sh
-      # Cluster-free consistency checks over k8s/: kustomization coverage,
-      # Ingress backends resolving to real Services, PDB selectors matching a
-      # workload, and default-deny paired with allow rules.
+
+  k8s-manifests:
+    name: Kubernetes Manifests (kustomize + kubeconform)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+
+      - name: Install kustomize
+        env:
+          KUSTOMIZE_VERSION: "5.8.1"
+          KUSTOMIZE_SHA256: "029a7f0f4e1932c52a0476cf02a0fd855c0bb85694b82c338fc648dcb53a819d"
+        run: |
+          set -euo pipefail
+          curl --fail --proto '=https' --tlsv1.2 -sSL \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/v${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
+            -o kustomize.tar.gz
+          echo "${KUSTOMIZE_SHA256}  kustomize.tar.gz" | sha256sum -c -
+          tar -xzf kustomize.tar.gz kustomize
+          sudo mv kustomize /usr/local/bin/kustomize
+          sudo chmod +x /usr/local/bin/kustomize
+          rm kustomize.tar.gz
+
+      - name: Install kubeconform
+        env:
+          KUBECONFORM_VERSION: "0.8.0"
+          KUBECONFORM_SHA256: "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883"
+        run: |
+          set -euo pipefail
+          curl --fail --proto '=https' --tlsv1.2 -sSL \
+            "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            -o kubeconform.tar.gz
+          echo "${KUBECONFORM_SHA256}  kubeconform.tar.gz" | sha256sum -c -
+          tar -xzf kubeconform.tar.gz kubeconform
+          sudo mv kubeconform /usr/local/bin/kubeconform
+          sudo chmod +x /usr/local/bin/kubeconform
+          rm kubeconform.tar.gz
+
+      # kubeconform's bundled schemas only cover core/built-in Kubernetes
+      # kinds. k8s/ also renders Argo Rollouts CRDs (Rollout, AnalysisTemplate)
+      # via backend.yaml/frontend.yaml/ml-workloads/, which need the
+      # community CRD schema catalog or `-strict` fails them as unrecognized.
+      - name: Build and schema-validate k8s/
+        run: |
+          kustomize build k8s/ | kubeconform \
+            -strict -summary \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+
+      - name: Build and schema-validate k8s/scheduler/
+        run: |
+          kustomize build k8s/scheduler/ | kubeconform \
+            -strict -summary \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+
+      # Deeper checks kubeconform can't do: every k8s/ manifest is wired into
+      # kustomization.yaml, every Ingress backend names a real Service, every
+      # PodDisruptionBudget selector matches a real workload (asserted
+      # against this same `kustomize build k8s/` output above), and a
+      # default-deny NetworkPolicy is paired with an explicit allow.
       - run: python3 scripts/check-k8s-manifests.py
 
   frontend:

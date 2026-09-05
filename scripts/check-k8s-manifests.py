@@ -14,8 +14,16 @@ Consistency checks over k8s/ that need no cluster:
  4. If a namespace-wide default-deny ingress policy exists, some other policy
     must admit traffic to the frontend and backend, otherwise applying k8s/
     blackholes the application.
+
+Checks 2-4 run against the actual `kustomize build` output rather than the
+raw source files, so a selector or label broken by the namespace transform,
+a patch, or a future `components:` composition is still caught — checking
+source files alone would miss anything that only exists post-build. Check 1
+is inherently about source-tree wiring (kustomization.yaml correctness), so
+it stays on the raw files. Requires the `kustomize` binary on PATH.
 """
 import os
+import subprocess
 import sys
 
 import yaml
@@ -24,9 +32,21 @@ K8S = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "k8s")
 problems = []
 
 
-def load_all(path):
-    with open(path, encoding="utf-8") as fh:
-        return [d for d in yaml.safe_load_all(fh) if isinstance(d, dict)]
+def kustomize_build(path):
+    try:
+        result = subprocess.run(
+            ["kustomize", "build", path],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError:
+        print("error: the `kustomize` binary is not installed or not on PATH", file=sys.stderr)
+        sys.exit(2)
+    except subprocess.CalledProcessError as e:
+        print(f"error: `kustomize build {path}` failed:\n{e.stderr}", file=sys.stderr)
+        sys.exit(2)
+    return [d for d in yaml.safe_load_all(result.stdout) if isinstance(d, dict)]
 
 
 with open(os.path.join(K8S, "kustomization.yaml"), encoding="utf-8") as fh:
@@ -42,11 +62,7 @@ for name in sorted(os.listdir(K8S)):
     if name.endswith(".yaml") and name != "kustomization.yaml" and name not in referenced:
         problems.append(f"k8s/{name} is not referenced by kustomization.yaml")
 
-docs = []
-for ref in referenced:
-    path = os.path.join(K8S, ref)
-    if os.path.exists(path):
-        docs.extend(load_all(path))
+docs = kustomize_build(K8S)
 
 services = {d["metadata"]["name"] for d in docs if d.get("kind") == "Service"}
 
