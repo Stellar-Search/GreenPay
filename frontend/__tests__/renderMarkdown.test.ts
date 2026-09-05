@@ -33,6 +33,13 @@ describe("renderMarkdown", () => {
       );
     });
 
+    it("escapes HTML in link labels", () => {
+      const output = renderMarkdown("[<img src=x onerror=alert(1)>](https://example.com)");
+      expect(output).toBe(
+        '<a href="https://example.com/" target="_blank" rel="noopener noreferrer nofollow" class="text-forest-600 hover:underline">&lt;img src=x onerror=alert(1)&gt;</a>',
+      );
+    });
+
     it("converts newlines to <br />", () => {
       expect(renderMarkdown("Hello\nWorld")).toBe("Hello<br />World");
     });

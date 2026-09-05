@@ -38,3 +38,40 @@ fn test_delisted_token_allows_dispute_and_cancellation() {
     let dispute_res = client.try_resolve_dispute(&job_id, &resolution);
     assert!(dispute_res.is_ok(), "Disputes in delisted tokens must resolve cleanly");
 }
+
+#[test]
+fn resolve_stale_dispute_splits_funds_and_sets_status() {
+    let (env, cid, contract, _admin, client, freelancer, token, job_id, _amount, _expiry) =
+        setup_with_cid();
+
+    // 1. Raise a dispute
+    let timeout_ledger = dispute_job_and_get_timeout(&env, &contract, &client, &job_id);
+
+    // 2. Extend storage TTL and advance ledger sequence past the timeout
+    extend_ttl(&env, &cid, &token);
+    env.ledger().set_sequence_number(timeout_ledger + 1);
+
+    // 3. Trigger fallback resolution
+    contract.resolve_stale_dispute(&client, &job_id);
+
+    // 4. Verify job state updated to SplitResolved
+    let job = contract.get_job(&job_id).unwrap();
+    assert_eq!(job.status, JobStatus::SplitResolved);
+    assert_eq!(job.remaining_amount, 0);
+
+    // 5. Verify 50/50 token split (100 total amount -> 50 each)
+    let token_client = token::Client::new(&env, &token);
+    assert_eq!(token_client.balance(&freelancer), 50);
+    assert_eq!(token_client.balance(&client), 50);
+}
+
+#[test]
+#[should_panic(expected = "Dispute has not timed out yet")]
+fn resolve_stale_dispute_before_timeout_panics() {
+    let (env, contract, _admin, client, _freelancer, _token, job_id, _amount, _expiry) =
+        setup();
+    contract.dispute(&client, &job_id);
+
+    // Try calling fallback before advancing the ledger timeout
+    contract.resolve_stale_dispute(&client, &job_id);
+}

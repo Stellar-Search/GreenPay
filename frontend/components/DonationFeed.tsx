@@ -16,6 +16,8 @@ interface DonationFeedProps {
   onNewDonation?: (donation: Donation) => void;
 }
 
+const MAX_SEEN_HASHES = 500;
+
 export default function DonationFeed({ projectId, walletAddress, refreshKey = 0, onNewDonation }: DonationFeedProps) {
   const [donations, setDonations] = useState<Donation[]>([]);
   const [loading,   setLoading]   = useState(true);
@@ -26,6 +28,23 @@ export default function DonationFeed({ projectId, walletAddress, refreshKey = 0,
   const latestPagingTokenRef = useRef<HorizonPagingToken | null>(null);
   const seenTxHashesRef = useRef<Set<string>>(new Set());
 
+  // Hold onNewDonation in a ref so prop identity changes never restart the stream
+  const onNewDonationRef = useRef(onNewDonation);
+  useEffect(() => {
+    onNewDonationRef.current = onNewDonation;
+  }, [onNewDonation]);
+
+  // Helper to safely add transaction hashes to the set with a maximum capacity bound
+  const addSeenTxHash = useCallback((hash: string) => {
+    if (seenTxHashesRef.current.size >= MAX_SEEN_HASHES) {
+      const firstItem = seenTxHashesRef.current.values().next().value;
+      if (firstItem) {
+        seenTxHashesRef.current.delete(firstItem);
+      }
+    }
+    seenTxHashesRef.current.add(hash);
+  }, []);
+
   // Load initial donation data from the backend API. Note: `d.id` is a
   // backend database identifier, not a Horizon paging token, so it must
   // never seed the SSE cursor below.
@@ -35,11 +54,11 @@ export default function DonationFeed({ projectId, walletAddress, refreshKey = 0,
       .then(({ donations: data, nextCursor: cursor }) => {
         setDonations(data);
         setNextCursor(cursor);
-        data.forEach((d) => seenTxHashesRef.current.add(d.transactionHash));
+        data.forEach((d) => addSeenTxHash(d.transactionHash));
       })
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [projectId, refreshKey]);
+  }, [projectId, refreshKey, addSeenTxHash]);
 
   // Handle incoming SSE payment
   const handleNewPayment = useCallback((payment: {
@@ -52,7 +71,7 @@ export default function DonationFeed({ projectId, walletAddress, refreshKey = 0,
     transactionHash: string;
   }) => {
     if (seenTxHashesRef.current.has(payment.transactionHash)) return;
-    seenTxHashesRef.current.add(payment.transactionHash);
+    addSeenTxHash(payment.transactionHash);
 
     const newDonation: Donation = {
       id: payment.id,
@@ -79,10 +98,10 @@ export default function DonationFeed({ projectId, walletAddress, refreshKey = 0,
       });
     }, 2000);
 
-    onNewDonation?.(newDonation);
+    onNewDonationRef.current?.(newDonation);
 
     latestPagingTokenRef.current = payment.pagingToken;
-  }, [projectId, onNewDonation]);
+  }, [projectId, addSeenTxHash]);
 
   // Handle incoming donation pushed over the Socket.io "donation_event" channel
   const handleSocketDonation = useCallback((payload: {
@@ -92,7 +111,7 @@ export default function DonationFeed({ projectId, walletAddress, refreshKey = 0,
     timestamp: string;
   }) => {
     if (seenTxHashesRef.current.has(payload.transactionHash)) return;
-    seenTxHashesRef.current.add(payload.transactionHash);
+    addSeenTxHash(payload.transactionHash);
 
     const newDonation: Donation = {
       id: payload.transactionHash,
@@ -115,12 +134,13 @@ export default function DonationFeed({ projectId, walletAddress, refreshKey = 0,
       });
     }, 2000);
 
-    onNewDonation?.(newDonation);
-  }, [projectId, onNewDonation]);
+    onNewDonationRef.current?.(newDonation);
+  }, [projectId, addSeenTxHash]);
 
   useDonationSocket(projectId, handleSocketDonation);
 
   // Start SSE stream once initial data is loaded
+  // Keyed only on loading and walletAddress to avoid unnecessary reconnects
   useEffect(() => {
     if (loading || !walletAddress) return;
 
@@ -136,7 +156,7 @@ export default function DonationFeed({ projectId, walletAddress, refreshKey = 0,
     return () => {
       closeStream();
     };
-  }, [loading, walletAddress, handleNewPayment]);
+  }, [loading, walletAddress]); // handleNewPayment omitted intentionally
 
   const handleLoadMore = async () => {
     if (!nextCursor || loadingMore) return;
