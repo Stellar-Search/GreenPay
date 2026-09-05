@@ -86,11 +86,15 @@ pressure; GPU-specific density requires DCGM metrics).
 **B. Fragmentation (weight 0.25)**
 
 Penalises nodes in the "dangerous middle" of GPU allocation — nearly full but
-not enough room for a new training job.
+not enough room for a new training job.  Score is a V-curve centred on
+`fragThreshold` (default `0.85`): an empty node and a fully packed node both
+score 100, and allocation at the threshold scores 0.
 
-- NVLink nodes: +85 (prefer for training consolidation)
-- PCIe nodes: +70 (prefer for inference)
-- Unknown: 50 (neutral)
+The node's GPU total is taken from `greenpay.io/gpu-count` when it is present,
+and otherwise from the accelerator extended resources a device plugin
+advertises — so an unlabelled GPU node is scored on its real allocation rather
+than skipped.  See [Missing metadata](#missing-metadata) for how the two
+sources are weighted, and for what a node reporting neither one scores.
 
 **C. NUMATopology (weight 0.20)**
 
@@ -102,13 +106,57 @@ the node's `greenpay.io/gpu-numa-distribution`.
 |---|---|
 | `restricted` with `pod` scope | Score `100 / minimum NUMA domains needed` |
 | `single-numa-node` with `pod` scope | Score 100 when all requested GPUs fit one domain, otherwise 0 |
-| `none`, `best-effort`, container scope, or missing labels | Neutral (50), because pod-level alignment is not guaranteed |
+| `none`, `best-effort`, or container scope | Neutral (50), because pod-level alignment is not guaranteed |
+| Missing or self-contradictory topology labels | Unknown — see [Missing metadata](#missing-metadata) |
 
-CPU-only and non-ML workloads also receive the neutral NUMA score.
+Pods that request no GPUs, and non-ML workloads, also receive the neutral NUMA
+score: there is no locality to optimise for them.  That is different from a node
+whose topology labels are absent, where the domain count cannot be determined at
+all.
 
 **D. NetworkBandwidth (weight 0.15)**
 
 Normalises node bandwidth against cluster maximum.  Score = `(nodeBW / clusterMaxBW) × 100`.
+A node with no `greenpay.io/network-bandwidth` label has no uplink figure to
+normalise — the Node API publishes none to fall back on — so it is scored as
+unknown; see [Missing metadata](#missing-metadata).
+
+### Missing metadata
+
+The `greenpay.io` labels are applied by hand, so an unlabelled node is not a
+brief startup state: it is the default state of every node until an operator
+labels it, and an autoscaled node may never be labelled at all.  All four
+sub-scores therefore share one rule — **a sub-score may claim only as much of
+its range as its inputs justify**:
+
+| Confidence | Source | Scored |
+|---|---|---|
+| Declared | a `greenpay.io` label, or a resource kubelet reports on the node | the measured value, full range |
+| Inferred | accelerator extended resources advertised by a device plugin | the measured value × `0.75` |
+| Unknown | nothing determines the dimension | `0` |
+
+**Unknown scores 0, not the neutral 50 it used to.**  The rule the policy has to
+hold is that a node nothing is known about must not outrank a node that honestly
+reports poor characteristics — and honest scores span the whole `[0, 100]` range,
+so 0 is the only value that satisfies it for *every* honest node.  Any middling
+"unknown" band would still beat every honest node scoring below it.
+
+Inferred signals are discounted rather than trusted outright because advertised
+accelerators are not the physical GPU count a label declares: kubelet drops
+unhealthy devices from allocatable, a device plugin may still be registering,
+and MIG or time-slicing advertises slices rather than GPUs.  A node whose only
+two working GPUs are both busy should not be read as "perfectly packed".
+
+Two things this rule deliberately does *not* cover, because they are answers
+rather than gaps: a node the operator has declared CPU-only (`gpu-vendor=none`,
+`gpu-count=0`) has no GPU capacity to fragment and keeps its full fragmentation
+score, and a node whose kubelet declares it will not enforce pod-scope alignment
+keeps the neutral NUMA score.
+
+Scoring is a preference, not an admission check.  A node scoring 0 here stays
+schedulable and simply ranks last, and it re-scores on its own as soon as either
+its labels or its extended resources appear.  **If your nodes are unlabelled,
+label them** — `k8s/ml-workloads/node-labels.yaml` has the commands.
 
 **BinPackWeight multiplier**
 
@@ -181,8 +229,11 @@ kubectl label node gpu-node-01 \
 
 The distribution must contain one entry per `greenpay.io/numa-nodes` value,
 and its entries must sum to `greenpay.io/gpu-count`. A value of `4.4` means
-four GPUs on NUMA domain 0 and four GPUs on NUMA domain 1. Invalid or
-inconsistent distributions are ignored and receive the neutral NUMA score.
+four GPUs on NUMA domain 0 and four GPUs on NUMA domain 1. A distribution that
+is invalid or inconsistent with the declared counts leaves the NUMA domain count
+undeterminable, so the node is scored as unknown rather than neutral — see
+[Missing metadata](#missing-metadata). Fix the labels rather than relying on
+that fallback.
 
 ### Verify kubelet Topology Manager alignment
 

@@ -122,6 +122,83 @@ func TestNodeHardware_HasGPU(t *testing.T) {
 	}
 }
 
+// An absent gpu-vendor label parses to GPUVendorNone, the same value the
+// operator writes to declare a CPU-only node, so the parsed fields alone cannot
+// tell "this node has no GPUs" from "nobody has labelled this node". Scoring
+// depends on that distinction (issue #335), so presence is captured separately.
+func TestParseNodeHardware_GPUMetadataDeclaration(t *testing.T) {
+	cases := []struct {
+		name         string
+		labels       map[string]string
+		wantDeclared bool
+		wantNoGPU    bool
+		wantHasGPU   bool
+	}{
+		{
+			name:         "no labels at all",
+			labels:       nil,
+			wantDeclared: false,
+			wantNoGPU:    false,
+			wantHasGPU:   false,
+		},
+		{
+			name:         "labelled but nothing about GPUs",
+			labels:       map[string]string{hardware.LabelNetworkZone: "zone-a"},
+			wantDeclared: false,
+			wantNoGPU:    false,
+			wantHasGPU:   false,
+		},
+		{
+			// The CPU-node labelling from k8s/ml-workloads/node-labels.yaml.
+			name: "declared CPU-only",
+			labels: map[string]string{
+				hardware.LabelGPUVendor: hardware.GPUVendorNone,
+				hardware.LabelGPUCount:  "0",
+			},
+			wantDeclared: true,
+			wantNoGPU:    true,
+			wantHasGPU:   false,
+		},
+		{
+			name: "declared GPU node",
+			labels: map[string]string{
+				hardware.LabelGPUVendor: hardware.GPUVendorNvidia,
+				hardware.LabelGPUCount:  "8",
+			},
+			wantDeclared: true,
+			wantNoGPU:    false,
+			wantHasGPU:   true,
+		},
+		{
+			// A partial labelling still counts as the operator having said
+			// something about this node's GPUs.
+			name:         "gpu-count only",
+			labels:       map[string]string{hardware.LabelGPUCount: "4"},
+			wantDeclared: true,
+			wantNoGPU:    true, // vendor still defaults to none, so not HasGPU
+			wantHasGPU:   false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hw := hardware.ParseNodeHardware(&corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "node", Labels: tc.labels},
+			})
+
+			if hw.GPUMetadataDeclared != tc.wantDeclared {
+				t.Errorf("GPUMetadataDeclared = %v, want %v", hw.GPUMetadataDeclared, tc.wantDeclared)
+			}
+			if got := hw.DeclaresNoGPU(); got != tc.wantNoGPU {
+				t.Errorf("DeclaresNoGPU() = %v, want %v", got, tc.wantNoGPU)
+			}
+			if got := hw.HasGPU(); got != tc.wantHasGPU {
+				t.Errorf("HasGPU() = %v, want %v", got, tc.wantHasGPU)
+			}
+		})
+	}
+}
+
 func TestNodeHardware_TotalVRAMMiB(t *testing.T) {
 	hw := hardware.NodeHardware{GPUCount: 8, GPUVRAMMiB: 81920}
 	if hw.TotalVRAMMiB() != 655360 {

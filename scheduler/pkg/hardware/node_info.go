@@ -23,6 +23,16 @@ type NodeHardware struct {
 	GPUVRAMMiB int64
 	// GPUInterconnect describes the GPU interconnect fabric ("nvlink", "pcie", "none").
 	GPUInterconnect string
+	// GPUMetadataDeclared reports whether the operator has characterised the
+	// node's GPU situation at all, i.e. whether greenpay.io/gpu-vendor or
+	// greenpay.io/gpu-count is present on the node.
+	//
+	// The parsed values alone cannot answer that: an absent gpu-vendor label
+	// defaults to GPUVendorNone, so a node deliberately labelled CPU-only
+	// (gpu-vendor=none, gpu-count=0) parses identically to a node nobody has
+	// ever labelled.  Scoring has to tell the two apart — the first is a
+	// declaration, the second is missing metadata.
+	GPUMetadataDeclared bool
 	// NUMANodes is the number of NUMA domains.
 	NUMANodes int64
 	// GPUNUMADistribution lists GPU counts by ascending NUMA domain ID.
@@ -53,6 +63,7 @@ func ParseNodeHardware(node *corev1.Node) NodeHardware {
 		GPUCount:            labelInt(labels, LabelGPUCount),
 		GPUVRAMMiB:          labelInt(labels, LabelGPUVRAMMiB),
 		GPUInterconnect:     labelStr(labels, LabelGPUInterconnect, "none"),
+		GPUMetadataDeclared: labelPresent(labels, LabelGPUVendor) || labelPresent(labels, LabelGPUCount),
 		NUMANodes:           labelInt(labels, LabelNUMANodes),
 		GPUNUMADistribution: labelIntList(labels, LabelGPUNUMADistribution),
 		TopologyManagerPolicy: labelStr(
@@ -74,6 +85,17 @@ func ParseNodeHardware(node *corev1.Node) NodeHardware {
 // HasGPU returns true when the node has at least one GPU.
 func (n NodeHardware) HasGPU() bool {
 	return n.GPUCount > 0 && n.GPUVendor != GPUVendorNone && n.GPUVendor != ""
+}
+
+// DeclaresNoGPU returns true when the operator has explicitly characterised
+// the node as having no GPU — the gpu-vendor/gpu-count labels are present and
+// report no accelerator — as opposed to the node never having been labelled.
+//
+// Callers that treat a GPU dimension as not applying to a node must gate on
+// this rather than on !HasGPU(), which is equally true of an unlabelled node
+// the scheduler simply knows nothing about.
+func (n NodeHardware) DeclaresNoGPU() bool {
+	return n.GPUMetadataDeclared && !n.HasGPU()
 }
 
 // TotalVRAMMiB returns the total VRAM across all GPUs on the node.
@@ -223,6 +245,15 @@ func labelStr(labels map[string]string, key, defaultVal string) string {
 		return v
 	}
 	return defaultVal
+}
+
+// labelPresent reports whether a label carries a non-empty value.  Presence is
+// distinct from the parsed value: labelStr substitutes a default for an absent
+// label, which makes "operator declared this" and "nobody has labelled this"
+// indistinguishable downstream unless presence is captured here.
+func labelPresent(labels map[string]string, key string) bool {
+	v, ok := labels[key]
+	return ok && v != ""
 }
 
 func labelInt(labels map[string]string, key string) int64 {

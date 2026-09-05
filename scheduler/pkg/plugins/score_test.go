@@ -2,6 +2,8 @@ package plugins_test
 
 import (
 	"context"
+	"math"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -222,6 +224,325 @@ func TestFragmentationScore_VCurve(t *testing.T) {
 	}
 
 	_ = ctx
+}
+
+// ── Missing-metadata policy (issue #335) ─────────────────────────────────────
+
+// unlabelledGPUNode builds a node carrying no greenpay.io labels at all whose
+// accelerators are visible only the way a device plugin makes them visible:
+// as an extended resource on node.status.allocatable.
+func unlabelledGPUNode(nodeName string, totalGPUs, requestedGPUs int64) *framework.NodeInfo {
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+		Status: corev1.NodeStatus{
+			Capacity: corev1.ResourceList{
+				"nvidia.com/gpu": *resource.NewQuantity(totalGPUs, resource.DecimalSI),
+			},
+			Allocatable: corev1.ResourceList{
+				"nvidia.com/gpu": *resource.NewQuantity(totalGPUs, resource.DecimalSI),
+			},
+		},
+	}
+
+	ni := framework.NewNodeInfo()
+	ni.SetNode(node)
+	ni.Requested = &framework.Resource{
+		ScalarResources: map[corev1.ResourceName]int64{"nvidia.com/gpu": requestedGPUs},
+	}
+	return ni
+}
+
+// labelledGPUNode builds the same node fully characterised by the operator.
+func labelledGPUNode(nodeName string, totalGPUs, requestedGPUs int64) *framework.NodeInfo {
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: nodeName,
+			Labels: map[string]string{
+				hardware.LabelGPUVendor: hardware.GPUVendorNvidia,
+				hardware.LabelGPUCount:  strconv.FormatInt(totalGPUs, 10),
+			},
+		},
+	}
+
+	ni := framework.NewNodeInfo()
+	ni.SetNode(node)
+	ni.Requested = &framework.Resource{
+		ScalarResources: map[corev1.ResourceName]int64{"nvidia.com/gpu": requestedGPUs},
+	}
+	return ni
+}
+
+// Acceptance criterion: an unlabelled node with 8/8 GPUs allocated (via
+// allocatable resources, no greenpay.io labels) does NOT score 100 for
+// fragmentation.
+//
+// Before the fix this node took the !HasGPU() short-circuit and was handed the
+// maximum score without its allocation ever being looked at. It now reaches the
+// V-curve, and because its GPU total comes from an advertised extended resource
+// rather than an operator attestation it is scored at inferred confidence: the
+// top of the range stays reserved for a node whose capacity is actually known.
+//
+// That distinction is not academic. kubelet removes unhealthy devices from
+// allocatable, so "every advertised GPU is busy" can equally mean "the only two
+// GPUs still working are busy" on an eight-GPU node — and awarding a perfect
+// score to that is the same class of error as the bug being fixed.
+func TestFragmentationScore_UnlabelledFullyAllocatedNodeIsNotPerfect(t *testing.T) {
+	plugin := newScorePlugin(t)
+
+	unlabelled := plugin.FragmentationScoreForTest(unlabelledGPUNode("unlabelled-full", 8, 8))
+	if unlabelled == 100.0 {
+		t.Fatalf("unlabelled 8/8 node scored a perfect %.1f for fragmentation", unlabelled)
+	}
+
+	// V-curve peak (100.0) discounted for an inferred GPU total.
+	const wantUnlabelled = 75.0
+	if math.Abs(unlabelled-wantUnlabelled) > 0.001 {
+		t.Errorf("unlabelled 8/8 fragmentation score = %.3f, want %.3f", unlabelled, wantUnlabelled)
+	}
+
+	// The same node, correctly labelled, keeps the full V-curve score: the fix
+	// changes what an uncharacterised node earns, not what a characterised one
+	// earns, so labelling a node is always at least as good as not labelling it.
+	labelled := plugin.FragmentationScoreForTest(labelledGPUNode("labelled-full", 8, 8))
+	if math.Abs(labelled-100.0) > 0.001 {
+		t.Errorf("labelled 8/8 fragmentation score = %.3f, want 100.000 (unchanged)", labelled)
+	}
+	if unlabelled >= labelled {
+		t.Errorf("unlabelled node (%.3f) did not rank below its labelled equivalent (%.3f)", unlabelled, labelled)
+	}
+}
+
+// Acceptance criterion: an unlabelled node cannot outrank an equivalent
+// labelled node purely by lacking labels.
+//
+// Each case pairs a node that honestly reports genuinely poor characteristics
+// against a node that reports nothing at all, and asserts the second does not
+// score better. This is the property the whole policy exists to hold, so it is
+// asserted on every sub-score — the issue calls out binPacking and bandwidth as
+// carrying the mirror image of the fragmentation bug, and NUMA carried it too.
+func TestMissingMetadataCannotOutrankHonestlyPoorMetadata(t *testing.T) {
+	plugin := newScorePlugin(t)
+
+	mlPodReqs := hardware.PodHardwareReqs{
+		WorkloadType: hardware.WorkloadMLTraining,
+		GPUCountReq:  4,
+	}
+
+	// A node reporting nothing: no greenpay.io labels, no advertised
+	// accelerators, no observable utilisation.
+	uninformative := framework.NewNodeInfo()
+	uninformative.SetNode(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "no-information"}})
+
+	cases := []struct {
+		name string
+		// honest scores a node that reports poor-but-true characteristics.
+		honest func() float64
+		// unknown scores the node that reports nothing on that dimension.
+		unknown func() float64
+	}{
+		{
+			// Bin packing: an almost-empty node is the worst honest report,
+			// because this dimension rewards density.
+			name: "binPacking",
+			honest: func() float64 {
+				node := &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{Name: "barely-used"},
+					Status: corev1.NodeStatus{
+						Allocatable: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("10")},
+					},
+				}
+				ni := framework.NewNodeInfo()
+				ni.SetNode(node)
+				ni.Requested = &framework.Resource{MilliCPU: 1000}
+				return plugin.BinPackingScoreForTest(ni)
+			},
+			unknown: func() float64 { return plugin.BinPackingScoreForTest(uninformative) },
+		},
+		{
+			// Fragmentation: 6 of 8 GPUs allocated sits on the way down into
+			// the V-curve trough — an honestly unattractive node.
+			name: "fragmentation",
+			honest: func() float64 {
+				return plugin.FragmentationScoreForTest(labelledGPUNode("honestly-fragmented", 8, 6))
+			},
+			unknown: func() float64 { return plugin.FragmentationScoreForTest(uninformative) },
+		},
+		{
+			// NUMA: four GPUs spread one per domain is the worst usable
+			// distribution for a four-GPU request.
+			name: "numa",
+			honest: func() float64 {
+				node := &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "worst-spread",
+						Labels: map[string]string{
+							hardware.LabelGPUVendor:             hardware.GPUVendorNvidia,
+							hardware.LabelGPUCount:              "4",
+							hardware.LabelNUMANodes:             "4",
+							hardware.LabelGPUNUMADistribution:   "1.1.1.1",
+							hardware.LabelTopologyManagerPolicy: hardware.TopologyManagerPolicyRestricted,
+							hardware.LabelTopologyManagerScope:  hardware.TopologyManagerScopePod,
+						},
+					},
+				}
+				ni := framework.NewNodeInfo()
+				ni.SetNode(node)
+				return plugin.NUMAScoreForTest(mlPodReqs, ni)
+			},
+			unknown: func() float64 { return plugin.NUMAScoreForTest(mlPodReqs, uninformative) },
+		},
+		{
+			// Bandwidth: 1 Gbps against a 100 Gbps cluster maximum is the
+			// weakest uplink a node can honestly declare.
+			name: "bandwidth",
+			honest: func() float64 {
+				node := &corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:   "slow-uplink",
+						Labels: map[string]string{hardware.LabelNetworkBandwidthGbps: "1"},
+					},
+				}
+				ni := framework.NewNodeInfo()
+				ni.SetNode(node)
+				return plugin.BandwidthScoreForTest(ni, 100)
+			},
+			unknown: func() float64 { return plugin.BandwidthScoreForTest(uninformative, 100) },
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			honest := tc.honest()
+			unknown := tc.unknown()
+
+			if unknown >= honest {
+				t.Errorf(
+					"node with no metadata scored %.3f against an honestly-poor node's %.3f: "+
+						"withholding information must not be rewarded",
+					unknown, honest,
+				)
+			}
+			if unknown != 0.0 {
+				t.Errorf("node with no metadata scored %.3f, want the unknown-metadata score 0.000", unknown)
+			}
+		})
+	}
+}
+
+// The extended-resource fallback was unreachable: fragmentationScore returned
+// early unless HasGPU() was true, which required a non-zero greenpay.io/gpu-count,
+// which is exactly the condition the fallback tested for. This asserts it now
+// executes and computes a real fraction from the advertised resource, rather
+// than the node being written off as having no GPUs.
+func TestFragmentationScore_ExtendedResourceFallbackIsReachable(t *testing.T) {
+	plugin := newScorePlugin(t)
+
+	// 2 of 8 advertised GPUs allocated: 0.25 is on the left arm of the V-curve,
+	// so 100 × (0.85 − 0.25) / 0.85 = 70.588, discounted to 52.941 for an
+	// inferred total. A score of 0 would mean the fallback is still dead and
+	// the node was treated as having no GPUs; 100 would mean the old
+	// short-circuit is still in place.
+	got := plugin.FragmentationScoreForTest(unlabelledGPUNode("unlabelled-quarter", 8, 2))
+
+	const want = 52.941
+	if math.Abs(got-want) > 0.001 {
+		t.Errorf("unlabelled 2/8 fragmentation score = %.3f, want %.3f", got, want)
+	}
+
+	// The fraction has to track the advertised total, not just be non-zero.
+	fuller := plugin.FragmentationScoreForTest(unlabelledGPUNode("unlabelled-heavier", 8, 7))
+	if fuller >= got {
+		t.Errorf(
+			"7/8 allocated scored %.3f and 2/8 scored %.3f: the V-curve trough is not being tracked "+
+				"from the advertised GPU total",
+			fuller, got,
+		)
+	}
+}
+
+// The boundary between "the operator says this node has no GPUs" and "nobody
+// has told us anything about this node". Both parse to HasGPU() == false, which
+// is why the old code conflated them and handed the maximum score to each.
+func TestFragmentationScore_DeclaredNoGPUIsNotTheSameAsUnknown(t *testing.T) {
+	plugin := newScorePlugin(t)
+
+	nodeInfoWithLabels := func(nodeName string, labels map[string]string) *framework.NodeInfo {
+		ni := framework.NewNodeInfo()
+		ni.SetNode(&corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: labels},
+		})
+		return ni
+	}
+
+	// The runbook's CPU-node labelling (k8s/ml-workloads/node-labels.yaml).
+	// There is no GPU capacity to fragment, so the dimension does not apply and
+	// must not count against a node the operator has fully characterised.
+	declaredCPU := plugin.FragmentationScoreForTest(nodeInfoWithLabels("cpu-node-01", map[string]string{
+		hardware.LabelGPUVendor: hardware.GPUVendorNone,
+		hardware.LabelGPUCount:  "0",
+	}))
+	if math.Abs(declaredCPU-100.0) > 0.001 {
+		t.Errorf("declared CPU-only node scored %.3f, want 100.000 (dimension does not apply)", declaredCPU)
+	}
+
+	// A node carrying an unrelated label but nothing about its GPUs has not
+	// been characterised at all.
+	unlabelled := plugin.FragmentationScoreForTest(nodeInfoWithLabels("unknown-node", map[string]string{
+		hardware.LabelNetworkZone: "zone-a",
+	}))
+	if unlabelled != 0.0 {
+		t.Errorf("uncharacterised node scored %.3f, want the unknown-metadata score 0.000", unlabelled)
+	}
+}
+
+// The device-plugin registration window found while tracing the scheduler's
+// startup sequence: the greenpay.io labels are applied by hand, and accelerator
+// extended resources appear only once a device plugin has registered with
+// kubelet, so a node can be Ready and schedulable with neither signal present.
+//
+// The policy has to have defined behaviour there rather than guessing, and it
+// has to recover on its own once a signal turns up — nothing re-scores a node
+// on its behalf.
+func TestFragmentationScore_DevicePluginRegistrationWindow(t *testing.T) {
+	plugin := newScorePlugin(t)
+
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "fresh-node"}}
+
+	// Stage 1: the Node object exists but kubelet has not posted a status yet.
+	justRegistered := framework.NewNodeInfo()
+	justRegistered.SetNode(node)
+	if got := plugin.FragmentationScoreForTest(justRegistered); got != 0.0 {
+		t.Errorf("node with no status scored %.3f, want the conservative 0.000", got)
+	}
+
+	// Stage 2: Ready, core resources reported, device plugin not yet
+	// registered. Indistinguishable from a genuine CPU node, so it stays
+	// conservative rather than assuming either way.
+	node.Status.Allocatable = corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse("64"),
+		corev1.ResourceMemory: resource.MustParse("256Gi"),
+	}
+	ready := framework.NewNodeInfo()
+	ready.SetNode(node)
+	if got := plugin.FragmentationScoreForTest(ready); got != 0.0 {
+		t.Errorf("Ready node with no accelerators advertised scored %.3f, want the conservative 0.000", got)
+	}
+
+	// Stage 3: the device plugin registers. The node is now scored on its real
+	// allocation with no operator action: 3 of 4 GPUs allocated is 0.75, giving
+	// 100 × (0.85 − 0.75) / 0.85 = 11.765, discounted to 8.824.
+	node.Status.Allocatable["nvidia.com/gpu"] = *resource.NewQuantity(4, resource.DecimalSI)
+	registered := framework.NewNodeInfo()
+	registered.SetNode(node)
+	registered.Requested = &framework.Resource{
+		ScalarResources: map[corev1.ResourceName]int64{"nvidia.com/gpu": 3},
+	}
+
+	got := plugin.FragmentationScoreForTest(registered)
+	const want = 8.824
+	if math.Abs(got-want) > 0.001 {
+		t.Errorf("node scored %.3f once its device plugin registered, want %.3f", got, want)
+	}
 }
 
 func TestPreScore_ComputesMaxBandwidth(t *testing.T) {

@@ -56,7 +56,7 @@ func TestNUMAScoreAccountsForGPURequestAndDistribution(t *testing.T) {
 				GPUCountReq:  tc.requestedGPU,
 			}
 
-			got := scoreNUMALocality(reqs, hw)
+			got := applyMetadataPolicy(scoreNUMALocality(reqs, hw))
 			if math.Abs(got-tc.want) > 0.001 {
 				t.Errorf("numaScore() = %.3f, want %.3f", got, tc.want)
 			}
@@ -81,8 +81,8 @@ func TestNUMAScoreDoesNotRewardUnusedDomains(t *testing.T) {
 		[]int64{1, 1, 1, 1},
 	)
 
-	singleDomainScore := scoreNUMALocality(reqs, singleDomain)
-	fourDomainScore := scoreNUMALocality(reqs, fourDomains)
+	singleDomainScore := applyMetadataPolicy(scoreNUMALocality(reqs, singleDomain))
+	fourDomainScore := applyMetadataPolicy(scoreNUMALocality(reqs, fourDomains))
 	if singleDomainScore != fourDomainScore {
 		t.Errorf(
 			"one-GPU scores differ: single domain %.1f, four domains %.1f",
@@ -127,7 +127,7 @@ func TestNUMAScoreRequiresEnforcedPodAlignment(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			hw := topologyHardware(tc.policy, tc.scope, []int64{2, 0})
-			if got := scoreNUMALocality(reqs, hw); got != tc.want {
+			if got := applyMetadataPolicy(scoreNUMALocality(reqs, hw)); got != tc.want {
 				t.Errorf("numaScore() = %.1f, want %.1f", got, tc.want)
 			}
 		})
@@ -145,7 +145,7 @@ func TestNUMAScoreHonorsSingleNUMANodePolicy(t *testing.T) {
 		hardware.TopologyManagerScopePod,
 		[]int64{4, 0},
 	)
-	if got := scoreNUMALocality(reqs, local); got != 100 {
+	if got := applyMetadataPolicy(scoreNUMALocality(reqs, local)); got != 100 {
 		t.Errorf("single-domain numaScore() = %.1f, want 100", got)
 	}
 
@@ -154,12 +154,16 @@ func TestNUMAScoreHonorsSingleNUMANodePolicy(t *testing.T) {
 		hardware.TopologyManagerScopePod,
 		[]int64{2, 2},
 	)
-	if got := scoreNUMALocality(reqs, split); got != 0 {
+	if got := applyMetadataPolicy(scoreNUMALocality(reqs, split)); got != 0 {
 		t.Errorf("split-domain numaScore() = %.1f, want 0", got)
 	}
 }
 
-func TestNUMAScoreFallsBackToNeutralWithoutUsableTopology(t *testing.T) {
+// The NUMA dimension stays neutral only when it genuinely does not apply to the
+// pod in front of it.  A node whose topology metadata is missing or unusable is
+// a different situation and is covered by
+// TestNUMAScoreTreatsUnusableTopologyAsUnknown.
+func TestNUMAScoreIsNeutralWhenLocalityDoesNotApply(t *testing.T) {
 	validTopology := topologyHardware(
 		hardware.TopologyManagerPolicyRestricted,
 		hardware.TopologyManagerScopePod,
@@ -186,12 +190,42 @@ func TestNUMAScoreFallsBackToNeutralWithoutUsableTopology(t *testing.T) {
 			},
 			hw: validTopology,
 		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := applyMetadataPolicy(scoreNUMALocality(tc.reqs, tc.hw)); got != 50 {
+				t.Errorf("numaScore() = %.1f, want neutral score 50", got)
+			}
+		})
+	}
+}
+
+// A node that declares no GPU-to-NUMA topology, or declares one that
+// contradicts itself, leaves the domain count undeterminable.  Under the
+// missing-metadata policy that scores at the bottom of the range, not the
+// neutral midpoint — otherwise an unlabelled node outranks a node honestly
+// reporting a poor GPU spread, which is the inversion issue #335 is about.
+func TestNUMAScoreTreatsUnusableTopologyAsUnknown(t *testing.T) {
+	reqs := hardware.PodHardwareReqs{
+		WorkloadType: hardware.WorkloadMLTraining,
+		GPUCountReq:  4,
+	}
+
+	cases := []struct {
+		name string
+		hw   hardware.NodeHardware
+	}{
 		{
-			name: "invalid distribution",
-			reqs: hardware.PodHardwareReqs{
-				WorkloadType: hardware.WorkloadMLTraining,
-				GPUCountReq:  2,
-			},
+			// No greenpay.io topology labels at all: ParseNodeHardware yields
+			// zero domains and a nil distribution.
+			name: "no topology labels",
+			hw:   hardware.NodeHardware{GPUVendor: "nvidia", GPUCount: 4},
+		},
+		{
+			// Labels present but the distribution does not sum to gpu-count,
+			// so nothing in it can be trusted.
+			name: "distribution contradicts declared GPU count",
 			hw: hardware.NodeHardware{
 				GPUCount:              4,
 				NUMANodes:             2,
@@ -202,10 +236,25 @@ func TestNUMAScoreFallsBackToNeutralWithoutUsableTopology(t *testing.T) {
 		},
 	}
 
+	// A node that honestly reports the worst usable spread — one GPU per domain,
+	// so the request needs all four — still scores above an unusable one.
+	honestlyPoor := applyMetadataPolicy(scoreNUMALocality(reqs, topologyHardware(
+		hardware.TopologyManagerPolicyRestricted,
+		hardware.TopologyManagerScopePod,
+		[]int64{1, 1, 1, 1},
+	)))
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := scoreNUMALocality(tc.reqs, tc.hw); got != 50 {
-				t.Errorf("numaScore() = %.1f, want neutral score 50", got)
+			got := applyMetadataPolicy(scoreNUMALocality(reqs, tc.hw))
+			if got != unknownMetadataScore {
+				t.Errorf("numaScore() = %.1f, want unknown-metadata score %.1f", got, unknownMetadataScore)
+			}
+			if got >= honestlyPoor {
+				t.Errorf(
+					"unusable topology scored %.1f, which is not below the honestly-poor spread %.1f",
+					got, honestlyPoor,
+				)
 			}
 		})
 	}
@@ -248,7 +297,7 @@ func TestNUMAScore_TPUPodExercisesLocalityPath(t *testing.T) {
 		[]int64{4},
 	)
 
-	if got := scoreNUMALocality(reqs, hw); got != 100.0 {
+	if got := applyMetadataPolicy(scoreNUMALocality(reqs, hw)); got != 100.0 {
 		t.Errorf("numaScore() for TPU pod = %.1f, want 100.0 (topology fully satisfied)", got)
 	}
 }

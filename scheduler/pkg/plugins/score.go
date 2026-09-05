@@ -231,10 +231,15 @@ func (s *MLWorkloadScore) Score(
 	reqs := hardware.ParsePodHardwareReqs(pod)
 	hw := hardware.ParseNodeHardware(node)
 
-	scoreA := s.binPackingScore(nodeInfo, hw)
-	scoreB := s.fragmentationScore(nodeInfo, node, hw)
-	scoreC := s.numaScore(reqs, hw)
-	scoreD := s.bandwidthScore(hw, bwState)
+	// Every sub-score reports both a measured value and how well the inputs
+	// behind it are known; applyMetadataPolicy turns that pair into the score
+	// the dimension is entitled to.  Routing all four through the one call is
+	// what keeps the missing-metadata policy single-sourced — see its
+	// definition below.
+	scoreA := applyMetadataPolicy(s.binPackingScore(nodeInfo, hw))
+	scoreB := applyMetadataPolicy(s.fragmentationScore(nodeInfo, node, hw))
+	scoreC := applyMetadataPolicy(s.numaScore(reqs, hw))
+	scoreD := applyMetadataPolicy(s.bandwidthScore(hw, bwState))
 
 	composite := s.weights.BinPacking*scoreA +
 		s.weights.Fragmentation*scoreB +
@@ -302,6 +307,100 @@ func (s *MLWorkloadScore) NormalizeScore(
 	return framework.NewStatus(framework.Success)
 }
 
+// ── Missing-metadata policy ───────────────────────────────────────────────────
+//
+// Every sub-score below draws on node metadata that may simply not be there.
+// The greenpay.io labels are applied by hand — k8s/ml-workloads/node-labels.yaml
+// is an operator runbook, not a manifest, and nothing in the cluster applies
+// them automatically — so an unlabelled node is not a transient startup state.
+// It is the default state of every node until someone gets to it, and under
+// cluster autoscaling a node may never be labelled at all.
+//
+// The rule, applied identically by all four sub-scores:
+//
+//	A sub-score may claim only as much of its range as its inputs justify.
+//
+//	  declared — the value comes from an authoritative source: a greenpay.io
+//	             label the operator attested, or a resource kubelet reports on
+//	             the node itself.  Scored across the full range.
+//
+//	  inferred — the value is derived from a secondary, dynamic source: the
+//	             accelerator extended resources a device plugin advertises.
+//	             Usable, but not the quantity a label declares — kubelet drops
+//	             unhealthy devices from allocatable, a device plugin may not
+//	             have finished registering, and MIG or time-slicing advertises
+//	             slices rather than physical GPUs.  Scored on the measured
+//	             value, discounted by inferredSignalConfidence so it cannot
+//	             reach the top of the range: the signal is worth trusting, but
+//	             not worth treating as certainty.
+//
+//	  unknown  — no source at all.  Scored unknownMetadataScore.
+//
+// unknownMetadataScore is 0, the bottom of the range, and that is forced rather
+// than chosen.  The property this policy exists to hold is that a node we know
+// nothing about must not outrank a node that honestly reports poor
+// characteristics — for *every* honest node, not merely most of them.  Honest
+// scores occupy the whole closed range [0, 100], and the only value less than
+// or equal to every element of that range is 0.  A "deprioritised but not
+// maximally penalised" band would still outrank every honest node scoring below
+// the band, relocating the inverted incentive instead of removing it.
+//
+// Scoring is a preference, not an admission check.  A node scoring 0 here stays
+// schedulable and simply ranks last, which is the honest answer while we know
+// nothing about it, and NormalizeScore deliberately preserves that low absolute
+// magnitude (see its doc comment) so the other plugins in the profile decide
+// placement instead.  The score corrects itself on the next scheduling cycle as
+// soon as either signal source appears.
+//
+// What this policy does NOT govern: a dimension that provably does not apply to
+// the node or pod at hand.  A node the operator has declared CPU-only has no
+// GPU fragmentation to measure, and a pod that requests no GPUs has no NUMA
+// locality to optimise.  Those keep their own per-dimension constants
+// (noGPUFragmentationScore, numaNotApplicableScore) and report declared
+// confidence, because they are answers rather than gaps.
+
+// signalConfidence classifies how well the inputs behind a sub-score are known.
+// See the missing-metadata policy above.
+type signalConfidence int
+
+const (
+	// signalDeclared marks a value read from an authoritative source.
+	signalDeclared signalConfidence = iota
+	// signalInferred marks a value derived from a secondary, dynamic source.
+	signalInferred
+	// signalUnknown marks a dimension with no available source.  A sub-score
+	// returning it has no measured value to report and returns 0; the measured
+	// value is ignored either way.
+	signalUnknown
+)
+
+const (
+	// unknownMetadataScore is what a dimension scores when nothing on the node
+	// determines it.  See the missing-metadata policy for why it is the bottom
+	// of the range rather than the neutral midpoint.
+	unknownMetadataScore = 0.0
+
+	// inferredSignalConfidence discounts a sub-score computed from an inferred
+	// rather than a declared signal, keeping it below the top of the range.
+	inferredSignalConfidence = 0.75
+)
+
+// applyMetadataPolicy maps a sub-score's measured value onto the range its
+// input confidence justifies.  It is the single implementation of the
+// missing-metadata policy documented above: the four sub-scores report what
+// they measured and how well they know it, and this decides what that is worth,
+// so a gap in one dimension is never valued differently from a gap in another.
+func applyMetadataPolicy(measured float64, confidence signalConfidence) float64 {
+	switch confidence {
+	case signalInferred:
+		return measured * inferredSignalConfidence
+	case signalUnknown:
+		return unknownMetadataScore
+	default:
+		return measured
+	}
+}
+
 // ── Sub-score implementations ─────────────────────────────────────────────────
 
 // binPackingScore rewards nodes that are already hosting ML workloads,
@@ -320,16 +419,21 @@ func (s *MLWorkloadScore) NormalizeScore(
 // plugin model is exposed through extended resources on node allocatable.
 // Operators should also label GPU extended resources on nodes; this gives a
 // robust fallback for clusters where GPU device plugins are not deployed.
-func (s *MLWorkloadScore) binPackingScore(ni *framework.NodeInfo, hw hardware.NodeHardware) float64 {
+//
+// Utilisation is read straight off the node, so it is either observable or it
+// is not — this dimension has no secondary source to infer from and never
+// reports inferred confidence.  A node whose utilisation cannot be observed at
+// all falls to the missing-metadata policy rather than to a neutral score.
+func (s *MLWorkloadScore) binPackingScore(ni *framework.NodeInfo, hw hardware.NodeHardware) (float64, signalConfidence) {
 	if ni == nil || ni.Node() == nil {
-		return 50.0 // neutral
+		return 0, signalUnknown
 	}
 
 	allocatable := ni.Allocatable
 	requested := ni.Requested
 
 	if allocatable == nil || requested == nil {
-		return 50.0
+		return 0, signalUnknown
 	}
 
 	var fractions []float64
@@ -340,30 +444,25 @@ func (s *MLWorkloadScore) binPackingScore(ni *framework.NodeInfo, hw hardware.No
 		fractions = append(fractions, f)
 	}
 
-	// 2. GPUs (extended resources)
-	gpuResourceNames := []corev1.ResourceName{
-		"nvidia.com/gpu",
-		"amd.com/gpu",
-		"google.com/tpu",
-	}
-
-	for _, resName := range gpuResourceNames {
-		var allocQty int64 = 0
-		if allocatable.ScalarResources != nil {
-			allocQty = allocatable.ScalarResources[resName]
+	// 2. Accelerators (extended resources).  Matched through
+	// hardware.IsAcceleratorResource so this agrees with the filter plugin and
+	// with pod-side accounting instead of carrying its own vendor list; the
+	// duplicate list this replaces is what silently dropped TPU nodes.
+	for resName, allocQty := range allocatable.ScalarResources {
+		if !hardware.IsAcceleratorResource(resName) || allocQty <= 0 {
+			continue
 		}
-		if allocQty > 0 {
-			var reqQty int64 = 0
-			if requested.ScalarResources != nil {
-				reqQty = requested.ScalarResources[resName]
-			}
-			f := float64(reqQty) / float64(allocQty)
-			fractions = append(fractions, f)
+		var reqQty int64
+		if requested.ScalarResources != nil {
+			reqQty = requested.ScalarResources[resName]
 		}
+		fractions = append(fractions, float64(reqQty)/float64(allocQty))
 	}
 
 	if len(fractions) == 0 {
-		return 50.0
+		// The node reports neither an allocatable CPU figure nor an advertised
+		// accelerator, so how loaded it is cannot be determined at all.
+		return 0, signalUnknown
 	}
 
 	var totalFraction float64 = 0
@@ -378,8 +477,17 @@ func (s *MLWorkloadScore) binPackingScore(ni *framework.NodeInfo, hw hardware.No
 		avgFraction = 0.0
 	}
 
-	return avgFraction * 100.0
+	return avgFraction * 100.0, signalDeclared
 }
+
+// noGPUFragmentationScore is the fragmentation sub-score for a node the
+// operator has declared has no GPUs (greenpay.io/gpu-vendor=none,
+// greenpay.io/gpu-count=0).  There is no GPU capacity to fragment, so the
+// dimension does not apply and cannot count against the node.
+//
+// This is a declared answer, not missing metadata: an unlabelled node does not
+// receive it, which is the whole point of the DeclaresNoGPU gate below.
+const noGPUFragmentationScore = 100.0
 
 // fragmentationScore computes the allocated GPU fraction for a node and
 // applies a V-shaped scoring curve centered at fragThreshold.
@@ -389,71 +497,27 @@ func (s *MLWorkloadScore) binPackingScore(ni *framework.NodeInfo, hw hardware.No
 //   - fragThreshold allocation: 0 (fragmented zone)
 //
 // The score function is a "V" shaped curve centered at s.fragThreshold.
-func (s *MLWorkloadScore) fragmentationScore(ni *framework.NodeInfo, node *corev1.Node, hw hardware.NodeHardware) float64 {
-	if !hw.HasGPU() {
-		// Non-GPU nodes — skip GPU fragmentation logic.
-		return 100.0
-	}
-
-	var totalGPUs int64 = hw.GPUCount
-	var allocatedGPUs int64 = 0
-
-	gpuResourceNames := []corev1.ResourceName{
-		"nvidia.com/gpu",
-		"amd.com/gpu",
-		"google.com/tpu",
-	}
-
-	if ni != nil {
-		if totalGPUs == 0 {
-			if ni.Allocatable != nil && ni.Allocatable.ScalarResources != nil {
-				for _, resName := range gpuResourceNames {
-					if qty, ok := ni.Allocatable.ScalarResources[resName]; ok && qty > 0 {
-						totalGPUs += qty
-					}
-				}
-			}
-			if totalGPUs == 0 && node != nil && node.Status.Allocatable != nil {
-				for _, resName := range gpuResourceNames {
-					if q, ok := node.Status.Allocatable[resName]; ok {
-						totalGPUs += q.Value()
-					}
-				}
-			}
-		}
-
-		if ni.Requested != nil && ni.Requested.ScalarResources != nil {
-			for _, resName := range gpuResourceNames {
-				if qty, ok := ni.Requested.ScalarResources[resName]; ok {
-					allocatedGPUs += qty
-				}
-			}
-		} else if len(ni.Pods) > 0 {
-			for _, podInfo := range ni.Pods {
-				if podInfo == nil || podInfo.Pod == nil {
-					continue
-				}
-				for _, container := range podInfo.Pod.Spec.Containers {
-					for _, resName := range gpuResourceNames {
-						if q, ok := container.Resources.Requests[resName]; ok {
-							allocatedGPUs += q.Value()
-						}
-					}
-				}
-			}
-		}
-	} else if node != nil && totalGPUs == 0 {
-		if node.Status.Allocatable != nil {
-			for _, resName := range gpuResourceNames {
-				if q, ok := node.Status.Allocatable[resName]; ok {
-					totalGPUs += q.Value()
-				}
-			}
-		}
-	}
+//
+// The GPU total behind that fraction comes from resolveGPUAllocation, which
+// also reports how well the node's GPU capacity is known.  A node that
+// advertises accelerators but carries no greenpay.io labels is scored on its
+// real allocation at inferred confidence — see the missing-metadata policy —
+// rather than waved through with a perfect score, and a node that reports
+// nothing at all is not mistaken for one that has no GPUs.
+func (s *MLWorkloadScore) fragmentationScore(ni *framework.NodeInfo, node *corev1.Node, hw hardware.NodeHardware) (float64, signalConfidence) {
+	totalGPUs, allocatedGPUs, confidence := resolveGPUAllocation(ni, node, hw)
 
 	if totalGPUs <= 0 {
-		return 100.0
+		if hw.DeclaresNoGPU() {
+			// The operator has characterised this node as having no GPUs, so
+			// there is no GPU capacity to fragment.
+			return noGPUFragmentationScore, signalDeclared
+		}
+		// Nothing has told us anything about this node's GPUs: no greenpay.io
+		// labels, and no advertised accelerator resources either.  That is the
+		// window in which a GPU node whose device plugin has not registered yet
+		// is indistinguishable from a CPU node, so the policy applies.
+		return 0, signalUnknown
 	}
 
 	fraction := float64(allocatedGPUs) / float64(totalGPUs)
@@ -465,10 +529,10 @@ func (s *MLWorkloadScore) fragmentationScore(ni *framework.NodeInfo, node *corev
 
 	threshold := s.fragThreshold
 	if threshold <= 0.0 {
-		return fraction * 100.0
+		return fraction * 100.0, confidence
 	}
 	if threshold >= 1.0 {
-		return (1.0 - fraction) * 100.0
+		return (1.0 - fraction) * 100.0, confidence
 	}
 
 	var score float64
@@ -478,19 +542,103 @@ func (s *MLWorkloadScore) fragmentationScore(ni *framework.NodeInfo, node *corev
 		score = 100.0 * (fraction - threshold) / (1.0 - threshold)
 	}
 
-	return score
+	return score, confidence
+}
+
+// resolveGPUAllocation reports a node's total GPU capacity, how much of it is
+// already allocated, and how well the total is known.
+//
+// The two sources are independent and arrive independently: the operator's
+// greenpay.io/gpu-count label is a hand-applied attestation of the node's
+// physical GPUs, while the accelerator extended resources are advertised
+// automatically by a device plugin some time after the node goes Ready.  The
+// declared count wins when both are present — it is the physical count the rest
+// of the plugin is written against — and the advertised count is the fallback
+// that keeps an unlabelled GPU node scored on reality.  A total of 0 means
+// neither source said anything, which the caller must not read as "no GPUs".
+func resolveGPUAllocation(
+	ni *framework.NodeInfo,
+	node *corev1.Node,
+	hw hardware.NodeHardware,
+) (totalGPUs int64, allocatedGPUs int64, confidence signalConfidence) {
+	confidence = signalUnknown
+
+	if hw.HasGPU() {
+		totalGPUs = hw.GPUCount
+		confidence = signalDeclared
+	}
+
+	if ni != nil {
+		// computeGPUCapacity is the filter plugin's capacity resolution, reused
+		// here so filtering and scoring cannot disagree about how many GPUs a
+		// node has or which resource names count as accelerators.
+		advertisedTotal, advertisedAllocated, _ := computeGPUCapacity(ni, hw)
+		allocatedGPUs = advertisedAllocated
+
+		if totalGPUs <= 0 && advertisedTotal > 0 {
+			totalGPUs = advertisedTotal
+			confidence = signalInferred
+		}
+
+		if allocatedGPUs <= 0 {
+			// NodeInfo.Requested only carries scalar totals once each pod has
+			// been accumulated through AddPod; fall back to the node's pod list
+			// when it has not.
+			allocatedGPUs = allocatedGPUsFromPods(ni)
+		}
+
+		return totalGPUs, allocatedGPUs, confidence
+	}
+
+	if totalGPUs <= 0 && node != nil {
+		for resName, quantity := range node.Status.Allocatable {
+			if hardware.IsAcceleratorResource(resName) {
+				totalGPUs += quantity.Value()
+			}
+		}
+		if totalGPUs > 0 {
+			confidence = signalInferred
+		}
+	}
+
+	return totalGPUs, allocatedGPUs, confidence
+}
+
+// allocatedGPUsFromPods sums the accelerator requests of the pods already
+// placed on a node.  NodeInfo.Requested carries the same total once every pod
+// has been added through AddPod, so this only matters for a NodeInfo whose
+// scalar totals were never accumulated.
+func allocatedGPUsFromPods(ni *framework.NodeInfo) int64 {
+	var allocated int64
+	for _, podInfo := range ni.Pods {
+		if podInfo == nil || podInfo.Pod == nil {
+			continue
+		}
+		for _, container := range podInfo.Pod.Spec.Containers {
+			for resName, quantity := range container.Resources.Requests {
+				if hardware.IsAcceleratorResource(resName) {
+					allocated += quantity.Value()
+				}
+			}
+		}
+	}
+	return allocated
 }
 
 // numaScore scores a node by the minimum number of NUMA domains needed to
 // supply the pod's requested GPUs.
 //
 // Strategy:
-//   - Missing, inconsistent, or non-enforced topology metadata is neutral.
+//   - A pod that is not an ML workload, or asks for no GPUs, has no NUMA
+//     locality to optimise: the dimension does not apply and stays neutral.
+//   - Missing or self-contradictory topology metadata is unknown and falls to
+//     the missing-metadata policy; a node whose kubelet honestly declares it
+//     will not enforce pod-scope alignment is a declared answer and stays
+//     neutral.  See scoreNUMALocality for why those two are scored apart.
 //   - restricted policy scores 100 / required NUMA domains.
 //   - single-numa-node scores 100 only when all requested GPUs fit in one
 //     domain, otherwise 0 because kubelet will not admit that alignment.
-//   - Non-ML or CPU-only workloads remain neutral.
-func (s *MLWorkloadScore) numaScore(reqs hardware.PodHardwareReqs, hw hardware.NodeHardware) float64 {
+func (s *MLWorkloadScore) numaScore(reqs hardware.PodHardwareReqs, hw hardware.NodeHardware) (float64, signalConfidence) {
 	return scoreNUMALocality(reqs, hw)
 }
 
@@ -502,14 +650,21 @@ func (s *MLWorkloadScore) numaScore(reqs hardware.PodHardwareReqs, hw hardware.N
 // High-bandwidth nodes are preferred for ml-training and ml-batch workloads
 // that need to shuffle large tensors or datasets over the network.  For
 // ml-inference this is less critical, so the overall weight is lower (0.15).
-func (s *MLWorkloadScore) bandwidthScore(hw hardware.NodeHardware, bwState *clusterBandwidthState) float64 {
-	if hw.NetworkBandwidthGbps == 0 {
-		return 50.0 // no label — neutral
+//
+// Bandwidth is label-only — the Node API publishes no uplink figure to infer
+// one from — so this dimension is either declared or unknown, and an unlabelled
+// node falls to the missing-metadata policy rather than to a neutral score.
+func (s *MLWorkloadScore) bandwidthScore(hw hardware.NodeHardware, bwState *clusterBandwidthState) (float64, signalConfidence) {
+	if hw.NetworkBandwidthGbps <= 0 {
+		// No greenpay.io/network-bandwidth label on the node.
+		return 0, signalUnknown
 	}
 
 	if bwState == nil || bwState.maxGbps == 0 {
-		return 50.0
+		// PreScore did not run, so there is no cluster maximum to normalise
+		// against and this node's share of it cannot be determined.
+		return 0, signalUnknown
 	}
 
-	return float64(hw.NetworkBandwidthGbps) / float64(bwState.maxGbps) * 100.0
+	return float64(hw.NetworkBandwidthGbps) / float64(bwState.maxGbps) * 100.0, signalDeclared
 }
