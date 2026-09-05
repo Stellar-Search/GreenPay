@@ -648,6 +648,52 @@ router.post("/:updateId/like", likeLimiter, async (req, res, next) => {
       "SELECT id FROM project_updates WHERE id = $1 AND moderation_status = ANY($2::text[])",
       [updateId, PUBLIC_STATUSES],
     );
+    if (!updateResult.rows[0]) {
+      throw createApiError(404, "UPDATE_NOT_FOUND", "Update not found");
+    }
+
+    // Toggle the like in one statement. Reading the `deleted` CTE from the
+    // INSERT's WHERE forces Postgres to finish the DELETE before the INSERT
+    // can produce a row, so "was this already liked?" is answered by the
+    // DELETE's own row lock instead of by an earlier SELECT whose answer can
+    // go stale before the write lands.
+    //
+    // Two concurrent likes therefore both reach the INSERT; the second blocks
+    // on the UNIQUE(update_id, donor_address) index and is then turned into a
+    // no-op by ON CONFLICT DO NOTHING. The duplicate is absorbed by the
+    // constraint rather than raised as an error for the caller to catch, so
+    // neither request fails and only one row is ever created.
+    const toggleResult = await pool.query(
+      `WITH deleted AS (
+         DELETE FROM update_likes
+          WHERE update_id = $1 AND donor_address = $2
+         RETURNING id
+       ),
+       inserted AS (
+         INSERT INTO update_likes (id, update_id, donor_address)
+         SELECT $3, $1, $2
+          WHERE NOT EXISTS (SELECT 1 FROM deleted)
+         ON CONFLICT (update_id, donor_address) DO NOTHING
+         RETURNING id
+       )
+       SELECT NOT EXISTS (SELECT 1 FROM deleted) AS liked`,
+      [req.params.updateId, donorAddress, uuidv4()],
+    );
+
+    // Counted after the toggle, not inside it: a data-modifying CTE's changes
+    // are not visible to the rest of the statement that made them, so an
+    // inline COUNT(*) would report the pre-toggle total.
+    const countResult = await pool.query(
+      "SELECT COUNT(*) as count FROM update_likes WHERE update_id = $1",
+      [req.params.updateId],
+    );
+
+    res.json({
+      liked: toggleResult.rows[0].liked,
+      likeCount: parseInt(countResult.rows[0].count),
+    });
+  } catch (e) {
+    next(e);
     if (!updateResult.rows[0]) throw createApiError(404, "UPDATE_NOT_FOUND", "Published update not found");
     const existing = await pool.query(
       "SELECT id FROM update_likes WHERE update_id = $1 AND donor_address = $2",

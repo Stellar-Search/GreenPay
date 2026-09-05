@@ -754,6 +754,26 @@ CREATE TABLE IF NOT EXISTS project_update_translations (
 CREATE INDEX IF NOT EXISTS idx_project_update_translations_lookup
   ON project_update_translations(update_id, language, moderation_status);
 
+-- Likes on a project update: one row per (update, claimed donor address).
+-- POST /api/updates/:updateId/like toggles that row's existence in a single
+-- statement, so this UNIQUE constraint is what makes a concurrent duplicate
+-- like collapse into a no-op instead of inserting a second row.
+--
+-- donor_address is client-supplied and unauthenticated, as it is on
+-- project_ratings and project_subscriptions. The constraint bounds one
+-- claimed address to one like; it is not a statement about who liked.
+--
+-- No separate index on update_id: the UNIQUE index leads with update_id, so
+-- it already serves both the per-update COUNT(*) and the per-donor lookup
+-- behind GET /api/updates/:updateId/likes.
+CREATE TABLE IF NOT EXISTS update_likes (
+  id UUID PRIMARY KEY,
+  update_id UUID NOT NULL REFERENCES project_updates(id) ON DELETE CASCADE,
+  donor_address TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(update_id, donor_address)
+);
+
 CREATE TABLE IF NOT EXISTS project_subscriptions (
   id UUID PRIMARY KEY,
   project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
