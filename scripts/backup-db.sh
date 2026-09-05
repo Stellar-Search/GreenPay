@@ -56,7 +56,15 @@ upload_to_s3() {
         --storage-class STANDARD_IA \
         --metadata "backup-date=${TIMESTAMP},database=${DB_NAME}"; then
         log_info "Successfully uploaded to $REMOTE_PATH"
-        return 0
+        
+        # Post-upload verification
+        if aws s3api head-object --bucket "${S3_BUCKET}" --key "${S3_PREFIX}${BACKUP_FILE}" >/dev/null 2>&1; then
+            log_info "S3 post-upload verification passed"
+            return 0
+        else
+            log_error "S3 post-upload verification failed"
+            return 1
+        fi
     else
         log_error "Failed to upload backup to S3"
         return 1
@@ -85,9 +93,16 @@ upload_to_gcs() {
         cp "$BACKUP_PATH" "$REMOTE_PATH"; then
         log_info "Successfully uploaded to $REMOTE_PATH"
 
-        # Set lifecycle policy to delete old backups after RETENTION_DAYS
-        # This is handled at the bucket level, not per object
-        return 0
+        # Post-upload verification
+        if gsutil ls "$REMOTE_PATH" >/dev/null 2>&1; then
+            log_info "GCS post-upload verification passed"
+            # Set lifecycle policy to delete old backups after RETENTION_DAYS
+            # This is handled at the bucket level, not per object
+            return 0
+        else
+            log_error "GCS post-upload verification failed"
+            return 1
+        fi
     else
         log_error "Failed to upload backup to GCS"
         return 1
@@ -102,53 +117,66 @@ upload_to_local() {
     return 0
 }
 
-# Create backup directory
-mkdir -p "${BACKUP_DIR}"
+main() {
+    # Create backup directory
+    mkdir -p "${BACKUP_DIR}"
 
-log_info "Starting database backup..."
-log_info "Database: $DB_NAME on $DB_HOST:$DB_PORT"
-log_info "Backup file: $BACKUP_FILE"
+    log_info "Starting database backup..."
+    log_info "Database: $DB_NAME on $DB_HOST:$DB_PORT"
+    log_info "Backup file: $BACKUP_FILE"
 
-# Export password if provided
-if [ -n "$DB_PASSWORD" ]; then
-    export PGPASSWORD="$DB_PASSWORD"
-fi
+    # Export password if provided
+    if [ -n "$DB_PASSWORD" ]; then
+        export PGPASSWORD="$DB_PASSWORD"
+    fi
 
-# Create the backup
-if ! pg_dump \
-    -h "$DB_HOST" \
-    -p "$DB_PORT" \
-    -U "$DB_USER" \
-    -d "$DB_NAME" \
-    --no-password \
-    | gzip > "$BACKUP_PATH"; then
-    log_error "Database backup failed"
-    exit 1
-fi
-
-log_info "Database backup completed successfully"
-log_info "Backup file size: $(du -h "$BACKUP_PATH" | cut -f1)"
-
-# Upload to cloud storage
-case "$STORAGE_TYPE" in
-    s3)
-        upload_to_s3
-        ;;
-    gcs)
-        upload_to_gcs
-        ;;
-    local)
-        upload_to_local
-        ;;
-    *)
-        log_error "Unknown storage type: $STORAGE_TYPE"
+    # Create the backup
+    if ! pg_dump \
+        -h "$DB_HOST" \
+        -p "$DB_PORT" \
+        -U "$DB_USER" \
+        -d "$DB_NAME" \
+        --no-password \
+        | gzip > "$BACKUP_PATH"; then
+        log_error "Database backup failed"
         exit 1
-        ;;
-esac
+    fi
 
-# Cleanup old backups locally
-log_info "Cleaning up local backups older than $RETENTION_DAYS days..."
-find "${BACKUP_DIR}" -name "greenpay_backup_*.sql.gz" -mtime "+${RETENTION_DAYS}" -delete
-log_info "Local backup cleanup completed"
+    log_info "Database backup completed successfully"
+    log_info "Backup file size: $(du -h "$BACKUP_PATH" | cut -f1)"
 
-log_info "Database backup and upload completed successfully"
+    # Upload to cloud storage
+    case "$STORAGE_TYPE" in
+        s3)
+            if ! upload_to_s3; then
+                log_error "S3 upload step failed"
+                exit 1
+            fi
+            ;;
+        gcs)
+            if ! upload_to_gcs; then
+                log_error "GCS upload step failed"
+                exit 1
+            fi
+            ;;
+        local)
+            if ! upload_to_local; then
+                log_error "Local upload step failed"
+                exit 1
+            fi
+            ;;
+        *)
+            log_error "Unknown storage type: $STORAGE_TYPE"
+            exit 1
+            ;;
+    esac
+
+    # Cleanup old backups locally
+    log_info "Cleaning up local backups older than $RETENTION_DAYS days..."
+    find "${BACKUP_DIR}" -name "greenpay_backup_*.sql.gz" -mtime "+${RETENTION_DAYS}" -delete
+    log_info "Local backup cleanup completed"
+
+    log_info "Database backup and upload completed successfully"
+}
+
+main "$@"
