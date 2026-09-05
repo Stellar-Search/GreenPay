@@ -37,22 +37,40 @@ jobs:
       - uses: ./.github/actions/setup-node-install
         with:
           working-directory: mobile
-      # Nothing ran these before, which is how a corrupt test file, three
-      # unrunnable suites and four failing tests went unnoticed.
+      # Runs all tests including scrubber property-based tests and
+      # crashReporter unit tests — failure here blocks the build job.
       - run: npm test
 
   build:
     name: EAS Preview Build
+    # Require tests to pass before any EAS build runs (Requirement 7.6, 10.1).
+    needs: [test]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: mobile
+    env:
+      EXPO_PUBLIC_SENTRY_DSN: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN }}
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-node-install
         with:
           working-directory: mobile
+
+      # Validate that app.json uses the fingerprintExperimental policy before
+      # attempting a build (Requirement 10.3). Fails immediately with a clear
+      # error if the policy has been inadvertently changed.
+      - name: Validate app.json runtimeVersion policy
+        run: |
+          POLICY=$(node -e "const a=require('./app.json'); console.log(a.expo.runtimeVersion.policy);")
+          if [ "$POLICY" != "fingerprintExperimental" ]; then
+            echo "::error::app.json runtimeVersion.policy is '$POLICY', expected 'fingerprintExperimental'. Update app.json before merging."
+            exit 1
+          fi
+          echo "app.json runtimeVersion.policy: $POLICY ✓"
+
       - name: Check EXPO_TOKEN is configured
         id: check-token
         env:
@@ -64,10 +82,38 @@ jobs:
             echo "configured=false" >> "$GITHUB_OUTPUT"
             echo "::warning::EXPO_TOKEN secret is not configured — skipping EAS preview build. Add an Expo access token as the EXPO_TOKEN repository secret to enable this workflow."
           fi
+
       - uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8
         if: steps.check-token.outputs.configured == 'true'
         with:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
+
       - run: eas build --platform all --profile preview --non-interactive
         if: steps.check-token.outputs.configured == 'true'
+
+      # Upload source maps to Sentry after a successful production build so
+      # that crash reports are symbolicated (Requirement 10.2, 10.4).
+      # This step only runs when SENTRY_AUTH_TOKEN is configured; if the upload
+      # fails the job fails — an unsymbolicated build is not acceptable.
+      - name: Upload source maps to Sentry
+        if: steps.check-token.outputs.configured == 'true' && env.SENTRY_AUTH_TOKEN != ''
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          UPDATE_ID=$(node -e "
+            const { execSync } = require('child_process');
+            try {
+              const out = execSync('eas update:list --branch production --json --non-interactive', { encoding: 'utf8' });
+              const updates = JSON.parse(out);
+              console.log(updates[0]?.id ?? '');
+            } catch { console.log(''); }
+          ")
+          if [ -z "$UPDATE_ID" ]; then
+            echo "::warning::Could not determine EAS update ID — skipping source map upload."
+            exit 0
+          fi
+          npx --yes @sentry/cli@2 releases files "$UPDATE_ID" \
+            upload-sourcemaps ./dist \
+            --org greenpay \
+            --project greenpay-mobile

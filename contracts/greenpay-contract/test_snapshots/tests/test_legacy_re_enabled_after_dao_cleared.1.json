@@ -409,6 +409,18 @@
                         "val": {
                           "u32": 1
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -837,7 +849,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'DAO governance is active; legacy proposals are retired' from contract function 'Symbol(obj#139)'"
+                  "string": "caught panic 'DAO governance is active; legacy proposals are retired' from contract function 'Symbol(obj#145)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"

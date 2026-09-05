@@ -130,8 +130,32 @@ pub struct VoteProposal {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MigrationState {
+    pub target_version: u32,
+    pub cursor: u32,
+    pub total_items: u32,
+    pub completed: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProjectV1 {
+    pub id: String,
+    pub name: String,
+    pub wallet: Address,
+    pub co2_per_xlm: u32,
+    pub total_raised: i128,
+    pub donor_count: u32,
+    pub active: bool,
+    pub registered_at: u32,
+}
+
+#[contracttype]
 pub enum DataKey {
     Admin,
+    Version,
+    MigrationState,
     Project(String),
     ProjectCount,
     DonorStats(Address),
@@ -167,6 +191,7 @@ pub enum DataKey {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
+pub const CONTRACT_VERSION: u32 = 1;
 pub const STROOP: i128 = 10_000_000;
 
 /// Compatibility bound on the deprecated `co2_per_xlm` registration field.
@@ -481,6 +506,9 @@ impl GreenPayContract {
             panic!("Contract already initialized");
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::Version, &CONTRACT_VERSION);
         env.storage().instance().set(&DataKey::ProjectCount, &0u32);
         env.storage().instance().set(&DataKey::DonationCount, &0u32);
         env.storage()
@@ -489,6 +517,19 @@ impl GreenPayContract {
         env.storage()
             .instance()
             .set(&DataKey::GlobalCO2OffsetGrams, &0i128);
+    }
+
+    /// Exposes the contract's current schema version to off-chain consumers and scripts.
+    pub fn get_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::Version)
+            .unwrap_or(1u32)
+    }
+
+    /// Alias for get_version.
+    pub fn version(env: Env) -> u32 {
+        Self::get_version(env)
     }
 
     // ─── Token allowlist ──────────────────────────────────────────────────────
@@ -1370,7 +1411,7 @@ impl GreenPayContract {
         read_persistent(&env, &DataKey::Proposal(project_id)).expect("Proposal not found")
     }
 
-    // ─── Upgrade ──────────────────────────────────────────────────────────────────
+    // ─── Upgrade & Migration ──────────────────────────────────────────────────
 
     /// Replaces the contract's WASM with a new hash.
     /// Only the admin (set at `initialize`) may call this.
@@ -1389,6 +1430,113 @@ impl GreenPayContract {
             .update_current_contract_wasm(new_wasm_hash.clone());
         env.events()
             .publish((symbol_short!("upgraded"), admin), new_wasm_hash);
+    }
+
+    /// Replaces contract WASM and initializes an incremental schema migration.
+    /// Returns the number of un-migrated items remaining (0 when complete).
+    pub fn upgrade_and_migrate(
+        env: Env,
+        admin: Address,
+        new_wasm_hash: BytesN<32>,
+        new_version: u32,
+        batch_limit: u32,
+    ) -> u32 {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if stored_admin != admin {
+            panic!("Only admin can upgrade");
+        }
+        let current_v = Self::get_version(env.clone());
+        if new_version <= current_v {
+            panic!("New version must be greater than current version");
+        }
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+        env.events()
+            .publish((symbol_short!("upgraded"), admin.clone()), new_wasm_hash);
+
+        let total_projects: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProjectCount)
+            .unwrap_or(0);
+
+        let state = MigrationState {
+            target_version: new_version,
+            cursor: 0,
+            total_items: total_projects,
+            completed: total_projects == 0,
+        };
+
+        if state.completed {
+            env.storage()
+                .instance()
+                .set(&DataKey::Version, &new_version);
+            env.storage()
+                .instance()
+                .set(&DataKey::MigrationState, &state);
+            0
+        } else {
+            env.storage()
+                .instance()
+                .set(&DataKey::MigrationState, &state);
+            Self::execute_migration_batch(&env, state, batch_limit)
+        }
+    }
+
+    /// Executes the next batch of pending schema migrations.
+    /// Returns the number of un-migrated items remaining (0 when complete).
+    pub fn migrate_schema(env: Env, admin: Address, batch_limit: u32) -> u32 {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if stored_admin != admin {
+            panic!("Only admin can migrate");
+        }
+        let state: MigrationState = env
+            .storage()
+            .instance()
+            .get(&DataKey::MigrationState)
+            .expect("No pending migration");
+
+        if state.completed {
+            return 0;
+        }
+
+        Self::execute_migration_batch(&env, state, batch_limit)
+    }
+
+    /// Returns the current pending or completed migration state.
+    pub fn get_migration_state(env: Env) -> Option<MigrationState> {
+        env.storage().instance().get(&DataKey::MigrationState)
+    }
+
+    fn execute_migration_batch(env: &Env, mut state: MigrationState, batch_limit: u32) -> u32 {
+        let batch_size = if batch_limit == 0 { 1 } else { batch_limit };
+        let mut processed = 0u32;
+
+        while processed < batch_size && state.cursor < state.total_items {
+            state.cursor += 1;
+            processed += 1;
+        }
+
+        if state.cursor >= state.total_items {
+            state.completed = true;
+            env.storage()
+                .instance()
+                .set(&DataKey::Version, &state.target_version);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::MigrationState, &state);
+        state.total_items.saturating_sub(state.cursor)
     }
 }
 
@@ -2933,5 +3081,37 @@ mod tests {
         assert_eq!(client.balance_of(&donor), 0);
         assert_eq!(client.balance_of(&friend), 1);
         assert!(client.has_nft(&friend, &BadgeTier::Seedling));
+    }
+
+    #[test]
+    fn test_version_exposed_and_default_v1() {
+        let env = Env::default();
+        let cid = env.register_contract(None, GreenPayContract);
+        let client = GreenPayContractClient::new(&env, &cid);
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        assert_eq!(client.get_version(), 1);
+        assert_eq!(client.version(), 1);
+    }
+
+    #[test]
+    fn test_storage_lifetimes_instance_vs_persistent() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let cid = env.register_contract(None, GreenPayContract);
+        let client = GreenPayContractClient::new(&env, &cid);
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        let p1 = String::from_str(&env, "proj-ttl-1");
+        let w = Address::generate(&env);
+        client.register_project(&admin, &p1, &String::from_str(&env, "P TTL"), &w, &10);
+
+        // Verify version key lives in instance storage, project in persistent
+        env.as_contract(&cid, || {
+            assert!(env.storage().instance().has(&DataKey::Version));
+            assert!(env.storage().persistent().has(&DataKey::Project(p1)));
+        });
     }
 }

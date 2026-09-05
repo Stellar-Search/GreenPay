@@ -4,6 +4,8 @@ const { v4: uuid } = require("uuid");
 const { getCorrelationId } = require("../utils/logger");
 const { xlmToStroops, stroopsToXlm } = require("../utils/xlm");
 
+const LEGACY_DONATION_MIGRATED = "MigratedDonation";
+
 /**
  * The single place that builds an event stream id from an aggregate type and
  * aggregate id. Every reader (EventStoreService.getStream/getStreamVersion,
@@ -268,7 +270,7 @@ class ProfileCreatedEvent extends DomainEvent {
 
 class MigratedDonationEvent extends DomainEvent {
   static AGGREGATE_TYPE = "MigratedDonation";
-  static EVENT_TYPE = "LegacyDonationMigrated";
+  static EVENT_TYPE = LEGACY_DONATION_MIGRATED;
 
   constructor({ originalId, donationId, version, actor, originalCreatedAt, projectId, donorAddress, amountXlm, currency, message, transactionHash, isMatch = false, matchId = null, originalDonationTxHash = null }) {
     super({ aggregateId: donationId, version, actor });
@@ -397,7 +399,7 @@ function fromPayload(payload) {
       displayName: data.displayName,
       bio: data.bio,
     });
-  case "LegacyDonationMigrated":
+  case LEGACY_DONATION_MIGRATED:
     return new MigratedDonationEvent({
       originalId: payload.originalId,
       donationId: payload.aggregateId,
@@ -421,6 +423,7 @@ function fromPayload(payload) {
 }
 
 module.exports = {
+  LEGACY_DONATION_MIGRATED,
   DomainEvent,
   DonationRecordedEvent,
   MatchAppliedEvent,
