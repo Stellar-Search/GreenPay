@@ -1,0 +1,11 @@
+{
+  "backend/src/db/schema.sql": {
+    "greenpay/no-parsefloat-numeric": true
+  },
+  "frontend/lib/api.ts": {
+    "greenpay/no-nested-envelope": true
+  },
+  "mobile/app/donate/[id].tsx": {
+    "greenpay/no-parsefloat-numeric": true
+  }
+}

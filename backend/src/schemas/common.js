@@ -29,7 +29,6 @@ const uuid = z
   .regex(UUID, "Invalid identifier");
 
 module.exports = {
-  STELLAR_PUBLIC_KEY,
   TRANSACTION_HASH,
   UUID,
   stellarPublicKey,
