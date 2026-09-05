@@ -386,7 +386,7 @@
                               "val": {
                                 "vec": [
                                   {
-                                    "symbol": "Refunded"
+                                    "symbol": "SplitResolved"
                                   }
                                 ]
                               }
@@ -2025,7 +2025,7 @@
                   "val": {
                     "vec": [
                       {
-                        "symbol": "Refunded"
+                        "symbol": "SplitResolved"
                       }
                     ]
                   }

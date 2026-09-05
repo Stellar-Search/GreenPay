@@ -36,6 +36,7 @@ pub enum JobStatus {
     Released,
     Disputed,
     Refunded,
+    SplitResolved,
 }
 
 #[contracttype]
@@ -371,7 +372,7 @@ impl EscrowContract {
             .get(&DataKey::Job(job_id.clone()))
             .expect("Job not found");
 
-        // Checks
+        // 1. Checks
         if caller != job.client && caller != job.freelancer {
             panic!("Only the client or freelancer can trigger the fallback");
         }
@@ -382,23 +383,28 @@ impl EscrowContract {
             panic!("Dispute has not timed out yet");
         }
 
-        // Effects: commit all state before any token transfer (CEI).
+        // 2. Effects
         let remaining = job.remaining_amount;
         let freelancer_share = remaining / 2;
         let client_share = remaining
             .checked_sub(freelancer_share)
             .expect("Share arithmetic underflow");
+
         job.remaining_amount = 0;
-        job.status = JobStatus::Refunded;
+        job.status = JobStatus::SplitResolved;
+
         let client_addr = job.client.clone();
         let freelancer_addr = job.freelancer.clone();
+        let token_addr = job.token.clone();
+
         env.storage()
             .instance()
             .set(&DataKey::Job(job_id.clone()), &job);
 
-        // Interaction: token transfers last.
-        let token_client = token::Client::new(&env, &job.token);
+        // 3. Interactions
+        let token_client = token::Client::new(&env, &token_addr);
         let contract_addr = env.current_contract_address();
+
         if freelancer_share > 0 {
             token_client.transfer(&contract_addr, &freelancer_addr, &freelancer_share);
         }
@@ -406,6 +412,7 @@ impl EscrowContract {
             token_client.transfer(&contract_addr, &client_addr, &client_share);
         }
 
+        // 4. Events
         env.events().publish(
             (symbol_short!("stale_res"), caller),
             (job_id, freelancer_share, client_share),
@@ -1051,7 +1058,7 @@ mod tests {
         contract.resolve_stale_dispute(&client, &job_id);
 
         let job = contract.get_job(&job_id).unwrap();
-        assert_eq!(job.status, JobStatus::Refunded);
+        assert_eq!(job.status, JobStatus::SplitResolved);
         assert_eq!(job.remaining_amount, 0);
 
         let token_client = token::Client::new(&env, &token);
@@ -1074,7 +1081,7 @@ mod tests {
         contract.resolve_stale_dispute(&freelancer, &job_id);
 
         let job = contract.get_job(&job_id).unwrap();
-        assert_eq!(job.status, JobStatus::Refunded);
+        assert_eq!(job.status, JobStatus::SplitResolved);
         assert_eq!(job.remaining_amount, 0);
 
         let token_client = token::Client::new(&env, &token);
@@ -1213,7 +1220,7 @@ mod tests {
 
         let job = contract.get_job(&job_id).unwrap();
         assert_eq!(job.remaining_amount, 0);
-        assert_eq!(job.status, JobStatus::Refunded);
+        assert_eq!(job.status, JobStatus::SplitResolved);
     }
 
     // -------------------------------------------------------------------------
@@ -1430,5 +1437,84 @@ mod tests {
         env.as_contract(&cid, || {
             assert!(env.storage().instance().has(&DataKey::Version));
         });
+    }
+
+    #[test]
+    fn test_job_status_xdr_storage_compatibility() {
+        use soroban_sdk::xdr::{FromXdr, ToXdr};
+
+        // Lock the XDR encoding of the statuses deployed before SplitResolved
+        // (CONTRACT_VERSION = 1). A #[contracttype] unit-variant enum is encoded
+        // as a Symbol whose string is the variant name (SCV_SYMBOL wrapping an
+        // SCO_STRING, NUL-padded to a 4-byte boundary), so every status is
+        // addressed by name rather than by position: appending new variants
+        // cannot change the on-chain bytes of existing statuses. These golden
+        // bytes guard against a future rename or reorder silently corrupting
+        // jobs already persisted on-chain and read back by the versioning path.
+        let legacy: &[(JobStatus, &[u8])] = &[
+            (
+                JobStatus::Escrowed,
+                &[
+                    0, 0, 0, 16, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 15, 0, 0, 0, 8, b'E', b's', b'c',
+                    b'r', b'o', b'w', b'e', b'd',
+                ],
+            ),
+            (
+                JobStatus::Released,
+                &[
+                    0, 0, 0, 16, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 15, 0, 0, 0, 8, b'R', b'e', b'l',
+                    b'e', b'a', b's', b'e', b'd',
+                ],
+            ),
+            (
+                JobStatus::Disputed,
+                &[
+                    0, 0, 0, 16, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 15, 0, 0, 0, 8, b'D', b'i', b's',
+                    b'p', b'u', b't', b'e', b'd',
+                ],
+            ),
+            (
+                JobStatus::Refunded,
+                &[
+                    0, 0, 0, 16, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 15, 0, 0, 0, 8, b'R', b'e', b'f',
+                    b'u', b'n', b'd', b'e', b'd',
+                ],
+            ),
+        ];
+
+        for (status, golden) in legacy {
+            // Serialize from a fresh Env so the host-object handle embedded in
+            // the XDR is deterministic (the first symbol is object 1), exactly
+            // as produced by a version-1 deployment.
+            let env = Env::default();
+            let encoded = status.clone().to_xdr(&env);
+
+            // 1. On-chain bytes produced by version-1 code are unchanged.
+            assert_eq!(
+                encoded,
+                soroban_sdk::Bytes::from_slice(&env, golden),
+                "encoding of {status:?} must stay stable as variants are appended"
+            );
+
+            // 2. Bytes written by version-1 code still deserialize to the same
+            //    status under the extended enum.
+            let decoded = JobStatus::from_xdr(&env, &encoded).unwrap();
+            assert_eq!(decoded, *status);
+        }
+
+        // 3. Every status round-trips through the current code, including the
+        //    newly added variant.
+        for status in [
+            JobStatus::Escrowed,
+            JobStatus::Released,
+            JobStatus::Disputed,
+            JobStatus::Refunded,
+            JobStatus::SplitResolved,
+        ] {
+            let env = Env::default();
+            let encoded = status.clone().to_xdr(&env);
+            let decoded = JobStatus::from_xdr(&env, &encoded).unwrap();
+            assert_eq!(decoded, status);
+        }
     }
 }
