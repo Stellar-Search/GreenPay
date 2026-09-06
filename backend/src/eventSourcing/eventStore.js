@@ -203,7 +203,7 @@ class EventStoreService {
   }
 
   async recordDeadLetter(row, err, attempts) {
-    const { v4: uuid } = require("uuid");
+    const { randomUUID: uuid } = require("crypto");
     const errorMsg = err?.message || "unknown error";
     const errorStack = err?.stack || null;
     const client = typeof this.pool.connect === "function" ? await this.pool.connect() : null;
