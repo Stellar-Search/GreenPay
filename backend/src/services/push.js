@@ -12,6 +12,7 @@ const PgBoss = require("pg-boss");
 const pool = require("../db/pool");
 const { env } = require("../config/env");
 const { recordNotificationFailure } = require("./notificationFailures");
+const { setJobQueueDepth, recordJobPermanentFailure } = require("../utils/metrics");
 
 // Create a new Expo SDK client
 const expo = new Expo();
@@ -31,6 +32,7 @@ const RETRY_DELAY = 30;
 // DB read at the same size means each queued job maps to at most one Expo
 // send call, so a retry can't re-send tokens that already went out.
 const PUSH_CHUNK_SIZE = 100;
+const QUEUE_DEPTH_POLL_INTERVAL_MS = 15_000;
 
 let boss = null;
 
@@ -86,10 +88,25 @@ async function start() {
         payload: { tokenCount: tokens?.length || 0 },
         error: job.output,
       });
+      recordJobPermanentFailure(UPDATE_PUSH_QUEUE);
     }
   });
 
+  const depthPoll = setInterval(() => pollQueueDepth(), QUEUE_DEPTH_POLL_INTERVAL_MS);
+  depthPoll.unref();
+
   console.log("[Push] pg-boss started, worker registered on queue:", RECEIPT_QUEUE);
+}
+
+/** Reports current queue depth for scraping; failures are logged, not thrown — a stale gauge beats a crashed poller. */
+async function pollQueueDepth() {
+  try {
+    setJobQueueDepth(RECEIPT_QUEUE, await boss.getQueueSize(RECEIPT_QUEUE));
+    setJobQueueDepth(UPDATE_PUSH_QUEUE, await boss.getQueueSize(UPDATE_PUSH_QUEUE));
+    setJobQueueDepth(UPDATE_PUSH_DEAD_LETTER_QUEUE, await boss.getQueueSize(UPDATE_PUSH_DEAD_LETTER_QUEUE));
+  } catch (error) {
+    console.error("[Push] Failed to poll queue depth:", error.message);
+  }
 }
 
 /**

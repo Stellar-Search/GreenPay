@@ -14,6 +14,7 @@ const pool = require("../db/pool");
 const { env } = require("../config/env");
 const { logger: rootLogger } = require("../utils/logger");
 const { recordNotificationFailure } = require("./notificationFailures");
+const { setJobQueueDepth, recordJobPermanentFailure } = require("../utils/metrics");
 
 const logger = rootLogger.child({ service: "email-notify-queue" });
 
@@ -25,6 +26,7 @@ const RETRY_DELAY = 30;
 // at the same size means each queued job maps to exactly one Resend request,
 // so a retry can't re-send a batch that already partially succeeded.
 const EMAIL_CHUNK_SIZE = 50;
+const QUEUE_DEPTH_POLL_INTERVAL_MS = 15_000;
 const EMAIL_COPY = Object.freeze({
   en: { label: "Project Update", view: "View Project →", footer: "You're receiving this because you subscribed to updates for" },
   es: { label: "Actualización del proyecto", view: "Ver proyecto →", footer: "Recibes este mensaje porque te suscribiste a las novedades de" },
@@ -82,10 +84,24 @@ async function start() {
         payload: { emailCount: emails?.length || 0 },
         error: job.output,
       });
+      recordJobPermanentFailure(QUEUE);
     }
   });
 
+  const depthPoll = setInterval(() => pollQueueDepth(), QUEUE_DEPTH_POLL_INTERVAL_MS);
+  depthPoll.unref();
+
   logger.info({ msg: "pg-boss started, worker registered", queue: QUEUE });
+}
+
+/** Reports current queue depth for scraping; failures are logged, not thrown — a stale gauge beats a crashed poller. */
+async function pollQueueDepth() {
+  try {
+    setJobQueueDepth(QUEUE, await boss.getQueueSize(QUEUE));
+    setJobQueueDepth(DEAD_LETTER_QUEUE, await boss.getQueueSize(DEAD_LETTER_QUEUE));
+  } catch (err) {
+    logger.error({ msg: "failed to poll queue depth", error: err.message });
+  }
 }
 
 /**

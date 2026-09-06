@@ -33,12 +33,26 @@ const donationLimiter = createLayeredRateLimiter({
 const { execute, DonationReplayConflictError } = require("../eventSourcing/commandBus");
 const { DonationRecordedEvent, MatchAppliedEvent } = require("../eventSourcing/events"); // 10 requests per minute
 const { logger: rootLogger } = require("../utils/logger");
+const { recordDonationOutcome } = require("../utils/metrics");
 const { queueDonationAssessment } = require("../services/donationIntegrity");
 
 const logger = rootLogger.child({ service: "donations-route" });
 
 function publicDonationData(data) {
   return { ...data, amountXlm: Number.parseFloat(data.amountXlm) };
+}
+
+/**
+ * Maps a donation failure to a small, fixed set of failure modes so the
+ * `greenpay_donation_outcomes_total` metric stays bounded — never the raw
+ * error message, which is unbounded.
+ */
+function classifyDonationFailure(err) {
+  if (err.code === "VALIDATION_FAILED") return "validation_failed";
+  if (err.code === "PROJECT_NOT_FOUND") return "project_not_found";
+  if (err.code === "DONATION_TX_CONFLICT") return "tx_conflict";
+  if (err.code === "DONATION_EVENT_MISSING") return "event_missing";
+  return (err.status && err.status < 500) ? "client_error" : "internal_error";
 }
 
 /**
@@ -185,6 +199,7 @@ async function recordDonation(req, res, next) {
 
     if (result.deduplicated) {
       logger.info({ msg: "donation deduplicated", transactionHash });
+      recordDonationOutcome("duplicate");
       res.apiMeta({ deduplicated: true });
       return res.json(result.data);
     }
@@ -218,9 +233,11 @@ async function recordDonation(req, res, next) {
       transactionHash,
     });
 
+    recordDonationOutcome("success");
     res.status(201).json({ id: mainEvent.eventId, ...mainEvent.data });
   } catch (e) {
     logger.error({ msg: "donation failed", error: e.message, status: e.status || 500 });
+    recordDonationOutcome("failure", classifyDonationFailure(e));
     next(e);
   }
 }

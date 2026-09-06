@@ -15,6 +15,7 @@ const { generateProjectSummary } = require("./claude");
 const { logAdminAction } = require("./audit");
 const { logger: rootLogger, getCorrelationId, runWithCorrelationId } = require("../utils/logger");
 const { publish } = require("../realtime");
+const { setJobQueueDepth, recordJobPermanentFailure } = require("../utils/metrics");
 
 const logger = rootLogger.child({ service: "summary-queue" });
 
@@ -22,6 +23,7 @@ const QUEUE = "ai-summary";
 const DEAD_LETTER_QUEUE = "ai-summary-dlq";
 const RETRY_LIMIT = 3;
 const RETRY_DELAY = 10;
+const QUEUE_DEPTH_POLL_INTERVAL_MS = 15_000;
 
 let boss = null;
 
@@ -53,7 +55,20 @@ async function start(io) {
   await boss.work(QUEUE, { teamSize: 2, teamConcurrency: 1 }, handleSummaryJob(io));
   await boss.work(DEAD_LETTER_QUEUE, { includeMetadata: true }, handlePermanentFailure);
 
+  const depthPoll = setInterval(() => pollQueueDepth(), QUEUE_DEPTH_POLL_INTERVAL_MS);
+  depthPoll.unref();
+
   logger.info({ msg: "pg-boss started, worker registered", queue: QUEUE });
+}
+
+/** Reports current queue depth for scraping; failures are logged, not thrown — a stale gauge beats a crashed poller. */
+async function pollQueueDepth() {
+  try {
+    setJobQueueDepth(QUEUE, await boss.getQueueSize(QUEUE));
+    setJobQueueDepth(DEAD_LETTER_QUEUE, await boss.getQueueSize(DEAD_LETTER_QUEUE));
+  } catch (err) {
+    logger.error({ msg: "failed to poll queue depth", error: err.message });
+  }
 }
 
 function handleSummaryJob(io) {
@@ -161,6 +176,7 @@ async function recordPermanentFailure(job) {
     msg: "job permanently failed after exhausting retries",
     error: error.message || "unknown error",
   });
+  recordJobPermanentFailure(QUEUE);
 
   try {
     await pool.query(

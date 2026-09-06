@@ -1,0 +1,132 @@
+# Requires the Prometheus Operator CRDs — see servicemonitor.yaml in this
+# directory for why these manifests are kept out of the base kustomization.
+# Apply with: kubectl apply -k k8s/monitoring/
+#
+# Threshold rationale is inline on each rule; see
+# backend/docs/observability.md for the full metric reference these alerts
+# are built on.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: backend-donation-path
+  namespace: greenpay
+  labels:
+    app: backend
+spec:
+  groups:
+    - name: greenpay.donations
+      rules:
+        - alert: DonationFailureRateHigh
+          # The existing canary AnalysisTemplates in k8s/backend.yaml already
+          # treat a 5% HTTP 5xx rate as failing (backend-error-rate). Donation
+          # failures are the higher-stakes case — money that should have moved
+          # and didn't — so the same 5% bar applies, sustained for 10m so a
+          # brief blip during a deploy doesn't page anyone.
+          expr: |
+            sum(rate(greenpay_donation_outcomes_total{status="failure"}[5m]))
+              /
+            sum(rate(greenpay_donation_outcomes_total[5m]))
+              > 0.05
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Donation failure rate above 5% for 10 minutes"
+            description: "{{ $value | humanizePercentage }} of recorded donations are failing. Check greenpay_donation_outcomes_total by failure_mode for the dominant cause."
+
+        - alert: ProjectionLagHigh
+          # Idle poll interval is 500ms and the catch-up interval between
+          # saturated batches is 10ms (EVENT_STORE_POLL_INTERVAL_MS /
+          # EVENT_STORE_CATCHUP_INTERVAL_MS, backend/src/eventSourcing/eventStore.js)
+          # so lag should stay sub-second under normal load. 30s sustained
+          # means the dispatch loop is not keeping up even with catch-up
+          # batching engaged.
+          expr: greenpay_projection_lag_seconds > 30
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Event-store projections are more than 30s behind the event stream"
+            description: "Donor stats, project totals and leaderboards are stale by {{ $value | humanizeDuration }}."
+
+        - alert: ProjectionLagCritical
+          expr: greenpay_projection_lag_seconds > 120
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Event-store projections are more than 2 minutes behind the event stream"
+            description: "Read models (project totals, donor stats, leaderboards) are stale by {{ $value | humanizeDuration }}. Check greenpay_event_store_consecutive_saturated_batches for a growing backlog."
+
+        - alert: EventStoreBacklogGrowing
+          # Growth to the ceiling means the adaptive batcher (eventStore.js
+          # recordBatchOutcome) has been doubling its batch size on every
+          # tick for a while and still can't drain the backlog — the signal
+          # the issue calls out as otherwise invisible.
+          expr: greenpay_event_store_consecutive_saturated_batches > 20
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Event dispatch batches have been saturated for 20+ consecutive ticks"
+            description: "The adaptive batcher has grown to {{ $value }} consecutive full batches; the backlog is not draining at the current batch size."
+
+        - alert: JobQueueBacklog
+          # update-email-notify and update-push-notify chunk work at 50/100
+          # recipients per job (EMAIL_CHUNK_SIZE / PUSH_CHUNK_SIZE); a depth
+          # of 500 means roughly 5-10 chunks' worth of fan-out is stuck behind
+          # workers running teamSize:2 concurrency, well beyond normal burst.
+          expr: greenpay_job_queue_depth{queue!~".*-dlq"} > 500
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Queue {{ $labels.queue }} has over 500 pending jobs"
+            description: "Depth has stayed above 500 for 10 minutes; workers may be stalled or the producer is outpacing them."
+
+        - alert: JobPermanentFailureRateHigh
+          # Each queue already retries 3 times (RETRY_LIMIT in summaryQueue.js
+          # / push.js / email.js) before dead-lettering, so retries already
+          # absorb transient failures. More than 5 permanent failures in an
+          # hour means retries aren't enough — a systemic fault (bad API key,
+          # provider outage, malformed payload) rather than noise.
+          expr: increase(greenpay_job_permanent_failures_total[1h]) > 5
+          labels:
+            severity: warning
+          annotations:
+            summary: "Queue {{ $labels.queue }} has permanently failed jobs after exhausting retries"
+            description: "{{ $value }} jobs on {{ $labels.queue }} exhausted their retry limit in the last hour."
+
+        - alert: ChainRequestErrorRateHigh
+          # Horizon/RPC calls are usually reliable; testnet/mainnet outages
+          # are the main real-world cause of sustained errors here rather
+          # than app bugs, so the bar is set higher than the HTTP-facing
+          # alerts above.
+          expr: |
+            sum(rate(greenpay_chain_request_errors_total[5m]))
+              /
+            sum(rate(greenpay_chain_request_duration_seconds_count[5m]))
+              > 0.1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Horizon/Soroban RPC error rate above 10%"
+            description: "{{ $value | humanizePercentage }} of chain calls are failing across rpc_simulate_transaction, rpc_get_events, rpc_get_latest_ledger and the Horizon operations stream."
+
+        - alert: BackendHttpErrorRateHigh
+          # Mirrors the 5% bar already encoded in the backend-error-rate
+          # AnalysisTemplate (k8s/backend.yaml) used for canary promotion —
+          # this is the same threshold applied continuously in steady state,
+          # not just during a rollout.
+          expr: |
+            sum(rate(http_requests_total{code=~"5.."}[5m]))
+              /
+            sum(rate(http_requests_total[5m]))
+              > 0.05
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Backend HTTP 5xx rate above 5%"
+            description: "{{ $value | humanizePercentage }} of requests are returning 5xx across all routes."
