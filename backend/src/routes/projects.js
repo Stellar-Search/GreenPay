@@ -5,7 +5,7 @@
 const express = require("express");
 const crypto = require("crypto");
 const router = express.Router();
-const { v4: uuid } = require("uuid");
+const { randomUUID: uuid } = require("crypto");
 const pool = require("../db/pool");
 const { adminRequired } = require("../middleware/auth");
 const { createLayeredRateLimiter } = require("../middleware/rateLimiter");

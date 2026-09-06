@@ -7,7 +7,7 @@
 "use strict";
 
 const crypto = require("crypto");
-const { v4: uuid } = require("uuid");
+const { randomUUID: uuid } = require("crypto");
 const PgBoss = require("pg-boss");
 const pool = require("../db/pool");
 const { env } = require("../config/env");

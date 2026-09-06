@@ -31,7 +31,7 @@
 const crypto = require("crypto");
 const { Keypair, Networks, StrKey, Transaction } = require("@stellar/stellar-sdk");
 const { env } = require("../../config/env");
-const { v4: uuid } = require("uuid");
+const { randomUUID: uuid } = require("crypto");
 const pool = require("../../db/pool");
 const { logger: rootLogger } = require("../../utils/logger");
 

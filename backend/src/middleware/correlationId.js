@@ -35,7 +35,7 @@
  */
 "use strict";
 
-const { v4: uuid } = require("uuid");
+const { randomUUID: uuid } = require("crypto");
 const { runWithCorrelationId } = require("../utils/logger");
 
 /** Maximum character length accepted from the X-Correlation-ID header. */

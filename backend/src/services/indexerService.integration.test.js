@@ -16,7 +16,7 @@ const fs = require("fs");
 const path = require("path");
 const { createHash } = require("crypto");
 const { execFileSync } = require("child_process");
-const { v4: uuid } = require("uuid");
+const { randomUUID: uuid } = require("crypto");
 
 const pool = require("../db/pool");
 const indexerService = require("./indexerService");

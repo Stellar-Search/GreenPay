@@ -29,7 +29,7 @@
  */
 
 const { Server, TransactionBuilder, Networks, Memo, Operation, Asset } = require("@stellar/stellar-sdk");
-const { v4: uuidv4 } = require("uuid");
+const { randomUUID: uuidv4 } = require("crypto");
 const pool = require("../db/pool");
 const { env } = require("../config/env");
 

@@ -1,6 +1,6 @@
 "use strict";
 
-const { v4: uuid } = require("uuid");
+const { randomUUID: uuid } = require("crypto");
 const pool = require("../db/pool");
 const { ProjectAggregate, DonorAggregate, MatchAggregate, JobAggregate, round7 } = require("./aggregates");
 const { eventStore } = require("./eventStore");

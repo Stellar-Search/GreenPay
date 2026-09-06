@@ -4,7 +4,7 @@
 "use strict";
 const express = require("express");
 const router  = express.Router();
-const { v4: uuid } = require("uuid");
+const { randomUUID: uuid } = require("crypto");
 const pool = require("../db/pool");
 const { createLayeredRateLimiter } = require("../middleware/rateLimiter");
 const { createApiError } = require("../middleware/apiEnvelope");

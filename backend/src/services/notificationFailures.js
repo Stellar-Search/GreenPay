@@ -8,7 +8,7 @@
  */
 "use strict";
 
-const { v4: uuid } = require("uuid");
+const { randomUUID: uuid } = require("crypto");
 const pool = require("../db/pool");
 const { logger: rootLogger } = require("../utils/logger");
 

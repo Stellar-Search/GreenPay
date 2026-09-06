@@ -3,7 +3,7 @@
  */
 "use strict";
 
-const { v4: uuid } = require("uuid");
+const { randomUUID: uuid } = require("crypto");
 const {
   correlationIdMiddleware,
   sanitiseCorrelationId,

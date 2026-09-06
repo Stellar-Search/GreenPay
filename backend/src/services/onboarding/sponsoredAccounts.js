@@ -45,7 +45,7 @@ const {
   BASE_FEE,
 } = require("@stellar/stellar-sdk");
 
-const { v4: uuid } = require("uuid");
+const { randomUUID: uuid } = require("crypto");
 const pool = require("../../db/pool");
 const { env } = require("../../config/env");
 const { logger: rootLogger } = require("../../utils/logger");

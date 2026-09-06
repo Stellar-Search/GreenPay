@@ -1,6 +1,6 @@
 "use strict";
 
-const { v4: uuid } = require("uuid");
+const { randomUUID: uuid } = require("crypto");
 const pool = require("../db/pool");
 const { Keypair } = require("@stellar/stellar-sdk");
 const { stroopsToXlm } = require("../utils/xlm");

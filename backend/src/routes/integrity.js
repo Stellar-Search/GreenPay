@@ -2,7 +2,7 @@
 
 const crypto = require("crypto");
 const express = require("express");
-const { v4: uuid } = require("uuid");
+const { randomUUID: uuid } = require("crypto");
 const pool = require("../db/pool");
 const cache = require("../services/cache");
 const { adminRequired } = require("../middleware/auth");

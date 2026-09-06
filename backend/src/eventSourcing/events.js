@@ -1,6 +1,6 @@
 "use strict";
 
-const { v4: uuid } = require("uuid");
+const { randomUUID: uuid } = require("crypto");
 const { getCorrelationId } = require("../utils/logger");
 const { xlmToStroops, stroopsToXlm } = require("../utils/xlm");
 

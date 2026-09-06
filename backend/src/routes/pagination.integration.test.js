@@ -15,7 +15,7 @@ const path = require("path");
 const express = require("express");
 const request = require("supertest");
 const { execFileSync } = require("child_process");
-const { v4: uuid } = require("uuid");
+const { randomUUID: uuid } = require("crypto");
 
 const pool = require("../db/pool");
 const { apiEnvelope, errorHandler } = require("../middleware/apiEnvelope");

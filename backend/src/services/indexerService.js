@@ -5,7 +5,7 @@
 
 const { server: stellarServer, rpcServer, CONTRACT_ID } = require("./stellar");
 const pool = require("../db/pool");
-const { v4: uuid } = require("uuid");
+const { randomUUID: uuid } = require("crypto");
 const { execute } = require("../eventSourcing/commandBus");
 const { DonationRecordedEvent, MatchAppliedEvent } = require("../eventSourcing/events");
 const { stroopsToXlm, xlmToStroops } = require("../utils/xlm");

@@ -1,7 +1,7 @@
 "use strict";
 
 const pool = require("../db/pool");
-const { v4: uuid } = require("uuid");
+const { randomUUID: uuid } = require("crypto");
 const {
   LEGACY_DONATION_MIGRATED,
   MigratedDonationEvent,

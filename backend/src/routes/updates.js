@@ -8,7 +8,7 @@
 "use strict";
 
 const express = require("express");
-const { v4: uuidv4 } = require("uuid");
+const { randomUUID: uuidv4 } = require("crypto");
 const pool = require("../db/pool");
 const { adminRequired } = require("../middleware/auth");
 const { createApiError } = require("../middleware/apiEnvelope");

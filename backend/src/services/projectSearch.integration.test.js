@@ -12,12 +12,23 @@ const path = require("path");
 const express = require("express");
 const request = require("supertest");
 const { execFileSync } = require("child_process");
-const { v4: uuid, v5: uuidv5 } = require("uuid");
+const crypto = require("crypto");
+const { randomUUID: uuid } = crypto;
 
 const FIXTURE_NAMESPACE = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";
 
+// RFC 4122 UUID v5 (namespace + name, SHA-1 based) — deterministic fixture ids.
+// Reimplemented here because the removal of the `uuid` package dependency
+// left no CommonJS-compatible v5 generator; crypto.randomUUID() only covers v4.
 function fixtureId(key) {
-  return uuidv5(key, FIXTURE_NAMESPACE);
+  const namespaceBytes = Buffer.from(FIXTURE_NAMESPACE.replace(/-/g, ""), "hex");
+  const nameBytes = Buffer.from(key, "utf8");
+  const hash = crypto.createHash("sha1").update(Buffer.concat([namespaceBytes, nameBytes])).digest();
+  const bytes = Buffer.from(hash.subarray(0, 16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 const pool = require("../db/pool");
