@@ -5,6 +5,10 @@ mod badge_property_tests;
 mod fuzz_tests;
 #[cfg(all(test, feature = "testutils"))]
 mod overflow_property_tests;
+#[cfg(all(test, feature = "testutils"))]
+mod resource_budget_test;
+#[cfg(all(test, feature = "testutils"))]
+mod resource_measurement;
 
 /**
  * contracts/greenpay-contract/src/lib.rs
@@ -182,6 +186,13 @@ pub enum DataKey {
     NftCount,
     NftMeta(u32),
     NftOwnerTokens(Address),
+    // O(1) representative-token pointer per (donor, tier). `find_token_id`
+    // (used by the `has_nft` / `get_token_id` / badge auto-mint hot paths) can
+    // otherwise scan `NftOwnerTokens`, which grows with every badge the donor
+    // owns. See `find_token_id` and `mint_badge_token` for the maintenance
+    // rules; the pointer is validated on read and lazily repaired if ever
+    // stale, and a plain ownership-index scan remains the fallback.
+    NftTierToken(Address, BadgeTier),
     // Evidence-first impact accounting. Verifier entries and attestations are
     // persistent per-entity records so the registry cannot inflate instance
     // storage as it grows.
@@ -215,6 +226,15 @@ pub const BADGE_THRESHOLD_SEEDLING_XLM: i128 = 10;
 pub const BADGE_THRESHOLD_TREE_XLM: i128 = 100;
 pub const BADGE_THRESHOLD_FOREST_XLM: i128 = 500;
 pub const BADGE_THRESHOLD_EARTH_GUARDIAN_XLM: i128 = 2000;
+
+/// Number of badge tiers with NFT-representable thresholds (Seedling through
+/// EarthGuardian). A donor can self-mint at most one badge per tier, so their
+/// self-minted badge count is bounded by this constant — only badges *received*
+/// via transfer can grow a donor's ownership index further (see
+/// docs/resource-budgeting.md §3 for the headroom consequence). Stated here so
+/// the recorded headroom relies on a named constant; keep it in sync with the
+/// NFT-representable variants of `BadgeTier`.
+pub const MAX_BADGE_TIERS: u32 = 4;
 
 /// Minimum `total_donated` (in stroops) required to participate in
 /// project-verification voting.
@@ -398,6 +418,9 @@ where
 //                                          badge provenance: tier, total_donated
 //                                          at mint, minted_at_ledger).
 //   `DataKey::NftOwnerTokens(Address)`   — ownership index (ids owned by `Address`).
+//   `DataKey::NftTierToken(Addr, Tier)`  — O(1) representative-token pointer used
+//                                          by the `has_nft`/`get_token_id`/auto-mint
+//                                          hot paths (avoids an O(n) scan).
 //
 // The legacy `DataKey::ImpactNFT(Address, BadgeTier)` entry is still written on
 // mint (it is the pre-interface layout that `has_nft` used to read) and is
@@ -409,7 +432,10 @@ where
 ///
 /// Registers the metadata, updates the owner's token index, and keeps the
 /// legacy `ImpactNFT(donor, tier)` marker in sync so pre-interface readers
-/// (and `has_nft`) keep working.
+/// (and `has_nft`) keep working. Also records the owner's representative
+/// token for the tier (`DataKey::NftTierToken`) unless one already exists —
+/// a same-tier badge the donor received via transfer keeps priority, matching
+/// the pre-pointer first-match behaviour of `find_token_id`.
 fn mint_badge_token(
     env: &Env,
     donor: &Address,
@@ -439,22 +465,43 @@ fn mint_badge_token(
     owned.push_back(token_id);
     write_persistent(env, &DataKey::NftOwnerTokens(donor.clone()), &owned);
 
+    let tier_key = DataKey::NftTierToken(donor.clone(), tier.clone());
+    if read_persistent::<_, u32>(env, &tier_key).is_none() {
+        write_persistent(env, &tier_key, &token_id);
+    }
+
     token_id
 }
 
 /// Resolve the token id for a `(donor, tier)` badge, or `None`.
 ///
-/// Checks the ownership index first so the answer stays correct after a
-/// transfer. If the badge only exists as a legacy `ImpactNFT(donor, tier)`
-/// marker (pre-interface layout), it is transparently backfilled into the
-/// token registry and the new token id is returned.
+/// Fast path: reads the per-`(donor, tier)` representative pointer
+/// (`DataKey::NftTierToken`) and validates it against the token's metadata —
+/// two O(1) reads regardless of how many tokens the donor owns, so `has_nft`,
+/// `get_token_id` and the badge auto-mint stay flat as on-chain state grows.
+/// A stale pointer (shouldn't happen — mint/transfer maintain it) falls
+/// through to a full scan that rewrites it.
+///
+/// Fallback: checks the ownership index for the first token of the matching
+/// tier (one-time scan that records a pointer), then the legacy
+/// `ImpactNFT(donor, tier)` marker, which is transparently backfilled into the
+/// token registry.
 fn find_token_id(env: &Env, donor: &Address, tier: &BadgeTier) -> Option<u32> {
+    let tier_key = DataKey::NftTierToken(donor.clone(), tier.clone());
+    if let Some(token_id) = read_persistent::<_, u32>(env, &tier_key) {
+        let meta: ImpactNFT = read_persistent(env, &DataKey::NftMeta(token_id))
+            .expect("token pointer metadata missing");
+        if &meta.tier == tier && &meta.owner == donor {
+            return Some(token_id);
+        }
+    }
     let owned_opt: Option<Vec<u32>> = read_persistent(env, &DataKey::NftOwnerTokens(donor.clone()));
     if let Some(owned) = owned_opt {
         for id in owned.iter() {
             let meta: ImpactNFT =
                 read_persistent(env, &DataKey::NftMeta(id)).expect("owned token metadata missing");
             if &meta.tier == tier {
+                write_persistent(env, &tier_key, &id);
                 return Some(id);
             }
         }
@@ -1109,6 +1156,32 @@ impl GreenPayContract {
             .persistent()
             .remove(&DataKey::ImpactNFT(from.clone(), tier.clone()));
         write_persistent(&env, &DataKey::ImpactNFT(to.clone(), tier.clone()), &meta);
+
+        // Update the O(1) per-(donor, tier) representative pointer. If the
+        // sender's representative token for this tier was the one being moved,
+        // point it at the next same-tier token they keep (or remove it, so a
+        // later `find_token_id` re-derives it). The recipient's pointer is set
+        // to the transferred token, matching pre-pointer first-match semantics.
+        let from_tier_key = DataKey::NftTierToken(from.clone(), tier.clone());
+        if read_persistent::<_, u32>(&env, &from_tier_key) == Some(token_id) {
+            let mut success = false;
+            for id in from_tokens.iter() {
+                let m: ImpactNFT = read_persistent(&env, &DataKey::NftMeta(id))
+                    .expect("owned token metadata missing");
+                if m.tier == tier {
+                    write_persistent(&env, &from_tier_key, &id);
+                    success = true;
+                    break;
+                }
+            }
+            if !success {
+                env.storage().persistent().remove(&from_tier_key);
+            }
+        }
+        let to_tier_key = DataKey::NftTierToken(to.clone(), tier.clone());
+        if read_persistent::<_, u32>(&env, &to_tier_key).is_none() {
+            write_persistent(&env, &to_tier_key, &token_id);
+        }
 
         env.events()
             .publish((symbol_short!("nft_xfr"), from, to), token_id);

@@ -254,8 +254,11 @@ describe('DonateScreen – completing a queued donation ("Complete now")', () =>
     (LocalAuthentication.isEnrolledAsync as jest.Mock).mockResolvedValue(true);
     (LocalAuthentication.authenticateAsync as jest.Mock).mockResolvedValue({ success: true });
     (NetInfo.fetch as jest.Mock).mockResolvedValue({ isConnected: true, isInternetReachable: true });
-    (Server as jest.Mock).mockImplementation(() => ({
+(Server as jest.Mock).mockImplementation(() => ({
       loadAccount: jest.fn().mockResolvedValue(new Account(REAL_PUBLIC_KEY, '1')),
+      // issue #512: the donate screen derives the network fee from Horizon's
+      // live fee stats, so the mock must provide them for a submission test.
+      feeStats: jest.fn().mockResolvedValue({ fee_charged: { mode: '100' } }),
       submitTransaction: jest.fn().mockResolvedValue({ hash: 'HORIZON_TX_HASH_1' }),
     }));
   });
@@ -370,7 +373,7 @@ describe('DonateScreen – completing a queued donation ("Complete now")', () =>
  */
 describe('DonateScreen – issue #359: online donation Horizon-success / backend-fail recovery', () => {
   let submitTransactionMock: jest.Mock;
-  let serverInstance: { loadAccount: jest.Mock; submitTransaction: jest.Mock };
+  let serverInstance: { loadAccount: jest.Mock; feeStats: jest.Mock; submitTransaction: jest.Mock };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -383,9 +386,11 @@ describe('DonateScreen – issue #359: online donation Horizon-success / backend
     (LocalAuthentication.authenticateAsync as jest.Mock).mockResolvedValue({ success: true });
     (NetInfo.fetch as jest.Mock).mockResolvedValue({ isConnected: true, isInternetReachable: true });
 
-    submitTransactionMock = jest.fn().mockResolvedValue({ hash: 'ONLINE_TX_HASH_1' });
+submitTransactionMock = jest.fn().mockResolvedValue({ hash: 'ONLINE_TX_HASH_1' });
     serverInstance = {
       loadAccount: jest.fn().mockResolvedValue(new Account(REAL_PUBLIC_KEY, '1')),
+      // issue #512: donations derive their network fee from live fee stats.
+      feeStats: jest.fn().mockResolvedValue({ fee_charged: { mode: '100' } }),
       submitTransaction: submitTransactionMock,
     };
     (Server as jest.Mock).mockImplementation(() => serverInstance);

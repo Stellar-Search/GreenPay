@@ -182,6 +182,10 @@ export async function buildContractDonationTransaction({
 
   // Build the contract invocation transaction
   const builder = new TransactionBuilder(source, {
+    // Placeholder until simulation below. `rpc.assembleTransaction` replaces
+    // this with the resource fee derived from the host's preflight estimate
+    // (minResourceFee), so the fee a donor actually pays comes from
+    // simulation, never this constant (issue #512).
     fee: "1000000", // Higher fee for contract calls
     networkPassphrase: NETWORK_PASSPHRASE,
   })
@@ -206,7 +210,7 @@ export async function buildContractDonationTransaction({
     // Prepare the transaction with simulation results
     return rpc.assembleTransaction(tx, simulated).build();
   } else {
-    throw formatSimulationFailure(simulated, { contractId });
+    throw formatSimulationFailure(simulated, { contractId, op: "donation" });
   }
 }
 
@@ -230,6 +234,8 @@ export async function buildReleaseEscrowTransaction({
   const contract = new Contract(contractId);
   const clientAddr = new Address(clientAddress);
   const tx = new TransactionBuilder(source, {
+    // Placeholder only — assembleTransaction below replaces it with the
+    // simulation-derived minResourceFee (issue #512).
     fee: "1000000",
     networkPassphrase: NETWORK_PASSPHRASE,
   })
@@ -247,7 +253,7 @@ export async function buildReleaseEscrowTransaction({
   if (rpc.Api.isSimulationSuccess(simulated)) {
     return rpc.assembleTransaction(tx, simulated).build();
   }
-  throw formatSimulationFailure(simulated, { contractId });
+  throw formatSimulationFailure(simulated, { contractId, op: "escrow" });
 }
 
 /**
@@ -279,15 +285,45 @@ export async function buildMilestoneTransaction({
   return builder.build();
 }
 
+/**
+ * Whether a stringified Soroban simulation/submission failure is caused by the
+ * call exceeding the network's resource budget (CPU instructions, memory, or
+ * the ledger read/write footprint) or by a fee too low to cover that estimate.
+ *
+ * These failures matter specifically because cost grows with accumulated
+ * state: a donation path that fits today can start hitting them as the ledger
+ * grows (issue #512). The distinct host/estimator messages differ across SDK
+ * versions, so this matches the tokens they all share rather than a single
+ * exact string.
+ */
+export function isResourceBudgetFailure(raw: string): boolean {
+  return (
+    (/insufficientcpu|insufficientmemory|insufficient budget|resource.?limit/i.test(raw) &&
+      /budget|cpu|memory|instruction|footprint/i.test(raw)) ||
+    (/budget/i.test(raw) && /(insufficient|exceed|over|out of|limit|enough)/i.test(raw)) ||
+    /too.?expensive|txn_too_expensive|fee_exceeds/i.test(raw)
+  );
+}
+
 /** Maps Soroban simulation errors to short, user-facing messages. */
 export function formatSimulationFailure(
   simulated: unknown,
-  context?: { contractId?: string },
+  context?: { contractId?: string; op?: "donation" | "escrow" },
 ): Error {
   const raw = JSON.stringify(simulated);
   if (/underfunded|insufficient/i.test(raw) && /balance|fee|Fund/i.test(raw)) {
     return new Error(
       "Insufficient XLM to pay Soroban fees or complete the release. Add test XLM to this account.",
+    );
+  }
+  // A call that exceeds Soroban's budget (or a fee too low to cover its
+  // estimate) fails in preflight long before any XLM moves. Surface it as a
+  // resource problem rather than a mystery host error, so ledger growth can't
+  // turn into an opaque donation failure (issue #512).
+  if (isResourceBudgetFailure(raw)) {
+    const what = context?.op === "escrow" ? "escrow release" : "donation";
+    return new Error(
+      `This ${what} call needs more on-chain resources (CPU, memory, or ledger footprint) than this transaction allows, or its fee is too low to cover the estimate. Nothing was sent. If retrying doesn't help, the contract call needs a resource-budget review.`,
     );
   }
   if (raw.includes("Job not found")) {
@@ -317,8 +353,13 @@ export function formatSimulationFailure(
       "The contract rejected this call. Check network (testnet/mainnet) and contract ID.",
     );
   }
+  if (context?.op === "escrow") {
+    return new Error(
+      "Could not simulate release_escrow. Verify NEXT_PUBLIC_ESCROW_CONTRACT_ID and that the job exists on-chain.",
+    );
+  }
   return new Error(
-    "Could not simulate release_escrow. Verify NEXT_PUBLIC_ESCROW_CONTRACT_ID and that the job exists on-chain.",
+    "Could not simulate the donation. Verify NEXT_PUBLIC_CONTRACT_ID and that the network (testnet/mainnet) matches the contract's deployment.",
   );
 }
 
@@ -438,6 +479,13 @@ export function extractPanicReason(result: rpc.Api.GetTransactionResponse | null
           const flat = typeof data === "string" ? data : JSON.stringify(data);
           if (/overflow/i.test(flat)) return "arithmetic overflow while recording the donation";
           if (/underflow/i.test(flat)) return "arithmetic underflow while recording the donation";
+          // A call that squeezed through preflight but exhausted the execution
+          // budget must not surface as a bare host error. This can happen as
+          // ledger state grows even when the simulation looked affordable
+          // (issue #512).
+          if (/insufficientcpu|insufficientmemory|resource.?limit|budget/i.test(flat)) {
+            return "the call exceeded Soroban's resource budget (CPU, memory, or ledger footprint)";
+          }
           if (typeof data === "string" && /error|panic|host/i.test(flat)) return data;
         } catch {
           // Malformed/undecodable event — skip it and keep looking.

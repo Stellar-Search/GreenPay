@@ -1,0 +1,222 @@
+[
+  {
+    "function": "donate",
+    "state": "fresh ledger",
+    "cpu_insns": 610105,
+    "mem_bytes": 88953,
+    "ledger_reads": 0,
+    "ledger_writes": 8,
+    "read_bytes": 0,
+    "write_bytes": 904
+  },
+  {
+    "function": "initialize",
+    "state": "fresh ledger",
+    "cpu_insns": 46150,
+    "mem_bytes": 4406,
+    "ledger_reads": 0,
+    "ledger_writes": 0,
+    "read_bytes": 0,
+    "write_bytes": 0
+  },
+  {
+    "function": "get_project",
+    "state": "populated ledger",
+    "cpu_insns": 80748,
+    "mem_bytes": 38143,
+    "ledger_reads": 0,
+    "ledger_writes": 0,
+    "read_bytes": 0,
+    "write_bytes": 0
+  },
+  {
+    "function": "get_donor_stats",
+    "state": "populated ledger",
+    "cpu_insns": 82579,
+    "mem_bytes": 37993,
+    "ledger_reads": 0,
+    "ledger_writes": 0,
+    "read_bytes": 0,
+    "write_bytes": 0
+  },
+  {
+    "function": "get_badge",
+    "state": "populated ledger",
+    "cpu_insns": 75609,
+    "mem_bytes": 37439,
+    "ledger_reads": 0,
+    "ledger_writes": 0,
+    "read_bytes": 0,
+    "write_bytes": 0
+  },
+  {
+    "function": "get_global_total",
+    "state": "populated ledger",
+    "cpu_insns": 60788,
+    "mem_bytes": 36793,
+    "ledger_reads": 0,
+    "ledger_writes": 0,
+    "read_bytes": 0,
+    "write_bytes": 0
+  },
+  {
+    "function": "get_donation_count",
+    "state": "populated ledger",
+    "cpu_insns": 61023,
+    "mem_bytes": 36791,
+    "ledger_reads": 0,
+    "ledger_writes": 0,
+    "read_bytes": 0,
+    "write_bytes": 0
+  },
+  {
+    "function": "has_nft",
+    "state": "populated ledger",
+    "cpu_insns": 103371,
+    "mem_bytes": 39711,
+    "ledger_reads": 0,
+    "ledger_writes": 0,
+    "read_bytes": 0,
+    "write_bytes": 0
+  },
+  {
+    "function": "get_token_id",
+    "state": "populated ledger",
+    "cpu_insns": 104892,
+    "mem_bytes": 39803,
+    "ledger_reads": 0,
+    "ledger_writes": 0,
+    "read_bytes": 0,
+    "write_bytes": 0
+  },
+  {
+    "function": "owner_of",
+    "state": "populated ledger",
+    "cpu_insns": 65557,
+    "mem_bytes": 36947,
+    "ledger_reads": 0,
+    "ledger_writes": 0,
+    "read_bytes": 0,
+    "write_bytes": 0
+  },
+  {
+    "function": "tokens_of",
+    "state": "populated ledger",
+    "cpu_insns": 1232827,
+    "mem_bytes": 312539,
+    "ledger_reads": 6,
+    "ledger_writes": 0,
+    "read_bytes": 880,
+    "write_bytes": 0
+  },
+  {
+    "function": "balance_of",
+    "state": "populated ledger",
+    "cpu_insns": 425048,
+    "mem_bytes": 60908,
+    "ledger_reads": 0,
+    "ledger_writes": 0,
+    "read_bytes": 0,
+    "write_bytes": 0
+  },
+  {
+    "function": "get_impact_attestation",
+    "state": "populated ledger",
+    "cpu_insns": 90520,
+    "mem_bytes": 39342,
+    "ledger_reads": 0,
+    "ledger_writes": 0,
+    "read_bytes": 0,
+    "write_bytes": 0
+  },
+  {
+    "function": "verify_impact_attestation",
+    "state": "populated ledger",
+    "cpu_insns": 82983,
+    "mem_bytes": 38732,
+    "ledger_reads": 0,
+    "ledger_writes": 0,
+    "read_bytes": 0,
+    "write_bytes": 0
+  },
+  {
+    "function": "create_proposal",
+    "state": "populated ledger",
+    "cpu_insns": 736371,
+    "mem_bytes": 242693,
+    "ledger_reads": 0,
+    "ledger_writes": 2,
+    "read_bytes": 0,
+    "write_bytes": 144
+  },
+  {
+    "function": "vote_verify_project",
+    "state": "populated ledger",
+    "cpu_insns": 883315,
+    "mem_bytes": 280575,
+    "ledger_reads": 0,
+    "ledger_writes": 2,
+    "read_bytes": 0,
+    "write_bytes": 184
+  },
+  {
+    "function": "get_proposal",
+    "state": "populated ledger",
+    "cpu_insns": 73374,
+    "mem_bytes": 38342,
+    "ledger_reads": 0,
+    "ledger_writes": 0,
+    "read_bytes": 0,
+    "write_bytes": 0
+  },
+  {
+    "function": "anchor_impact_attestation",
+    "state": "populated ledger",
+    "cpu_insns": 765363,
+    "mem_bytes": 247090,
+    "ledger_reads": 0,
+    "ledger_writes": 2,
+    "read_bytes": 0,
+    "write_bytes": 164
+  },
+  {
+    "function": "revoke_impact_attestation",
+    "state": "populated ledger",
+    "cpu_insns": 1272846,
+    "mem_bytes": 412455,
+    "ledger_reads": 0,
+    "ledger_writes": 3,
+    "read_bytes": 0,
+    "write_bytes": 216
+  },
+  {
+    "function": "set_dao_contract",
+    "state": "populated ledger",
+    "cpu_insns": 450185,
+    "mem_bytes": 160996,
+    "ledger_reads": 0,
+    "ledger_writes": 1,
+    "read_bytes": 0,
+    "write_bytes": 56
+  },
+  {
+    "function": "verify_project",
+    "state": "populated ledger",
+    "cpu_insns": 955179,
+    "mem_bytes": 327058,
+    "ledger_reads": 0,
+    "ledger_writes": 2,
+    "read_bytes": 0,
+    "write_bytes": 112
+  },
+  {
+    "function": "transfer",
+    "state": "populated ledger",
+    "cpu_insns": 2403287,
+    "mem_bytes": 678611,
+    "ledger_reads": 6,
+    "ledger_writes": 1,
+    "read_bytes": 880,
+    "write_bytes": 56
+  }
+]
