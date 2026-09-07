@@ -432,6 +432,13 @@ const schema = {
     default: "true",
     description: "Whether batch size adapts dynamically to backlog",
   },
+
+  EVENT_STORE_MAX_ATTEMPTS: {
+    required: false,
+    type: "number",
+    default: "3",
+    description: "Maximum retry attempts before routing a failing event to the dead-letter queue",
+  },
 };
 
 // Export schema for test/CI access
@@ -642,6 +649,7 @@ function buildConfig(isTestMode) {
     eventStorePollIntervalMs: Number(get("EVENT_STORE_POLL_INTERVAL_MS")),
     eventStoreCatchupIntervalMs: Number(get("EVENT_STORE_CATCHUP_INTERVAL_MS")),
     eventStoreAdaptiveBatch: parseBoolean(get("EVENT_STORE_ADAPTIVE_BATCH")),
+    eventStoreMaxAttempts: Number(get("EVENT_STORE_MAX_ATTEMPTS")),
 
     // Flags
     isProduction,
