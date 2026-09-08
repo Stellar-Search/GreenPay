@@ -132,7 +132,7 @@ jobs:
         run: npm install
         working-directory: shared
       - name: npm audit (fail on high/critical)
-        run: npx --yes audit-ci@7.1.0 --high --package-manager npm
+        run: npx --yes audit-ci@7.1.0 --high --package-manager npm --config .audit-ci.json
       - name: OpenAPI compatibility (published v1 baseline)
         run: npm run check:openapi && npm run check:api-compat
       - run: npm run lint

@@ -895,8 +895,17 @@ CREATE TABLE IF NOT EXISTS event_stream (
   occurred_at        TIMESTAMPTZ     NOT NULL,
   created_at         TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
   processed          BOOLEAN         NOT NULL DEFAULT false,
-  processed_at       TIMESTAMPTZ
+  processed_at       TIMESTAMPTZ,
+  attempts           INTEGER         NOT NULL DEFAULT 0,
+  last_error         TEXT,
+  dead_lettered      BOOLEAN         NOT NULL DEFAULT false,
+  dead_lettered_at   TIMESTAMPTZ
 );
+
+ALTER TABLE event_stream ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE event_stream ADD COLUMN IF NOT EXISTS last_error TEXT;
+ALTER TABLE event_stream ADD COLUMN IF NOT EXISTS dead_lettered BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE event_stream ADD COLUMN IF NOT EXISTS dead_lettered_at TIMESTAMPTZ;
 
 CREATE UNIQUE INDEX IF NOT EXISTS ux_event_stream_stream_version
   ON event_stream (stream_id, version);
@@ -914,6 +923,36 @@ CREATE INDEX IF NOT EXISTS idx_event_stream_processed
 CREATE UNIQUE INDEX IF NOT EXISTS ux_donation_tx_hash
   ON event_stream ((payload->'data'->>'transactionHash'))
   WHERE event_type = 'DonationRecorded';
+
+-- ============================================================
+-- Event Store Dead-Letter Queue (DLQ)
+-- Permanently-failed events (max retries exhausted) are routed
+-- here with the failure error message and stack trace for
+-- operator inspection, without blocking the event stream.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS event_dead_letter (
+  id             UUID            PRIMARY KEY,
+  event_id       UUID            NOT NULL,
+  stream_id      TEXT            NOT NULL,
+  aggregate_type TEXT,
+  aggregate_id   TEXT,
+  event_type     TEXT            NOT NULL,
+  version        INTEGER,
+  payload        JSONB           NOT NULL DEFAULT '{}'::JSONB,
+  attempts       INTEGER         NOT NULL DEFAULT 1,
+  error_message  TEXT,
+  error_stack    TEXT,
+  created_at     TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_dead_letter_event_id
+  ON event_dead_letter (event_id);
+
+CREATE INDEX IF NOT EXISTS idx_event_dead_letter_stream_id
+  ON event_dead_letter (stream_id);
+
+CREATE INDEX IF NOT EXISTS idx_event_dead_letter_created_at
+  ON event_dead_letter (created_at);
 
 -- CQRS Read-Model Cursor Columns
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS projection_cursor BIGINT DEFAULT 0;
