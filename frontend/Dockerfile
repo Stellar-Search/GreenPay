@@ -25,6 +25,12 @@ RUN mkdir -p node_modules/@greenpay && \
 # Copy the rest of the frontend
 COPY frontend/. .
 
+# The frontend source uses relative imports to ../../shared (e.g. from
+# lib/socketEvents.ts).  Since the Dockerfile flattens frontend/ into /app,
+# those paths resolve to /shared — create a symlink so they find the shared
+# module at /app/shared.
+RUN ln -sf /app/shared /shared
+
 # Build the app
 RUN mkdir -p public
 RUN npm run build

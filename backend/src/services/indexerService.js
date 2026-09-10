@@ -283,7 +283,8 @@ async function handleDonation(projectId, op) {
     // needed fanning out. `io` is still checked because startIndexer() is
     // called without one in several tests.
     if (io) {
-      await publish("donation_event", {
+      const { SOCKET_EVENTS } = require("../schemas/socketEvents");
+      io.emit(SOCKET_EVENTS.DONATION_EVENT, {
         projectId,
         donorAddress,
         amountXLM: amountXLMNumber,
