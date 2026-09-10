@@ -32,8 +32,9 @@ fail() { FAIL=$((FAIL + 1)); echo "  NOT OK - $1"; }
 # `fn` statement, not its `fn() {` definition or a comment mentioning it) ---
 first_call_line() {
     local file="$1" fn="$2"
-    grep -n -E "^[[:space:]]*${fn}[[:space:]]*\$" "$file" \
+    grep -n -E "\b${fn}\b" "$file" \
         | grep -vE ":\s*${fn}\s*\(\)" \
+        | grep -vE ":\s*#" \
         | head -n1 \
         | cut -d: -f1
 }
