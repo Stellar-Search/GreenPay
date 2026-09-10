@@ -61,6 +61,10 @@
     // The available fix ships in @stellar/stellar-sdk@17.x, which is a
     // breaking major-version upgrade across the workspace.
     "GHSA-82x6-q7mm-w9cf",
-    "GHSA-v5mp-jgw5-2x6j"
+    "GHSA-v5mp-jgw5-2x6j",
+
+    // js-yaml vulnerability in @istanbuljs/load-nyc-config
+    // No compatible update without major version change.
+    "GHSA-2883-xcg3-v3hh"
   ]
 }
