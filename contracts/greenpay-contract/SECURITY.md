@@ -334,3 +334,11 @@ cargo test -p greenpay-contract --features testutils -- fuzz
 Regression tests cover CEI ordering, overflow guards, `co2_per_xlm`
 registration ceiling, atomic rollback on failed `donate`, and property
 tests in `fuzz_tests.rs`.
+
+## Re-running this audit
+
+This record follows [`contracts/SECURITY_AUDIT_PROCESS.md`](../SECURITY_AUDIT_PROCESS.md),
+which defines the triggers, the checklist, the severity scale, and the required
+regression test per finding. Re-run it whenever the contract changes materially
+(new entrypoint, external call, arithmetic, access control, storage key, or SDK
+bump), then update the **Findings** and **Test results** sections above.
