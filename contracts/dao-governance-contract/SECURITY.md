@@ -229,3 +229,11 @@ proportional-quorum fix adds 5 regression tests
 `test_quorum_frozen_at_snapshot`, `test_total_locked_tracks_locks_and_withdrawals`,
 and the reworked `test_finalise_defeated_no_quorum`).
 Total: **67 tests, 0 failures**.
+
+## Re-running this audit
+
+This record follows [`contracts/SECURITY_AUDIT_PROCESS.md`](../SECURITY_AUDIT_PROCESS.md),
+which defines the triggers, the checklist, the severity scale, and the required
+regression test per finding. Re-run it whenever the contract changes materially
+(new entrypoint, external call, arithmetic, access control, storage key, or SDK
+bump), then update the **Findings** and **Test results** sections above.
