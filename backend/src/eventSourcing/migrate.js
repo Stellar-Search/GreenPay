@@ -96,7 +96,7 @@ async function runLegacyMigration() {
   try {
     // === 1. Migrate Projects ===
     const projectsResult = await pool.query(
-      "SELECT id, name, description, category, location, wallet_address, goal_xlm, tags, created_at FROM projects"
+      "SELECT id, name, description, category, location, wallet_address, goal_xlm, tags, status, created_at FROM projects"
     );
     for (const project of projectsResult.rows) {
       events.push(
