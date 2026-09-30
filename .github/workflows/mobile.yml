@@ -72,6 +72,7 @@ jobs:
           echo "app.json runtimeVersion.policy: $POLICY ✓"
 
       - name: Check EXPO_TOKEN is configured
+        if: github.event_name == 'push'
         id: check-token
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
