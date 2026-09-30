@@ -8,10 +8,11 @@ import EditProfileForm from "@/components/EditProfileForm";
 import ProjectCard from "@/components/ProjectCard";
 import ImpactCertificate from "@/components/ImpactCertificate";
 import ProjectRating from "@/components/ProjectRating";
-import { fetchProfile, fetchDonorHistory, fetchProjects } from "@/lib/api";
+import { API_CLIENT_HEADERS, fetchProfile, fetchDonorHistory, fetchImpactDonor, fetchProjects } from "@/lib/api";
+import type { ImpactDonorStats } from "@/lib/api";
 import { getDueMonthlySubscriptions } from "@/lib/monthlyGiving";
 import { getXLMBalance, getFriendBotFunding, NETWORK } from "@/lib/stellar";
-import { formatXLM, formatCO2, timeAgo, shortenAddress, badgeEmoji, badgeLabel, calculateStreak } from "@/utils/format";
+import { formatXLM, timeAgo, shortenAddress, badgeEmoji, badgeLabel, calculateStreak } from "@/utils/format";
 import { explorerUrl } from "@/lib/stellar";
 import type { DonorProfile, Donation, ClimateProject, MonthlySubscription } from "@/utils/types";
 import { useWishlist } from "@/hooks/useWishlist";
@@ -20,7 +21,7 @@ import { useI18n } from "@/lib/i18n";
 interface DashboardProps { publicKey: string | null; onConnect: (pk: string) => void; }
 
 export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
-  const { localeTag } = useI18n();
+  const { localeTag, locale } = useI18n();
   const [profile,   setProfile]   = useState<DonorProfile | null>(null);
   const [donations, setDonations] = useState<Donation[]>([]);
   const [balance,   setBalance]   = useState<string | null>(null);
@@ -35,6 +36,7 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
   const { wishlist } = useWishlist();
   const [showCertificate, setShowCertificate] = useState(false);
   const [pendingRating, setPendingRating] = useState<{ id: string, name: string } | null>(null);
+  const [donorImpact, setDonorImpact] = useState<ImpactDonorStats | null>(null);
 
   useEffect(() => {
     if (!publicKey) return;
@@ -42,20 +44,24 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
       fetchProfile(publicKey).catch(() => null),
       fetchDonorHistory(publicKey),
       getXLMBalance(publicKey).catch(() => { setIsUnfunded(true); return null; }),
-      fetchProjects(),
+      fetchProjects({ lang: locale }),
+      fetchImpactDonor(publicKey).catch(() => null),
     ])
-      .then(([p, d, b, allProjects]) => { 
+      .then(([p, d, b, projectResponse, impact]) => {
         setProfile(p); 
         setDonations(d); 
+        setDonorImpact(impact);
         if (b !== null) {
           setBalance(b);
           setIsUnfunded(false);
         }
-        setAllProjects(allProjects);
-        setSavedProjects(allProjects.filter(proj => wishlist.includes(proj.id)));
+        setAllProjects(projectResponse.projects);
+        setSavedProjects(projectResponse.projects.filter(proj => wishlist.includes(proj.id)));
         
         // Fetch pending rating
-        return fetch(`${process.env.NEXT_PUBLIC_API_URL || ""}/api/v1/ratings/pending?donorAddress=${publicKey}`);
+        return fetch(`${process.env.NEXT_PUBLIC_API_URL || ""}/api/v1/ratings/pending?donorAddress=${publicKey}`, {
+          headers: API_CLIENT_HEADERS,
+        });
       })
       .then(r => r?.json())
       .then(res => {
@@ -65,7 +71,7 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
       })
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [publicKey, wishlist]);
+  }, [publicKey, wishlist, locale]);
 
   useEffect(() => {
     if (!publicKey) return;
@@ -110,8 +116,10 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
   );
 
   const totalDonated  = profile?.totalDonatedXLM || "0";
-  const co2Estimate   = Math.round(parseFloat(totalDonated) * 12); // rough estimate
   const projectsCount = profile?.projectsSupported || 0;
+  const impactClaims = donorImpact?.supportedProjectClaims || [];
+  const attributionNotice = donorImpact?.attributionNotice
+    || "These are project-level outcomes. GreenPay does not allocate them to this donor in proportion to XLM donated.";
 
   const topBadgeTier = profile?.badges?.length ? profile.badges[0].tier : null;
   const supportedProjects = Array.from(
@@ -161,7 +169,7 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
   };
 
   const handleShareCertificate = () => {
-    const text = `I just got my Stellar GreenPay impact certificate: ${formatCO2(co2Estimate, localeTag)} offset from ${formatXLM(totalDonated, 2, localeTag)} donated.`;
+    const text = `My Stellar GreenPay certificate shows ${formatXLM(totalDonated, 2, localeTag)} donated and ${impactClaims.length} separately sourced project outcome record${impactClaims.length === 1 ? "" : "s"}.`;
     const url = typeof window !== "undefined" ? window.location.href : "https://stellar-greenpay.app";
     window.open(
       `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(url)}`,
@@ -250,7 +258,7 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         {[
           { icon: "💚", label: "Total Donated",     value: formatXLM(totalDonated, 2, localeTag) },
-          { icon: "♻️", label: "Est. CO₂ Offset",   value: formatCO2(co2Estimate, localeTag) },
+          { icon: "📋", label: "Outcome Records",   value: impactClaims.length.toString() },
           { icon: "🌍", label: "Projects Supported", value: projectsCount.toString() },
           { icon: "💰", label: "XLM Balance",        value: balance ? formatXLM(balance, 2, localeTag) : "—" },
         ].map(stat => (
@@ -320,9 +328,10 @@ export default function Dashboard({ publicKey, onConnect }: DashboardProps) {
                   donorAddress={publicKey}
                   donorName={profile?.displayName || null}
                   totalDonatedXLM={totalDonated}
-                  totalCO2OffsetKg={co2Estimate}
                   badgeTier={topBadgeTier}
                   projectsSupported={supportedProjects}
+                  impactClaims={impactClaims}
+                  attributionNotice={attributionNotice}
                 />
               </div>
             )}

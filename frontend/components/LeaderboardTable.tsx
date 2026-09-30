@@ -11,7 +11,7 @@
  * window (e.g. react-window FixedSizeList) to keep DOM node count bounded.
  */
 import { useState, useEffect, useCallback } from "react";
-import { fetchLeaderboard } from "@/lib/api";
+import { fetchLeaderboardWithMeta } from "@/lib/api";
 import { formatXLM, formatUSDEquivalent, shortenAddress, badgeEmoji, timeAgo } from "@/utils/format";
 import { accountUrl } from "@/lib/stellar";
 import { useXlmPriceInfo } from "@/lib/priceContext";
@@ -60,6 +60,7 @@ function Avatar({ publicKey, displayName }: { publicKey: string; displayName?: s
 
 export default function LeaderboardTable({ limit = 20, period = "all" }: { limit?: number; period?: "all" | "month" | "year" }) {
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error,   setError]   = useState<string | null>(null);
@@ -67,11 +68,18 @@ export default function LeaderboardTable({ limit = 20, period = "all" }: { limit
   const { xlmUsd, lastFetchedAt } = useXlmPriceInfo();
   const { t, localeTag } = useI18n();
 
-  const loadPage = useCallback(async (offset: number, append: boolean) => {
+  const loadPage = useCallback(async (cursorStr: string | null, append: boolean) => {
     try {
-      const newEntries = await fetchLeaderboard(limit, period, offset);
+      const { entries: newEntries, nextCursor: newCursor, hasMore: more } =
+        await fetchLeaderboardWithMeta(limit, period, cursorStr || undefined);
       setEntries(prev => append ? [...prev, ...newEntries] : newEntries);
-      setHasMore(newEntries.length === limit);
+      setNextCursor(newCursor);
+      // The server fetches limit+1 to decide this, so `more` is authoritative.
+      // The old `newEntries.length === limit` fallback belonged to offset
+      // paging: on a last page that exactly fills the limit it left the button
+      // enabled with no cursor to follow, and pressing it re-fetched page one
+      // and appended it — the duplicate rows keyset paging exists to prevent.
+      setHasMore(more && newCursor !== null);
     } catch {
       if (!append) setError("Could not load leaderboard.");
     } finally {
@@ -84,13 +92,14 @@ export default function LeaderboardTable({ limit = 20, period = "all" }: { limit
     setLoading(true);
     setError(null);
     setEntries([]);
+    setNextCursor(null);
     setHasMore(false);
-    loadPage(0, false);
+    loadPage(null, false);
   }, [limit, period, loadPage]);
 
   const loadMore = async () => {
     setLoadingMore(true);
-    await loadPage(entries.length, true);
+    await loadPage(nextCursor, true);
   };
 
   if (loading) return (

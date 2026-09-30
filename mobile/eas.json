@@ -3,12 +3,41 @@
     "version": ">= 10.0.0"
   },
   "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "env": {
+        "EXPO_UPDATES_CHECK_ON_LAUNCH": "NEVER"
+      },
+      "android": {
+        "buildType": "apk"
+      },
+      "ios": {
+        "simulator": true
+      }
+    },
     "preview": {
       "android": {
         "buildType": "apk"
       },
       "ios": {
         "simulator": true
+      }
+    },
+    "production": {
+      "env": {
+        "EXPO_PUBLIC_SENTRY_DSN": "INJECT_FROM_EAS_SECRET",
+        "SENTRY_AUTH_TOKEN": "INJECT_FROM_EAS_SECRET"
+      }
+    }
+  },
+  "submit": {
+    "production": {
+      "ios": {
+        "appleId": "YOUR_APPLE_ID"
+      },
+      "android": {
+        "serviceAccountKeyPath": "google-services.json"
       }
     }
   }

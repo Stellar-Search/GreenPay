@@ -4,6 +4,10 @@ import (
 	"math"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/greenpay/scheduler/pkg/hardware"
 )
 
@@ -204,6 +208,48 @@ func TestNUMAScoreFallsBackToNeutralWithoutUsableTopology(t *testing.T) {
 				t.Errorf("numaScore() = %.1f, want neutral score 50", got)
 			}
 		})
+	}
+}
+
+// A TPU pod (google.com/tpu resource request) must produce a non-zero
+// GPUCountReq and therefore exercise the NUMA locality path instead of
+// silently returning its neutral value (issue #331).
+func TestNUMAScore_TPUPodExercisesLocalityPath(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "tpu-training",
+			Namespace: "default",
+			Annotations: map[string]string{
+				hardware.AnnotWorkloadType: hardware.WorkloadMLTraining,
+			},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "worker",
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceName("google.com/tpu"): resource.MustParse("4"),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	reqs := hardware.ParsePodHardwareReqs(pod)
+	if reqs.GPUCountReq != 4 {
+		t.Fatalf("TPU pod GPUCountReq: got %d, want 4 — the locality path is bypassed", reqs.GPUCountReq)
+	}
+
+	hw := topologyHardware(
+		hardware.TopologyManagerPolicySingleNUMANode,
+		hardware.TopologyManagerScopePod,
+		[]int64{4},
+	)
+
+	if got := scoreNUMALocality(reqs, hw); got != 100.0 {
+		t.Errorf("numaScore() for TPU pod = %.1f, want 100.0 (topology fully satisfied)", got)
 	}
 }
 

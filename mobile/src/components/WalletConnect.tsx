@@ -10,15 +10,29 @@ import {
   Alert,
 } from 'react-native';
 import { useWallet } from '../hooks/useWallet';
+import { FirstDonationPaths } from './FirstDonationPaths';
+import { track } from '../../utils/funnel';
+
+interface WalletConnectProps {
+  /**
+   * Offer the no-account paths alongside manual address entry. Opt-in per
+   * screen and off by default, so every existing call site keeps exactly the
+   * behaviour it had — the donors it already serves are not the ones with a
+   * problem.
+   */
+  allowGuidedOnboarding?: boolean;
+  projectId?: string;
+}
 
 // Lobstr deep-links only support payment requests, not wallet connection.
 // WalletConnect for Stellar (SEP-43) is still in draft and has no stable
 // mobile SDK. Manual public-key entry with SecureStore is the reliable choice.
-export function WalletConnect() {
+export function WalletConnect({ allowGuidedOnboarding = false, projectId }: WalletConnectProps = {}) {
   const { publicKey, loading, error, connect, disconnect } = useWallet();
   const [modalVisible, setModalVisible] = useState(false);
   const [inputAddress, setInputAddress] = useState('');
   const [connecting, setConnecting] = useState(false);
+  const [showPaths, setShowPaths] = useState(false);
 
   if (loading) return <ActivityIndicator size="small" color="#22c55e" />;
 
@@ -46,8 +60,35 @@ export function WalletConnect() {
     if (ok) {
       setModalVisible(false);
       setInputAddress('');
+      void track('account_ready', { path: 'connected_wallet', projectId });
     }
   };
+
+  /**
+   * Adopts the address the onboarding flow just created. It goes through the
+   * same `connect` as a hand-typed address, so a sponsored donor's session is
+   * stored and restored exactly like anyone else's.
+   */
+  const handleOnboarded = async (address: string) => {
+    const ok = await connect(address);
+    if (ok) {
+      setShowPaths(false);
+      setModalVisible(false);
+    }
+  };
+
+  if (showPaths) {
+    return (
+      <FirstDonationPaths
+        projectId={projectId}
+        onAccountReady={handleOnboarded}
+        onUseExistingWallet={() => {
+          setShowPaths(false);
+          setModalVisible(true);
+        }}
+      />
+    );
+  }
 
   return (
     <>
@@ -86,6 +127,23 @@ export function WalletConnect() {
                 <Text style={styles.confirmButtonText}>Connect</Text>
               )}
             </TouchableOpacity>
+
+            {allowGuidedOnboarding && (
+              // Previously this modal's only outcome for a donor without an
+              // address was to close it. That is where first-time donors
+              // stopped.
+              <TouchableOpacity
+                onPress={() => {
+                  setModalVisible(false);
+                  setShowPaths(true);
+                }}
+                testID="mobile-no-wallet"
+              >
+                <Text style={styles.noWalletText}>
+                  Don&apos;t have a Stellar address? Donate without one →
+                </Text>
+              </TouchableOpacity>
+            )}
 
             <TouchableOpacity onPress={() => setModalVisible(false)}>
               <Text style={styles.cancelText}>Cancel</Text>
@@ -152,4 +210,11 @@ const styles = StyleSheet.create({
   confirmButtonText: { color: '#fff', fontWeight: '700', fontSize: 15 },
   disabled: { opacity: 0.5 },
   cancelText: { color: '#6b7280', textAlign: 'center', fontSize: 14 },
+  noWalletText: {
+    color: '#16a34a',
+    textAlign: 'center',
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 12,
+  },
 });

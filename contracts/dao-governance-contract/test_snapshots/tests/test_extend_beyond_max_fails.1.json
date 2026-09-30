@@ -419,7 +419,7 @@
                             },
                             {
                               "key": {
-                                "symbol": "quorum"
+                                "symbol": "quorum_bps"
                               },
                               "val": {
                                 "i128": {
@@ -472,6 +472,33 @@
                         },
                         "val": {
                           "u64": 0
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "TotalLocked"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "i128": {
+                            "hi": 0,
+                            "lo": 5000
+                          }
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
                         }
                       }
                     ]
@@ -996,7 +1023,7 @@
                 },
                 {
                   "key": {
-                    "symbol": "quorum"
+                    "symbol": "quorum_bps"
                   },
                   "val": {
                     "i128": {
@@ -1371,7 +1398,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'lock duration too long' from contract function 'Symbol(obj#321)'"
+                  "string": "caught panic 'lock duration too long' from contract function 'Symbol(obj#347)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"

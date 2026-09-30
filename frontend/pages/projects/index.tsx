@@ -5,23 +5,24 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/router";
 import ProjectCard, { ProjectCardSkeleton } from "@/components/ProjectCard";
 import ProjectComparison from "@/components/ProjectComparison";
+import ProjectSearchBar from "@/components/ProjectSearchBar";
+import ProjectSearchFacets from "@/components/ProjectSearchFacets";
 import { fetchProjects } from "@/lib/api";
-import { PROJECT_CATEGORIES, CATEGORY_ICONS } from "@/utils/format";
+import type { ProjectSearchMeta } from "@/lib/api";
 import type { ClimateProject } from "@/utils/types";
 import { useAutocomplete } from "@/hooks/useAutocomplete";
 import { useI18n } from "@/lib/i18n";
-import clsx from "clsx";
 
 export default function ProjectsPage() {
   const router = useRouter();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [projects, setProjects] = useState<ClimateProject[]>([]);
+  const [searchMeta, setSearchMeta] = useState<ProjectSearchMeta | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
   const [showComparison, setShowComparison] = useState(false);
-  
-  const searchRef = useRef<HTMLDivElement>(null);
-  
+  const searchUrlTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const {
     query: search,
     setQuery: setSearch,
@@ -32,8 +33,8 @@ export default function ProjectsPage() {
     handleKeyDown
   } = useAutocomplete<ClimateProject>(
     async (q) => {
-      const data = await fetchProjects({ search: q, limit: 5 });
-      return data;
+      const { projects: results } = await fetchProjects({ search: q, limit: 5, lang: locale });
+      return results;
     }
   );
 
@@ -48,25 +49,12 @@ export default function ProjectsPage() {
     [projects, selectedProjectIds],
   );
 
-  // Initialize search from URL query parameter
   useEffect(() => {
     if (searchQuery && !search) {
       setSearch(searchQuery);
     }
   }, [searchQuery, search, setSearch]);
 
-  // Click outside listener for autocomplete
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
-        setIsAutocompleteOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [setIsAutocompleteOpen]);
-
-  // Debounced search effect
   useEffect(() => {
     const timer = setTimeout(() => {
       setLoading(true);
@@ -76,14 +64,18 @@ export default function ProjectsPage() {
         verified: verified || undefined,
         search: search || undefined,
         limit: 50,
+        lang: locale,
       })
-        .then(setProjects)
+        .then(({ projects: data, meta }) => {
+          setProjects(data);
+          setSearchMeta(meta ?? null);
+        })
         .catch(console.error)
         .finally(() => setLoading(false));
     }, 300);
 
     return () => clearTimeout(timer);
-  }, [category, status, verified, search]);
+  }, [category, status, verified, search, locale]);
 
   useEffect(() => {
     if (!compareQuery || projects.length === 0) return;
@@ -98,24 +90,27 @@ export default function ProjectsPage() {
     }
   }, [compareQuery, projects]);
 
-  const setFilter = (key: string, val: string) => {
-    router.push(
-      {
-        pathname: "/projects",
-        query: { ...router.query, [key]: val || undefined },
-      },
-      undefined,
-      { shallow: true },
-    );
-  };
+  const setFilter = useCallback(
+    (key: string, val: string) => {
+      router.push(
+        {
+          pathname: "/projects",
+          query: { ...router.query, [key]: val || undefined },
+        },
+        undefined,
+        { shallow: true },
+      );
+    },
+    [router],
+  );
 
   const handleSearchChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const value = e.target.value;
+    (value: string) => {
       setSearch(value);
-      
-      // Update URL with search query (debounced would be better but keeping simple for now)
-      const timer = setTimeout(() => {
+      if (searchUrlTimer.current) {
+        clearTimeout(searchUrlTimer.current);
+      }
+      searchUrlTimer.current = setTimeout(() => {
         router.push(
           {
             pathname: "/projects",
@@ -125,7 +120,6 @@ export default function ProjectsPage() {
           { shallow: true },
         );
       }, 500);
-      return () => clearTimeout(timer);
     },
     [router, setSearch],
   );
@@ -149,7 +143,6 @@ export default function ProjectsPage() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-10 animate-fade-in">
-      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
         <div>
           <h1 className="font-display text-3xl font-bold text-forest-900 mb-1">
@@ -158,152 +151,34 @@ export default function ProjectsPage() {
           <p className="text-[#4b654b] text-sm font-body">
             {loading
               ? "Loading..."
-              : t("project.verifiedProjectsCount", { count: projects.length })}
+              : searchMeta?.total != null
+                ? t("project.verifiedProjectsCount", { count: searchMeta.total })
+                : t("project.verifiedProjectsCount", { count: projects.length })}
           </p>
         </div>
       </div>
 
-      {/* Search */}
-      <div className="relative mb-6" ref={searchRef}>
-        <span className="absolute start-4 top-1/2 -translate-y-1/2 text-[#547454] z-10">
-          🔍
-        </span>
-        <input
-          type="text"
-          value={search}
-          onChange={handleSearchChange}
-          onKeyDown={(e) => {
-            handleKeyDown(e);
-            if (e.key === 'Enter' && activeIndex >= 0) {
-              handleSelectProject(autocompleteResults[activeIndex]);
-            }
-          }}
-          onFocus={() => search.length >= 2 && setIsAutocompleteOpen(true)}
-          placeholder="Search projects by name, location, or keyword..."
-          className="input-field ps-10 relative z-10"
-        />
-
-        {/* Autocomplete Dropdown */}
-        {isAutocompleteOpen && (
-          <div className="absolute top-full start-0 end-0 mt-2 bg-white border border-forest-200 rounded-xl shadow-xl z-50 overflow-hidden animate-fade-in">
-            {autocompleteResults.map((p, i) => (
-              <div
-                key={p.id}
-                onClick={() => handleSelectProject(p)}
-                className={clsx(
-                  "flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors border-b border-forest-50 last:border-0",
-                  i === activeIndex ? "bg-forest-100" : "hover:bg-forest-50"
-                )}
-              >
-                <div className="w-8 h-8 rounded-lg bg-forest-100 flex items-center justify-center text-lg flex-shrink-0">
-                  {CATEGORY_ICONS[p.category] || "🌿"}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-forest-900 truncate">{p.name}</p>
-                  <p className="text-xs text-[#547454] font-body truncate">{p.location} · {p.category}</p>
-                </div>
-                <div className="text-xs font-bold text-forest-500 uppercase tracking-widest opacity-40">View →</div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      <ProjectSearchBar
+        search={search}
+        onSearchChange={handleSearchChange}
+        onSelectProject={handleSelectProject}
+        autocompleteResults={autocompleteResults}
+        isAutocompleteOpen={isAutocompleteOpen}
+        setIsAutocompleteOpen={setIsAutocompleteOpen}
+        activeIndex={activeIndex}
+        onKeyDown={handleKeyDown}
+      />
 
       <div className="flex gap-6">
-        {/* Sidebar */}
-        <aside className="hidden lg:block w-52 flex-shrink-0 space-y-6">
-          <div>
-            <p className="label">Status</p>
-            <div className="space-y-1">
-              {[
-                ["active", "Active"],
-                ["completed", "Completed"],
-                ["", "All"],
-              ].map(([val, lab]) => (
-                <button
-                  key={val}
-                  onClick={() => setFilter("status", val)}
-                  className={clsx(
-                    "w-full text-start px-3 py-2 rounded-lg text-sm transition-colors font-body",
-                    status === val
-                      ? "bg-forest-100 text-forest-700 font-semibold"
-                      : "text-[#4b654b] hover:bg-forest-50 hover:text-forest-700",
-                  )}
-                >
-                  {lab}
-                </button>
-              ))}
-            </div>
-          </div>
+        <ProjectSearchFacets
+          status={status}
+          category={category}
+          verified={verified}
+          searchMeta={searchMeta}
+          projects={projects}
+          onFilterChange={setFilter}
+        />
 
-          <div>
-            <p className="label">Verification</p>
-            <button
-              onClick={() => setFilter("verified", verified ? "" : "true")}
-              className={clsx(
-                "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors font-body",
-                verified
-                  ? "bg-forest-100 text-forest-700"
-                  : "text-[#4b654b] hover:bg-forest-50 hover:text-forest-700",
-              )}
-            >
-              {/* Toggle Switch */}
-              <div
-                className={clsx(
-                  "relative w-10 h-6 rounded-full transition-colors",
-                  verified ? "bg-emerald-600" : "bg-[#d0d0d0]",
-                )}
-              >
-                <div
-                  className={clsx(
-                    "absolute top-1 w-4 h-4 rounded-full bg-white transition-all",
-                    verified ? "end-1" : "start-1",
-                  )}
-                />
-              </div>
-              <span className="flex-1 text-start">
-                ✓ Verified only{" "}
-                <span className="text-xs text-[#547454]">
-                  ({projects.filter((p) => p.verified).length})
-                </span>
-              </span>
-            </button>
-          </div>
-
-          <div>
-            <p className="label">Category</p>
-            <div className="space-y-1">
-              <button
-                onClick={() => setFilter("category", "")}
-                className={clsx(
-                  "w-full text-start px-3 py-2 rounded-lg text-sm transition-colors font-body",
-                  !category
-                    ? "bg-forest-100 text-forest-700 font-semibold"
-                    : "text-[#4b654b] hover:bg-forest-50 hover:text-forest-700",
-                )}
-              >
-                All Categories
-              </button>
-              {PROJECT_CATEGORIES.map((cat) => (
-                <button
-                  key={cat}
-                  onClick={() => setFilter("category", cat)}
-                  className={clsx(
-                    "w-full text-start px-3 py-2 rounded-lg text-sm transition-colors font-body flex items-center gap-2",
-                    category === cat
-                      ? "bg-forest-100 text-forest-700 font-semibold"
-                      : "text-[#4b654b] hover:bg-forest-50 hover:text-forest-700",
-                  )}
-                >
-                  <span>{CATEGORY_ICONS[cat]}</span>
-                  {cat}
-                </button>
-              ))}
-            </div>
-          </div>
-        </aside>
-
-        {/* Grid */}
         <div className="flex-1">
           {selectedProjectIds.length >= 2 && (
             <div className="mb-4 flex items-center justify-between rounded-xl border border-forest-200 bg-forest-50 px-4 py-3">
@@ -349,13 +224,6 @@ export default function ProjectsPage() {
                         : "bg-white text-forest-700 border-forest-200"
                     }`}
                     onClick={(e) => {
-                      // Stop the click from bubbling to anything else on the
-                      // card (e.g. its navigation link) — but do NOT call
-                      // preventDefault() here: doing so on a click that
-                      // targets/bubbles through the checkbox itself cancels
-                      // its native checked-state toggle before React's
-                      // controlled `checked` prop ever gets a chance to
-                      // re-apply it.
                       e.stopPropagation();
                     }}
                   >
@@ -363,7 +231,10 @@ export default function ProjectsPage() {
                       type="checkbox"
                       checked={selectedProjectIds.includes(p.id)}
                       onChange={() => toggleSelection(p.id)}
-                      disabled={selectedProjectIds.length >= 3 && !selectedProjectIds.includes(p.id)}
+                      disabled={
+                        selectedProjectIds.length >= 3 &&
+                        !selectedProjectIds.includes(p.id)
+                      }
                     />
                     Compare
                   </label>

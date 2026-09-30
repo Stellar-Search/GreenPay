@@ -29,21 +29,29 @@ export interface ClimateProject {
   id: string;
   name: string;
   description: string;
-  category: ProjectCategory;
+  category: string;
+  sourceCategory?: ProjectCategory;
   location: string;
   imageUrl?: string;
   walletAddress: string;       // Stellar address that receives donations
   goalXLM: string;             // fundraising goal
   raisedXLM: string;           // total raised so far
   donorCount: number;
-  co2OffsetKg: number;         // estimated CO2 offset in kg
-  co2_per_xlm?: number;        // CO2 offset per XLM donated
+  /** @deprecated Legacy operator input; use /api/impact project claims. */
+  co2OffsetKg: number;
+  /** @deprecated Retained for old contract/project payload compatibility only. */
+  co2_per_xlm?: number;
   status: ProjectStatus;
   rejectionReason?: string | null;
   verified: boolean;
   onChainVerified?: boolean;
   contractRegisteredAt?: number | null;
   totalRaisedOnChain?: string;
+  verificationExpiresAt?: string | null;
+  verificationRevokedAt?: string | null;
+  verificationRevocationReason?: string | null;
+  verificationDecisionTxHash?: string | null;
+  verificationDecisionContractId?: string | null;
   tags: string[];
   createdAt: string;
   updatedAt: string;
@@ -62,6 +70,92 @@ export interface ClimateProject {
   aiSummaryModel?: string | null;
   aiSummarySourceHash?: string | null;
   serverNow?: number;
+  sourceLanguage?: "en" | "es" | "ar";
+  contentLanguage?: "en" | "es" | "ar";
+  contentDirection?: "ltr" | "rtl";
+  requestedLanguage?: "en" | "es" | "ar" | null;
+  usedFallback?: boolean;
+  machineTranslated?: boolean;
+}
+
+export type ProjectVerificationStatus =
+  | "wallet_proof_pending"
+  | "submitted"
+  | "under_review"
+  | "community_vote"
+  | "approved"
+  | "rejected"
+  | "revoked"
+  | "expired";
+
+export interface ProjectVerificationApplication {
+  id: string;
+  projectId: string;
+  submittedByWallet: string;
+  status: ProjectVerificationStatus;
+  attestationSummary?: string | null;
+  walletChallengeExpiresAt?: string | null;
+  walletVerifiedAt?: string | null;
+  submittedAt?: string | null;
+  communityVoteOpensAt?: string | null;
+  communityVoteClosesAt?: string | null;
+  approvedAt?: string | null;
+  expiresAt?: string | null;
+  revokedAt?: string | null;
+  revocationReason?: string | null;
+  decisionTxHash?: string | null;
+  decisionContractId?: string | null;
+  latestRationale?: string | null;
+  evidenceCount: number;
+  proofCount: number;
+  attestationCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectVerificationEvidence {
+  id: string;
+  applicationId: string;
+  evidenceType: "wallet_control" | "legal_identity" | "project_documentation" | "impact_evidence" | "other";
+  attestationType: "cryptographic_proof" | "human_attestation";
+  documentHash: string;
+  storageUri?: string | null;
+  private: boolean;
+  submittedBy: string;
+  notes?: string | null;
+  createdAt: string;
+}
+
+export interface ProjectVerificationEvent {
+  id: string;
+  applicationId: string;
+  actor: string;
+  actorType: "project_wallet" | "platform_admin" | "dao" | "system";
+  fromStatus?: ProjectVerificationStatus | null;
+  toStatus: ProjectVerificationStatus;
+  rationale?: string | null;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface ProjectVerificationStatusResponse {
+  projectId: string;
+  walletAddress: string;
+  verified: boolean;
+  onChainVerified: boolean;
+  verificationExpiresAt?: string | null;
+  verificationRevokedAt?: string | null;
+  verificationRevocationReason?: string | null;
+  verificationDecisionTxHash?: string | null;
+  verificationDecisionContractId?: string | null;
+  badgeExpired?: boolean;
+  badgeRevoked?: boolean;
+  currentStatus?: ProjectVerificationStatus | null;
+  contractRegisteredAt?: number | null;
+  totalRaisedOnChain?: string;
+  latestApplication?: ProjectVerificationApplication | null;
+  timeline: ProjectVerificationEvent[];
+  publicEvidence?: ProjectVerificationEvidence[];
 }
 
 /**
@@ -165,7 +259,49 @@ export interface ProjectUpdate {
   body: string;
   imageUrl?: string;
   createdAt: string;
+  publishedAt?: string | null;
+  editedAt?: string | null;
+  revision?: number;
+  moderationStatus?:
+    | "pending"
+    | "published_pending_review"
+    | "published"
+    | "rejected"
+    | "removed"
+    | "appealed";
+  isEdited?: boolean;
+  underReview?: boolean;
+  sourceLanguage?: "en" | "es" | "ar";
+  contentLanguage?: "en" | "es" | "ar";
+  contentDirection?: "ltr" | "rtl";
+  requestedLanguage?: "en" | "es" | "ar" | null;
+  usedFallback?: boolean;
+  machineTranslated?: boolean;
 }
+
+export interface ProjectUpdateRevision {
+  revision: number;
+  title: string;
+  body: string;
+  sourceLanguage: "en" | "es" | "ar";
+  editReason: string;
+  replacedAt: string;
+}
+
+export interface ProjectUpdateHistory {
+  currentRevision: number;
+  editedAt: string | null;
+  revisions: ProjectUpdateRevision[];
+}
+
+export type ProjectUpdateReportReason =
+  | "fraudulent_claim"
+  | "abuse"
+  | "spam"
+  | "off_topic_solicitation"
+  | "dangerous_content"
+  | "privacy"
+  | "other";
 
 /**
  * Leaderboard entry representing a donor's rank and totals.

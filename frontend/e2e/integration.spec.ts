@@ -96,11 +96,13 @@ test.describe("E2E Integration Tests (No API Mocking)", () => {
     await page.goto("/");
     await expect(page.getByText("Fund the planet.").first()).toBeVisible();
 
-    // Go to project listing
+    // Go to project listing — wait for the debounced listing fetch (300ms) to finish.
+    const projectsResponse = page.waitForResponse(
+      (resp) => resp.url().includes("/api/v1/projects") && resp.status() === 200,
+    );
     await page.goto("/projects");
-    await expect(page.getByText("Amazon Reforestation Initiative")).toBeVisible();
-
-113
+    await projectsResponse;
+    await expect(page.getByText("Amazon Reforestation Initiative")).toBeVisible({ timeout: 10000 });
 
     // Navigate to details page
     await page.getByText("Amazon Reforestation Initiative").click();

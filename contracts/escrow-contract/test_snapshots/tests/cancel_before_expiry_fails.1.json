@@ -352,6 +352,30 @@
                             }
                           ]
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "JobCount"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -1263,7 +1287,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Job has not expired yet' from contract function 'Symbol(obj#291)'"
+                  "string": "caught panic 'Job has not expired yet' from contract function 'Symbol(obj#307)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"

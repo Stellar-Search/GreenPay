@@ -17,7 +17,7 @@
     "<all_urls>"
   ],
   "content_security_policy": {
-    "extension_pages": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src https://api.stellar-greenpay.app https://horizon-testnet.stellar.org; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    "extension_pages": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' https://api.stellar-greenpay.app https://horizon-testnet.stellar.org https://soroban-testnet.stellar.org; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
   },
   "content_scripts": [
     {

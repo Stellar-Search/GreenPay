@@ -12,12 +12,18 @@ const express = require("express");
 const router = express.Router();
 const { v4: uuidv4 } = require("uuid");
 const pool = require("../db/pool");
-const { createRateLimiter } = require("../middleware/rateLimiter");
+const { createLayeredRateLimiter } = require("../middleware/rateLimiter");
 const { createApiError } = require("../middleware/apiEnvelope");
 
-// Rate limiter for follow/unfollow operations per donor address
-// Prevents enumeration and follow/unfollow spam
-const notificationLimiter = createRateLimiter(10, 1, "notification-follow"); // 10 follows/unfollows per donor per hour
+// Rate limiter for follow/unfollow operations: a coarse per-IP floor so donors
+// behind a shared egress don't throttle each other, plus the real per-wallet
+// cap that prevents enumeration and follow/unfollow spam.
+const notificationLimiter = createLayeredRateLimiter({
+  name: "notification-follow",
+  windowMinutes: 1,
+  ip: 30,
+  wallet: 10, // 10 follows/unfollows per donor per minute
+});
 
 // POST /api/notifications/register
 // Register or update a device token
@@ -160,11 +166,14 @@ router.post("/unfollow", notificationLimiter, async (req, res, next) => {
   }
 });
 
+const { decodeCursor, formatPaginatedResponse } = require("../utils/pagination");
+
 // GET /api/notifications/follows
 // Get all projects followed by a device
 router.get("/follows", async (req, res, next) => {
   try {
-    const { token } = req.query;
+    const { token, cursor } = req.query;
+    const parsedLimit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
 
     if (!token || typeof token !== "string") {
       throw createApiError(400, "TOKEN_REQUIRED", "token query parameter is required");
@@ -181,18 +190,41 @@ router.get("/follows", async (req, res, next) => {
     }
 
     const deviceId = tokenResult.rows[0].id;
+    const cursorObj = decodeCursor(cursor);
 
-    // Get followed projects
-    const result = await pool.query(
-      `SELECT p.id, p.name, p.category, p.location, p.description, pf.created_at as followed_at
+    const where = ["pf.device_token_id = $1"];
+    const values = [deviceId];
+
+    if (cursorObj) {
+      if (cursorObj.createdAt && cursorObj.projectId) {
+        values.push(cursorObj.createdAt, cursorObj.projectId);
+        where.push(`(pf.created_at, pf.project_id) < ($${values.length - 1}::timestamptz, $${values.length}::uuid)`);
+      } else if (cursorObj.createdAt) {
+        values.push(cursorObj.createdAt);
+        where.push(`pf.created_at < $${values.length}::timestamptz`);
+      }
+    }
+
+    values.push(parsedLimit + 1);
+    const query = `SELECT p.id, p.name, p.category, p.location, p.description, pf.created_at as followed_at
        FROM project_follows pf
        JOIN projects p ON pf.project_id = p.id
-       WHERE pf.device_token_id = $1
-       ORDER BY pf.created_at DESC`,
-      [deviceId]
-    );
+       WHERE ${where.join(" AND ")}
+       ORDER BY pf.created_at DESC, pf.project_id DESC
+       LIMIT $${values.length}`;
 
-    res.json(result.rows);
+    const result = await pool.query(query, values);
+    const { data, meta } = formatPaginatedResponse({
+      rows: result.rows,
+      limit: parsedLimit,
+      getCursorPayload: (row) => ({
+        createdAt: row.followed_at,
+        projectId: row.id,
+      }),
+    });
+
+    res.apiMeta(meta);
+    res.json(data);
   } catch (e) {
     next(e);
   }

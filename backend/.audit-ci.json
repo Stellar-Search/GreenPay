@@ -1,0 +1,18 @@
+{
+  // CI security gate for `npm audit` findings (issue #128). Fails the build
+  // on any high or critical advisory that isn't explicitly allowlisted below.
+  //
+  // Every entry in `allowlist` is a triaged, currently-unfixable-without-a-
+  // breaking-change finding. Adding an ID here is not a blanket bypass: each
+  // one needs its own comment explaining why it isn't fixed yet. Do not add
+  // an entry without a reason, and remove entries once the real fix lands.
+  "high": true,
+  "package-manager": "npm",
+  "allowlist": [
+    // @stellar/stellar-sdk@12.x transitively depends on toml <= 4.1.2.
+    // The available fix ships in @stellar/stellar-sdk@17.x, which is a
+    // breaking major-version upgrade across the workspace.
+    "GHSA-82x6-q7mm-w9cf",
+    "GHSA-v5mp-jgw5-2x6j"
+  ]
+}

@@ -7,9 +7,10 @@ import Head from "next/head";
 import AnimatedNumber from "@/components/AnimatedNumber";
 import DonationTicker from "@/components/DonationTicker";
 import WorldMap from "@/components/WorldMap";
+import ImpactClaimCard, { impactUnitLabel } from "@/components/ImpactClaimCard";
 import { fetchImpactGlobal, fetchLeaderboard, fetchProjects } from "@/lib/api";
 import { getGlobalImpactStats } from "@/lib/stellar";
-import { formatCO2, formatXLM, shortenAddress } from "@/utils/format";
+import { formatXLM, shortenAddress } from "@/utils/format";
 import { useI18n } from "@/lib/i18n";
 import type { LeaderboardEntry } from "@/utils/types";
 import type { ImpactGlobalStats } from "@/lib/api";
@@ -17,7 +18,7 @@ import type { ImpactGlobalStats } from "@/lib/api";
 export default function ImpactPage() {
   const { t, localeTag } = useI18n();
   const [stats, setStats] = useState<ImpactGlobalStats | null>(null);
-  const [sorobanStats, setSorobanStats] = useState<{ totalRaisedXLM: string; totalCO2OffsetGrams: string; donationCount: number } | null>(null);
+  const [sorobanStats, setSorobanStats] = useState<{ totalRaisedXLM: string; donationCount: number } | null>(null);
   const [projectCount, setProjectCount] = useState(0);
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -34,7 +35,7 @@ export default function ImpactPage() {
         setStats(impactStats);
         setLeaderboard(topDonors);
         setSorobanStats(sorobanData);
-        setProjectCount(allProjects.length);
+        setProjectCount(allProjects.projects.length);
       } catch (err) {
         console.error("Failed to load impact data:", err);
       } finally {
@@ -74,12 +75,10 @@ export default function ImpactPage() {
             isLoading={isLoading}
           />
           <StatCard
-            label="CO₂ Offset"
-            icon="🌿"
-            value={sorobanStats ? Number(sorobanStats.totalCO2OffsetGrams) / 1000 : 0}
-            unit="Kg"
+            label="Published Claims"
+            icon="📋"
+            value={stats?.claimSummary.total ?? 0}
             isLoading={isLoading}
-            formatter={(val) => formatCO2(Math.floor(val), localeTag)}
           />
           <StatCard
             label="Unique Donors"
@@ -88,18 +87,57 @@ export default function ImpactPage() {
             isLoading={isLoading}
           />
           <StatCard
+            label="Verified Claims"
+            icon="✓"
+            value={stats?.claimSummary.verified ?? 0}
+            isLoading={isLoading}
+          />
+          <StatCard
             label="Projects"
             icon="🌍"
             value={projectCount}
             isLoading={isLoading}
           />
-          <StatCard
-            label="Trees Equivalent"
-            icon="🌲"
-            value={stats?.treesEquivalent ?? 0}
-            isLoading={isLoading}
-          />
         </div>
+
+        {/* Claims stay separated by claim type + methodology + unit. */}
+        <section className="bg-white rounded-3xl border border-forest-100 shadow-sm p-8 mb-16">
+          <div className="max-w-3xl">
+            <h2 className="text-2xl font-display font-bold text-forest-900">Evidence-backed outcomes</h2>
+            <p className="mt-2 text-sm text-forest-600">
+              Avoided emissions, sequestration and offsets are different claims. Totals below combine only records that use the same type, methodology, version and unit; every range keeps its source and current status.
+            </p>
+          </div>
+          {stats?.comparableImpactGroups.length ? (
+            <div className="mt-6 space-y-6">
+              {stats.comparableImpactGroups.map((group) => (
+                <div key={`${group.claimType}-${group.methodology.code}-${group.unit}`} className="rounded-2xl border border-forest-100 bg-forest-50/40 p-5">
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-wider text-forest-500">{group.claimType.replaceAll("_", " ")}</p>
+                      <p className="mt-1 text-2xl font-display font-bold text-forest-900">
+                        {Number(group.range.lowerBound).toLocaleString(localeTag)}–{Number(group.range.upperBound).toLocaleString(localeTag)} {impactUnitLabel(group.range.unit)}
+                      </p>
+                      <p className="mt-1 text-xs text-forest-600">{group.methodology.name} v{group.methodology.version}</p>
+                    </div>
+                    <p className="rounded-full border border-forest-200 bg-white px-3 py-1 text-xs font-bold text-forest-700">
+                      {group.verifiedClaimCount}/{group.claimCount} independently verified
+                    </p>
+                  </div>
+                  <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                    {group.claims.map((claim) => (
+                      <ImpactClaimCard key={claim.id} claim={claim} locale={localeTag} compact />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-700">
+              No project outcome claims have been published. Donation records remain independently visible on-chain.
+            </p>
+          )}
+        </section>
 
         {/* Interactive World Map Section */}
         <div className="bg-white rounded-3xl border border-forest-100 shadow-sm p-8 mb-16">
@@ -124,7 +162,7 @@ export default function ImpactPage() {
                   <div className="min-w-0">
                     <p className="font-semibold text-forest-900 truncate">{row.category}</p>
                     <p className="text-xs text-forest-600 mt-1">
-                      {t("project.donorsCount", { count: row.donorCount })} • {formatCO2(row.co2OffsetKg, localeTag)}
+                      {t("project.donorsCount", { count: row.donorCount })} • {row.claimCount} outcome claims ({row.verifiedClaimCount} verified)
                     </p>
                   </div>
                   <div className="text-end flex-shrink-0">
@@ -143,7 +181,7 @@ export default function ImpactPage() {
         <div className="bg-white rounded-3xl border border-forest-100 shadow-xl shadow-forest-100/30 p-8 mb-16 relative overflow-hidden group">
           <div className="absolute top-0 end-0 w-32 h-32 bg-forest-50 rounded-es-full -z-0 opacity-50 group-hover:scale-110 transition-transform duration-500" />
           <h2 className="text-2xl font-display font-bold text-forest-900 mb-8 relative z-10 flex items-center gap-2">
-            🏆 Top Impact Leaders
+            🏆 Top Donors
           </h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8 relative z-10">
             {leaderboard.length > 0 ? (
@@ -157,7 +195,7 @@ export default function ImpactPage() {
                   </span>
                   <p className="text-forest-500 text-sm mt-1">{entry.totalDonatedXLM} XLM Total</p>
                   <div className="mt-4 px-3 py-1 rounded-full bg-forest-100 text-forest-700 text-xs font-bold uppercase tracking-wider">
-                    {entry.topBadge || "Seedling"}
+                    Donation badge: {entry.topBadge || "Seedling"}
                   </div>
                 </div>
               ))

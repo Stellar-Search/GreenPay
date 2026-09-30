@@ -15,12 +15,40 @@ function validateTxHash(h) {
   }
 }
 
+const { decodeCursor, formatPaginatedResponse } = require("../utils/pagination");
+
 router.get("/", async (req, res, next) => {
   try {
-    const result = await pool.query(
-      "SELECT * FROM jobs ORDER BY created_at DESC LIMIT 50",
-    );
-    res.json(result.rows.map(mapJobRow));
+    const { cursor } = req.query;
+    const parsedLimit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
+    const cursorObj = decodeCursor(cursor);
+
+    const where = [];
+    const values = [];
+
+    if (cursorObj) {
+      if (cursorObj.createdAt && cursorObj.id) {
+        values.push(cursorObj.createdAt, cursorObj.id);
+        where.push(`(created_at, id) < ($${values.length - 1}::timestamptz, $${values.length}::uuid)`);
+      } else if (cursorObj.createdAt) {
+        values.push(cursorObj.createdAt);
+        where.push(`created_at < $${values.length}::timestamptz`);
+      }
+    }
+
+    values.push(parsedLimit + 1);
+    const whereClause = where.length ? `WHERE ${where.join(" AND ")} ` : "";
+    const query = `SELECT * FROM jobs ${whereClause}ORDER BY created_at DESC, id DESC LIMIT $${values.length}`;
+
+    const result = await pool.query(query, values);
+    const { data, meta } = formatPaginatedResponse({
+      rows: result.rows,
+      limit: parsedLimit,
+      getCursorPayload: (row) => ({ createdAt: row.created_at, id: row.id }),
+    });
+
+    res.apiMeta(meta);
+    res.json(data.map(mapJobRow));
   } catch (e) {
     next(e);
   }

@@ -29,7 +29,7 @@ The project needed to choose whether to build this on Stellar/Soroban, an EVM ch
 
 Chosen option: Stellar payments plus Soroban contracts.
 
-Stellar is a better fit for GreenPay's payment-first donation model because donations can be sent directly to project wallets while Soroban records project, donor, and impact state on-chain. This keeps funds out of platform custody, keeps small donations viable, and makes donation-derived impact data independently verifiable.
+Stellar is a better fit for GreenPay's payment-first donation model because donations can be sent directly to project wallets while Soroban records project and donor state on-chain. Evidence-backed environmental claims remain distinct; Soroban anchors their verifier-approved hashes and revocations. This keeps funds out of platform custody, keeps small donations viable, and makes both payment facts and attested payload integrity independently verifiable.
 
 ## Positive Consequences
 

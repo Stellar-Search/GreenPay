@@ -89,6 +89,7 @@ class SorobanEventIndexer {
         from: donation.donorAddress,
         amount_stroops: donation.amountStroops,
         ledger_attr: donation.ledger,
+        integrity_source: "indexer_soroban",
       });
       if (handled === false) {
         throw new Error(`backend command boundary rejected Soroban event ${event.id}`);

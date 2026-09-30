@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useRouter } from "next/router";
 import { getApiErrorMessage, submitProject } from "@/lib/api";
 import { PROJECT_CATEGORIES } from "@/utils/format";
+import { isValidStellarAddress } from "@/lib/stellar";
 
 type Step = "org" | "project" | "wallet" | "methodology" | "done";
 
@@ -35,7 +36,6 @@ const STEP_LABELS: Record<Step, string> = {
   done: "Submitted",
 };
 
-const STELLAR_ADDRESS_RE = /^G[A-Z2-7]{55}$/;
 
 function Field({
   label,
@@ -105,7 +105,7 @@ export default function SubmitProjectPage() {
     }
 
     if (step === "wallet") {
-      if (!STELLAR_ADDRESS_RE.test(form.walletAddress.trim()))
+      if (!isValidStellarAddress(form.walletAddress.trim()))
         errs.walletAddress = "Must be a valid Stellar address (starts with G, 56 chars)";
     }
 

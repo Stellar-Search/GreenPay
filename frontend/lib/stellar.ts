@@ -1,20 +1,60 @@
 /**
  * lib/stellar.ts — Stellar SDK helpers for GreenPay
  */
-import { Horizon, Networks, Asset, Operation, TransactionBuilder, Transaction, Memo, rpc, Contract, scValToNative, Address, nativeToScVal, Account, xdr } from "@stellar/stellar-sdk";
+import { Horizon, Networks, Asset, Operation, TransactionBuilder, Transaction, Memo, rpc, Contract, scValToNative, Address, nativeToScVal, Account, xdr, StrKey, Keypair, Claimant } from "@stellar/stellar-sdk";
 import { parseToStroops, stroopsToXLM } from "@/utils/amount";
+import { getActiveManifest } from "@greenpay/config/networks";
 
-export const NETWORK = (process.env.NEXT_PUBLIC_STELLAR_NETWORK || "testnet") as "testnet" | "mainnet";
-const HORIZON_URL = process.env.NEXT_PUBLIC_HORIZON_URL || "https://horizon-testnet.stellar.org";
-const RPC_URL     = process.env.NEXT_PUBLIC_SOROBAN_RPC_URL || "https://soroban-testnet.stellar.org";
+// Load manifest once at module init — throws if misconfigured
+const manifest = getActiveManifest();
 
-export const NETWORK_PASSPHRASE = NETWORK === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
-export const server = new Horizon.Server(HORIZON_URL);
-export const rpcServer = new rpc.Server(RPC_URL);
-export const CONTRACT_ID = process.env.NEXT_PUBLIC_CONTRACT_ID || "";
+export const NETWORK = manifest.network as "testnet" | "mainnet";
+export const NETWORK_PASSPHRASE = manifest.networkPassphrase;
+export const server = new Horizon.Server(manifest.horizonUrl);
+export const rpcServer = new rpc.Server(manifest.sorobanRpcUrl);
+
+/** GreenPay core contract */
+export const CONTRACT_ID = manifest.contracts.greenPay || "";
 
 /** Soroban escrow contract (deploy `contracts/escrow-contract`). */
-export const ESCROW_CONTRACT_ID = process.env.NEXT_PUBLIC_ESCROW_CONTRACT_ID || "";
+export const ESCROW_CONTRACT_ID = manifest.contracts.escrow || "";
+
+/** DAO governance contract */
+export const DAO_GOVERNANCE_CONTRACT_ID = manifest.contracts.daoGovernance || "";
+
+/**
+ * The Stellar Asset Contract (SAC) address for native XLM is deterministic —
+ * it's derived from the asset and the network passphrase, not a fixed
+ * literal. Deriving it here means a mainnet build automatically gets the
+ * mainnet SAC address instead of silently reusing testnet's.
+ */
+export function getNativeAssetContractId(networkPassphrase: string): string {
+  return Asset.native().contractId(networkPassphrase);
+}
+
+export const NATIVE_ASSET_CONTRACT_ID = getNativeAssetContractId(NETWORK_PASSPHRASE);
+
+/**
+ * Fails fast at import time (rather than at donation time, buried behind a
+ * simulation error) if any configured contract ID isn't even a well-formed
+ * contract address for the active network's passphrase.
+ */
+function assertContractIdsAreWellFormed() {
+  const configured: Array<[string, string]> = [
+    ["NATIVE_ASSET_CONTRACT_ID", NATIVE_ASSET_CONTRACT_ID],
+    ["NEXT_PUBLIC_CONTRACT_ID", CONTRACT_ID],
+    ["NEXT_PUBLIC_ESCROW_CONTRACT_ID", ESCROW_CONTRACT_ID],
+  ];
+  for (const [name, id] of configured) {
+    if (!id) continue; // CONTRACT_ID / ESCROW_CONTRACT_ID are optional
+    if (!StrKey.isValidContract(id)) {
+      throw new Error(
+        `${name} ("${id}") is not a valid contract address for NEXT_PUBLIC_STELLAR_NETWORK=${NETWORK}.`,
+      );
+    }
+  }
+}
+assertContractIdsAreWellFormed();
 
 export async function getXLMBalance(publicKey: string): Promise<string> {
   try {
@@ -166,7 +206,7 @@ export async function buildContractDonationTransaction({
     // Prepare the transaction with simulation results
     return rpc.assembleTransaction(tx, simulated).build();
   } else {
-    throw formatSimulationFailure(simulated);
+    throw formatSimulationFailure(simulated, { contractId });
   }
 }
 
@@ -207,7 +247,7 @@ export async function buildReleaseEscrowTransaction({
   if (rpc.Api.isSimulationSuccess(simulated)) {
     return rpc.assembleTransaction(tx, simulated).build();
   }
-  throw formatSimulationFailure(simulated);
+  throw formatSimulationFailure(simulated, { contractId });
 }
 
 /**
@@ -240,7 +280,10 @@ export async function buildMilestoneTransaction({
 }
 
 /** Maps Soroban simulation errors to short, user-facing messages. */
-export function formatSimulationFailure(simulated: unknown): Error {
+export function formatSimulationFailure(
+  simulated: unknown,
+  context?: { contractId?: string },
+): Error {
   const raw = JSON.stringify(simulated);
   if (/underfunded|insufficient/i.test(raw) && /balance|fee|Fund/i.test(raw)) {
     return new Error(
@@ -257,6 +300,17 @@ export function formatSimulationFailure(simulated: unknown): Error {
   }
   if (raw.includes("Already released")) {
     return new Error("This escrow was already released on-chain.");
+  }
+  // A "MissingValue" storage error while invoking a contract instance is what
+  // Soroban raises when the contract ID has no instance on the currently
+  // configured RPC's network — e.g. NEXT_PUBLIC_STELLAR_NETWORK points at
+  // mainnet but a contract ID was only ever deployed on testnet (or vice
+  // versa). Surface that distinctly from a generic host error.
+  if (/MissingValue/i.test(raw) && /contract instance/i.test(raw)) {
+    const id = context?.contractId ? ` (${context.contractId})` : "";
+    return new Error(
+      `Contract${id} was not found on ${NETWORK}. This usually means NEXT_PUBLIC_STELLAR_NETWORK ("${NETWORK}") doesn't match the network this contract was deployed to.`,
+    );
   }
   if (raw.includes("HostError") || raw.includes("VmValidation")) {
     return new Error(
@@ -449,7 +503,14 @@ export async function submitAndConfirmDonation(signedXDR: string): Promise<{ has
   );
 }
 
-export function isValidStellarAddress(a: string): boolean { return /^G[A-Z0-9]{55}$/.test(a); }
+export function isValidStellarAddress(address: string): boolean {
+  if (!address || typeof address !== "string") {
+    return false;
+  }
+  // Full validation: checks format AND CRC16 checksum
+  return StrKey.isValidEd25519PublicKey(address);
+}
+
 export function explorerUrl(hash: string): string {
   return `https://stellar.expert/explorer/${NETWORK === "mainnet" ? "public" : "testnet"}/tx/${hash}`;
 }
@@ -458,32 +519,30 @@ export function accountUrl(addr: string): string {
 }
 
 /**
- * Queries the Soroban contract for global impact metrics.
+ * Queries Soroban for independently auditable donation metrics.
  */
 export async function getGlobalImpactStats() {
   if (!CONTRACT_ID) {
     console.warn("CONTRACT_ID not set, returning zero stats");
-    return { totalRaisedXLM: "0", totalCO2OffsetGrams: "0", donationCount: 0 };
+    return { totalRaisedXLM: "0", donationCount: 0 };
   }
 
   const contract = new Contract(CONTRACT_ID);
   
   try {
-    const [totalRaised, totalCO2, donationCount] = await Promise.all([
+    const [totalRaised, donationCount] = await Promise.all([
       simulateCall(contract, "get_global_total"),
-      simulateCall(contract, "get_global_co2"),
       simulateCall(contract, "get_donation_count")
     ]);
 
-    // totalRaised is in stroops (i128), totalCO2 is in grams (i128)
+    // totalRaised is in stroops (i128).
     return {
       totalRaisedXLM: (Number(totalRaised) / 10_000_000).toLocaleString(undefined, { minimumFractionDigits: 2 }),
-      totalCO2OffsetGrams: totalCO2.toString(),
       donationCount: Number(donationCount),
     };
   } catch (err) {
     console.error("Failed to fetch global impact stats:", err);
-    return { totalRaisedXLM: "0", totalCO2OffsetGrams: "0", donationCount: 0 };
+    return { totalRaisedXLM: "0", donationCount: 0 };
   }
 }
 
@@ -505,7 +564,6 @@ export async function getDonorStats(donorAddress: string) {
       totalDonated: Number(stats.total_donated) / 10_000_000,
       donationCount: Number(stats.donation_count),
       badge: stats.badge,
-      co2OffsetGrams: Number(stats.co2_offset_grams),
     };
   } catch (err) {
     console.error("Failed to fetch donor stats:", err);
@@ -527,6 +585,18 @@ export function hashMessage(message: string): number {
 }
 
 /**
+ * A Horizon paging token (the opaque cursor Horizon's streaming endpoints
+ * expect). Branded so it can't be confused with — or accidentally passed as
+ * — an unrelated identifier such as a backend donation ID.
+ */
+declare const HORIZON_PAGING_TOKEN_BRAND: unique symbol;
+export type HorizonPagingToken = string & { readonly [HORIZON_PAGING_TOKEN_BRAND]: true };
+
+function toHorizonPagingToken(value: string): HorizonPagingToken {
+  return value as HorizonPagingToken;
+}
+
+/**
  * Stream real-time payments to a wallet address using Horizon SSE.
  * Returns a cleanup function to close the stream.
  */
@@ -534,13 +604,15 @@ export function streamProjectPayments(
   walletAddress: string,
   onPayment: (payment: {
     id: string;
+    pagingToken: HorizonPagingToken;
     from: string;
     amount: string;
     asset: string;
     createdAt: string;
     transactionHash: string;
   }) => void,
-  cursor?: string,
+  cursor?: HorizonPagingToken,
+  onStreamError?: (err: unknown) => void,
 ): () => void {
   const builder = server
     .payments()
@@ -553,6 +625,7 @@ export function streamProjectPayments(
       if (record.type !== "payment" && record.type !== "create_account") return;
       onPayment({
         id: record.id,
+        pagingToken: toHorizonPagingToken(record.paging_token),
         from: record.from || record.funder || record.source_account,
         amount: record.amount || record.starting_balance || "0",
         asset: record.asset_code || "XLM",
@@ -562,69 +635,9 @@ export function streamProjectPayments(
     },
     onerror: (err: any) => {
       console.error("Horizon SSE stream error:", err);
+      onStreamError?.(err);
     },
   });
-
-  return closeStream;
-}
-
-/**
- * Stream global XLM donations and map destination accounts to known projects.
- * Returns a cleanup function to close the Horizon SSE stream.
- */
-export function streamGlobalProjectDonations(
-  projects: Array<{ id: string; name: string; walletAddress: string }>,
-  onDonation: (donation: {
-    id: string;
-    projectId: string;
-    projectName: string;
-    amountXLM: string;
-    from: string;
-    createdAt: string;
-    transactionHash: string;
-  }) => void,
-  cursor?: string,
-): () => void {
-  const projectByWallet = new Map(
-    projects.map((project) => [project.walletAddress.toUpperCase(), project]),
-  );
-
-  const closeStream = server
-    .payments()
-    .cursor(cursor || "now")
-    .stream({
-      onmessage: (record: any) => {
-        if (record.type !== "payment" && record.type !== "create_account") return;
-        const destination = String(
-          record.to || record.account || record.destination || "",
-        ).toUpperCase();
-        if (!destination || !projectByWallet.has(destination)) return;
-
-        const project = projectByWallet.get(destination);
-        if (!project) return;
-
-        const isNativeXLM =
-          record.asset_type === "native" || !record.asset_type || record.asset_code === "XLM";
-        if (!isNativeXLM) return;
-
-        const amountRaw = record.amount || record.starting_balance || "0";
-        const amount = Number.parseFloat(amountRaw);
-        if (!Number.isFinite(amount) || amount <= 0) return;
-
-        onDonation({
-          id: String(record.id),
-          projectId: project.id,
-          projectName: project.name,
-          amountXLM: stroopsToXLM(parseToStroops(amountRaw)),
-          from: record.from || record.funder || record.source_account || "Unknown",
-          createdAt: record.created_at || new Date().toISOString(),
-          transactionHash: record.transaction_hash || "",
-        });
-      },
-      onerror: (err: any) => {
-        console.error("Global Horizon stream error:", err);
-      },
-    });
 
   return closeStream;
 }
@@ -725,4 +738,275 @@ async function simulateCall(contract: Contract, method: string, args: any[] = []
     return scValToNative(result.result!.retval);
   }
   throw new Error(`Simulation failed for ${method}: ${JSON.stringify(result)}`);
+}
+
+// ── Graduated donor onboarding ───────────────────────────────────────────────
+// Helpers for donors who arrive without a wallet, without a funded account, or
+// without both. Every function below keeps the donor's key in the donor's hands:
+// nothing here sends a secret anywhere, and the sponsored-creation transaction
+// is deliberately unsubmittable until the donor signs it themselves.
+// See docs/adr/ADR-005-graduated-non-custodial-donor-onboarding.md.
+
+/** 1 XLM in stroops, as a bigint so reserve arithmetic never touches floats. */
+export const STROOPS_PER_XLM = 10_000_000n;
+
+/**
+ * The network base reserve — 0.5 XLM today, and changeable by validator vote,
+ * which is why it is a named constant rather than a literal. An account's
+ * minimum balance is (2 + subentries + sponsoring - sponsored) × this.
+ */
+export const BASE_RESERVE_STROOPS = 5_000_000n;
+
+/** Formats stroops as a 7-decimal XLM string without floating point. */
+export function stroopsToXlmString(stroops: bigint): string {
+  const negative = stroops < 0n;
+  const abs = negative ? -stroops : stroops;
+  const whole = abs / STROOPS_PER_XLM;
+  const fraction = (abs % STROOPS_PER_XLM).toString().padStart(7, "0");
+  return `${negative ? "-" : ""}${whole}.${fraction}`;
+}
+
+/** Parses a decimal XLM string into stroops, truncating past 7dp. */
+export function xlmStringToStroops(xlm: string): bigint {
+  const text = String(xlm).trim();
+  if (!/^-?\d+(\.\d+)?$/.test(text)) {
+    throw new Error(`Not a decimal XLM amount: "${xlm}"`);
+  }
+  const negative = text.startsWith("-");
+  const [whole, fraction = ""] = (negative ? text.slice(1) : text).split(".");
+  const stroops = BigInt(whole) * STROOPS_PER_XLM + BigInt(fraction.slice(0, 7).padEnd(7, "0"));
+  return negative ? -stroops : stroops;
+}
+
+/**
+ * What kind of first-donation problem this donor actually has.
+ *
+ * These are deliberately about the *account*, not about the person. "No
+ * wallet" is a UI state the caller already knows; what the network can tell us
+ * is whether an account exists and whether it can afford to send anything.
+ */
+export type AccountReadiness =
+  /** The address resolves and can fund the donation. Today's flow, untouched. */
+  | "ready"
+  /** The account exists but every spendable stroop is locked as reserve. */
+  | "reserve_locked"
+  /** The address has never been created on the network. */
+  | "missing"
+  /** Horizon could not be reached — must not be reported as either of the above. */
+  | "unknown";
+
+export interface ReserveStatus {
+  readiness: AccountReadiness;
+  exists: boolean;
+  balanceStroops: bigint;
+  minimumBalanceStroops: bigint;
+  spendableStroops: bigint;
+  spendableXlm: string;
+  /** Present only when a specific amount was checked. */
+  shortfallXlm?: string;
+}
+
+/**
+ * Reads an account and answers the only question that matters before a
+ * donation: can this account send this amount?
+ *
+ * Naive balance checks are why donors see `tx_insufficient_balance` after being
+ * told they had enough. An account holding 1.4 XLM with a USDC trustline has
+ * 1.5 XLM locked and can send precisely nothing.
+ */
+export async function getReserveStatus(
+  publicKey: string,
+  amountXlm?: string,
+): Promise<ReserveStatus> {
+  let account: Awaited<ReturnType<typeof server.loadAccount>>;
+  try {
+    account = await server.loadAccount(publicKey);
+  } catch (err: unknown) {
+    const status = (err as { response?: { status?: number } })?.response?.status;
+    if (status === 404) {
+      return {
+        readiness: "missing",
+        exists: false,
+        balanceStroops: 0n,
+        minimumBalanceStroops: 0n,
+        spendableStroops: 0n,
+        spendableXlm: "0.0000000",
+      };
+    }
+    // Anything else is a network problem, not an answer about the account.
+    // Reporting it as "missing" would offer to sponsor an account that already
+    // exists and lock the platform's reserve for nothing.
+    return {
+      readiness: "unknown",
+      exists: false,
+      balanceStroops: 0n,
+      minimumBalanceStroops: 0n,
+      spendableStroops: 0n,
+      spendableXlm: "0.0000000",
+    };
+  }
+
+  const native = account.balances.find((b) => b.asset_type === "native");
+  const balanceStroops = xlmStringToStroops(native ? native.balance : "0");
+
+  const raw = account as unknown as {
+    subentry_count?: number;
+    num_sponsoring?: number;
+    num_sponsored?: number;
+  };
+  const entries =
+    2n +
+    BigInt(raw.subentry_count ?? 0) +
+    BigInt(raw.num_sponsoring ?? 0) -
+    BigInt(raw.num_sponsored ?? 0);
+  const minimumBalanceStroops = (entries < 0n ? 0n : entries) * BASE_RESERVE_STROOPS;
+
+  // The base fee is charged on top of the reserve, so it comes out of what the
+  // donor can actually give.
+  const rawSpendable = balanceStroops - minimumBalanceStroops - 100n;
+  const spendableStroops = rawSpendable < 0n ? 0n : rawSpendable;
+
+  const requested = amountXlm ? xlmStringToStroops(amountXlm) : 0n;
+  const sufficient = requested > 0n ? spendableStroops >= requested : spendableStroops > 0n;
+
+  return {
+    readiness: sufficient ? "ready" : "reserve_locked",
+    exists: true,
+    balanceStroops,
+    minimumBalanceStroops,
+    spendableStroops,
+    spendableXlm: stroopsToXlmString(spendableStroops),
+    shortfallXlm:
+      requested > 0n && !sufficient ? stroopsToXlmString(requested - spendableStroops) : undefined,
+  };
+}
+
+/**
+ * Generates the keypair for a starter account, in the browser.
+ *
+ * The secret never leaves this function's return value. It is not sent to the
+ * backend, not logged, and not persisted anywhere by this module — where it is
+ * kept is the caller's decision, made explicitly in lib/starterAccount.ts, so
+ * that "who can see this key" has exactly one answer to audit.
+ */
+export function generateStarterKeypair(): { publicKey: string; secret: string } {
+  const keypair = Keypair.random();
+  return { publicKey: keypair.publicKey(), secret: keypair.secret() };
+}
+
+/**
+ * Signs a transaction with a browser-held starter key.
+ *
+ * Used for exactly two things: co-signing the sponsored-creation transaction,
+ * and signing the donor's own donations. It never signs anything the caller did
+ * not build, and it verifies the network passphrase to make signing a
+ * mainnet transaction with a testnet-scoped key impossible.
+ */
+export function signWithStarterKey(xdr: string, secret: string): string {
+  const tx = new Transaction(xdr, NETWORK_PASSPHRASE);
+  tx.sign(Keypair.fromSecret(secret));
+  return tx.toXDR();
+}
+
+/** Derives the public key from a starter secret, for import/recovery flows. */
+export function publicKeyFromSecret(secret: string): string {
+  return Keypair.fromSecret(secret).publicKey();
+}
+
+/** True when a string is a well-formed Stellar secret key. */
+export function isValidStellarSecret(secret: string): boolean {
+  try {
+    Keypair.fromSecret(secret);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Builds a donation delivered as a claimable balance rather than a payment.
+ *
+ * Used when a straight payment cannot land — most often a project wallet with
+ * no trustline for the asset. The project claims it unconditionally; the donor
+ * keeps a claim that opens after `reclaimAfterSeconds`, so a project that never
+ * adds the trustline does not silently absorb the funds.
+ */
+export async function buildClaimableDonationTransaction({
+  donorPublicKey,
+  projectWallet,
+  amount,
+  asset,
+  memo,
+  reclaimAfterSeconds = 14 * 24 * 60 * 60,
+}: {
+  donorPublicKey: string;
+  projectWallet: string;
+  amount: string;
+  asset?: { code: string; issuer?: string };
+  memo?: string;
+  reclaimAfterSeconds?: number;
+}) {
+  const source = await server.loadAccount(donorPublicKey);
+  const paymentAsset =
+    asset && asset.code && asset.issuer ? new Asset(asset.code, asset.issuer) : Asset.native();
+
+  const builder = new TransactionBuilder(source, {
+    fee: "100",
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(
+      Operation.createClaimableBalance({
+        asset: paymentAsset,
+        amount,
+        claimants: [
+          new Claimant(projectWallet, Claimant.predicateUnconditional()),
+          new Claimant(
+            donorPublicKey,
+            Claimant.predicateNot(Claimant.predicateBeforeRelativeTime(String(reclaimAfterSeconds))),
+          ),
+        ],
+      }),
+    )
+    .setTimeout(300);
+
+  if (memo) builder.addMemo(Memo.text(memo.slice(0, 28)));
+  return builder.build();
+}
+
+/** Claimable balances an address can claim right now. */
+export async function listClaimableBalances(address: string) {
+  const page = await server.claimableBalances().claimant(address).limit(50).call();
+  return (page.records || []).map((record: { id: string; asset: string; amount: string; sponsor?: string }) => ({
+    id: record.id,
+    asset: record.asset,
+    amount: record.amount,
+    sponsor: record.sponsor,
+  }));
+}
+
+/** Builds the transaction that claims one balance. */
+export async function buildClaimBalanceTransaction({
+  claimantPublicKey,
+  balanceId,
+}: {
+  claimantPublicKey: string;
+  balanceId: string;
+}) {
+  const source = await server.loadAccount(claimantPublicKey);
+  return new TransactionBuilder(source, { fee: "100", networkPassphrase: NETWORK_PASSPHRASE })
+    .addOperation(Operation.claimClaimableBalance({ balanceId }))
+    .setTimeout(180)
+    .build();
+}
+
+/**
+ * Signs the account-upgrade challenge with a browser-held starter key.
+ *
+ * The backend verifies this against the starter address, proving the donor
+ * controlled the account whose history they are asking to carry across.
+ */
+export function signUpgradeChallenge(message: string, secret: string): string {
+  const keypair = Keypair.fromSecret(secret);
+  const signature = keypair.sign(Buffer.from(message, "utf8"));
+  return signature.toString("base64");
 }

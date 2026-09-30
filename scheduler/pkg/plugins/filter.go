@@ -47,8 +47,9 @@ func NewGPUHardwareFilter(_ context.Context, _ runtime.Object, _ framework.Handl
 }
 
 // Filter is called once per candidate node during the filtering phase.
-// It returns framework.NewStatus(framework.Unschedulable, reason) when the
-// node does not meet the pod's hardware requirements.
+// It returns framework.NewStatus(framework.UnschedulableAndUnresolvable, reason)
+// for immutable hardware mismatches, or framework.NewStatus(framework.Unschedulable, reason)
+// when the node is temporarily out of GPU capacity.
 func (f *GPUHardwareFilter) Filter(
 	ctx context.Context,
 	state *framework.CycleState,
@@ -75,7 +76,7 @@ func (f *GPUHardwareFilter) Filter(
 				node.Name, hw.GPUVendor, reqs.GPUVendorReq,
 			)
 			logger.V(4).Info("FilterPlugin: vendor mismatch", "pod", klog.KObj(pod), "node", node.Name, "reason", reason)
-			return framework.NewStatus(framework.Unschedulable, reason)
+			return framework.NewStatus(framework.UnschedulableAndUnresolvable, reason)
 		}
 	}
 
@@ -87,7 +88,7 @@ func (f *GPUHardwareFilter) Filter(
 				node.Name, hw.GPUModel, reqs.GPUModelReq,
 			)
 			logger.V(4).Info("FilterPlugin: model mismatch", "pod", klog.KObj(pod), "node", node.Name, "reason", reason)
-			return framework.NewStatus(framework.Unschedulable, reason)
+			return framework.NewStatus(framework.UnschedulableAndUnresolvable, reason)
 		}
 	}
 
@@ -99,13 +100,13 @@ func (f *GPUHardwareFilter) Filter(
 				node.Name, hw.GPUVRAMMiB, reqs.GPUVRAMMinMiB,
 			)
 			logger.V(4).Info("FilterPlugin: VRAM too low", "pod", klog.KObj(pod), "node", node.Name, "reason", reason)
-			return framework.NewStatus(framework.Unschedulable, reason)
+			return framework.NewStatus(framework.UnschedulableAndUnresolvable, reason)
 		}
 		// Also ensure the node actually HAS a GPU when VRAM is required
 		if !hw.HasGPU() {
 			reason := fmt.Sprintf("node %s has no GPU but pod requires %d MiB VRAM", node.Name, reqs.GPUVRAMMinMiB)
 			logger.V(4).Info("FilterPlugin: no GPU on node", "pod", klog.KObj(pod), "node", node.Name)
-			return framework.NewStatus(framework.Unschedulable, reason)
+			return framework.NewStatus(framework.UnschedulableAndUnresolvable, reason)
 		}
 	}
 
@@ -117,7 +118,7 @@ func (f *GPUHardwareFilter) Filter(
 				node.Name, hw.NetworkZone, reqs.NetworkZoneReq,
 			)
 			logger.V(4).Info("FilterPlugin: zone mismatch", "pod", klog.KObj(pod), "node", node.Name, "reason", reason)
-			return framework.NewStatus(framework.Unschedulable, reason)
+			return framework.NewStatus(framework.UnschedulableAndUnresolvable, reason)
 		}
 	}
 
@@ -129,7 +130,7 @@ func (f *GPUHardwareFilter) Filter(
 				node.Name, hw.NetworkBandwidthGbps, reqs.NetworkBWMinGbps,
 			)
 			logger.V(4).Info("FilterPlugin: bandwidth too low", "pod", klog.KObj(pod), "node", node.Name, "reason", reason)
-			return framework.NewStatus(framework.Unschedulable, reason)
+			return framework.NewStatus(framework.UnschedulableAndUnresolvable, reason)
 		}
 	}
 
@@ -147,20 +148,12 @@ func (f *GPUHardwareFilter) Filter(
 	return framework.NewStatus(framework.Success)
 }
 
-func isGPUResource(name string) bool {
-	switch corev1.ResourceName(name) {
-	case "nvidia.com/gpu", "amd.com/gpu", "google.com/tpu", "intel.com/gpu", "gpu":
-		return true
-	}
-	return false
-}
-
 func computeGPUCapacity(nodeInfo *framework.NodeInfo, hw hardware.NodeHardware) (totalGPUs int64, allocatedGPUs int64, freeGPUs int64) {
 	totalGPUs = hw.GPUCount
 
 	if node := nodeInfo.Node(); node != nil && totalGPUs == 0 {
 		for resName, quant := range node.Status.Allocatable {
-			if isGPUResource(string(resName)) {
+			if hardware.IsAcceleratorResource(resName) {
 				totalGPUs += quant.Value()
 			}
 		}
@@ -169,7 +162,7 @@ func computeGPUCapacity(nodeInfo *framework.NodeInfo, hw hardware.NodeHardware) 
 	if nodeInfo.Allocatable != nil {
 		var scalarTotal int64
 		for resName, val := range nodeInfo.Allocatable.ScalarResources {
-			if isGPUResource(string(resName)) {
+			if hardware.IsAcceleratorResource(resName) {
 				scalarTotal += val
 			}
 		}
@@ -180,7 +173,7 @@ func computeGPUCapacity(nodeInfo *framework.NodeInfo, hw hardware.NodeHardware) 
 
 	if nodeInfo.Requested != nil {
 		for resName, val := range nodeInfo.Requested.ScalarResources {
-			if isGPUResource(string(resName)) {
+			if hardware.IsAcceleratorResource(resName) {
 				allocatedGPUs += val
 			}
 		}
@@ -208,14 +201,14 @@ func podRequiresGPU(pod *corev1.Pod, reqs hardware.PodHardwareReqs) bool {
 	}
 	for _, c := range pod.Spec.Containers {
 		for resName, quant := range c.Resources.Requests {
-			if isGPUResource(string(resName)) && quant.Value() > 0 {
+			if hardware.IsAcceleratorResource(resName) && quant.Value() > 0 {
 				return true
 			}
 		}
 	}
 	for _, c := range pod.Spec.InitContainers {
 		for resName, quant := range c.Resources.Requests {
-			if isGPUResource(string(resName)) && quant.Value() > 0 {
+			if hardware.IsAcceleratorResource(resName) && quant.Value() > 0 {
 				return true
 			}
 		}

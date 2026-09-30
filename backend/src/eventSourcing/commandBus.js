@@ -4,6 +4,7 @@ const { v4: uuid } = require("uuid");
 const pool = require("../db/pool");
 const { ProjectAggregate, DonorAggregate, MatchAggregate, JobAggregate, round7 } = require("./aggregates");
 const { eventStore } = require("./eventStore");
+const { buildStreamId } = require("./events");
 
 const COMMAND_HANDLERS = new Map();
 
@@ -147,7 +148,7 @@ async function getJobState(jobId, db = pool) {
 }
 
 async function loadAggregateStream(aggregateType, aggregateId, db = pool) {
-  const streamId = `${aggregateType}:${aggregateId}`;
+  const streamId = buildStreamId(aggregateType, aggregateId);
   const result = await db.query(
     `SELECT event_id, stream_id, aggregate_type, aggregate_id, event_type,
             version, aggregate_version, payload, actor, occurred_at, created_at
@@ -181,8 +182,8 @@ class DonationCommandHandler {
     const donor = await getDonorState(command.payload.donorAddress, db);
 
     const donationEvent = new (require("./events").DonationRecordedEvent)({
-      aggregateId: `Donation:${command.getTransactionHash()}`,
-      version: await getNextVersion("Donation", `Donation:${command.getTransactionHash()}`, db),
+      aggregateId: command.getTransactionHash(),
+      version: await getNextVersion("Donation", command.getTransactionHash(), db),
       actor: command.actor,
       projectId: command.payload.projectId,
       donorAddress: command.payload.donorAddress,
@@ -268,8 +269,8 @@ class ApplyMatchCommandHandler {
     const donor = await getDonorState(donorAddress, db);
 
     const matchEvent = new (require("./events").MatchAppliedEvent)({
-      aggregateId: `Match:${matchId}`,
-      version: await getNextVersion("Match", `Match:${matchId}`, db),
+      aggregateId: matchId,
+      version: await getNextVersion("Match", matchId, db),
       actor: command.actor,
       matchId,
       projectId: command.payload.projectId,
@@ -307,11 +308,12 @@ class ChangeProjectStatusCommandHandler {
     }
 
     const projectId = command.payload.projectId;
+    const previousStatus = project.state.status;
     const statusChangeEvent = new (require("./events").ProjectStatusChangedEvent)({
-      aggregateId: `Project:${projectId}`,
-      version: await getNextVersion("Project", `Project:${projectId}`, db),
+      aggregateId: projectId,
+      version: await getNextVersion("Project", projectId, db),
       actor: command.actor,
-      previousStatus: project.state.status,
+      previousStatus,
       newStatus: command.payload.status,
       reason: command.payload.reason,
     });
@@ -325,7 +327,7 @@ class ChangeProjectStatusCommandHandler {
       [row.event_id, row.stream_id, row.aggregate_type, row.aggregate_id, row.event_type, row.version, row.aggregate_version, JSON.stringify(row.payload), row.actor, row.occurred_at, row.created_at]
     );
 
-    return { events: [statusChangeEvent], data: { previousStatus: project.state.status, newStatus: command.payload.status } };
+    return { events: [statusChangeEvent], data: { previousStatus, newStatus: command.payload.status } };
   }
 }
 
@@ -336,8 +338,8 @@ class ReachMilestoneCommandHandler {
 
     const milestoneId = command.payload.milestoneId;
     const milestoneEvent = new (require("./events").MilestoneReachedEvent)({
-      aggregateId: `Milestone:${milestoneId}`,
-      version: await getNextVersion("Milestone", `Milestone:${milestoneId}`, db),
+      aggregateId: milestoneId,
+      version: await getNextVersion("Milestone", milestoneId, db),
       actor: command.actor,
       milestoneId,
       projectId: command.payload.projectId,
@@ -367,8 +369,8 @@ class ReleaseEscrowCommandHandler {
     const jobRow = await db.query("SELECT * FROM jobs WHERE id = $1", [jobId]);
 
     const jobReleasedEvent = new (require("./events").JobReleasedEvent)({
-      aggregateId: `Job:${jobId}`,
-      version: await getNextVersion("Job", `Job:${jobId}`, db),
+      aggregateId: jobId,
+      version: await getNextVersion("Job", jobId, db),
       actor: command.actor,
       clientPublicKey: jobRow.rows[0].client_public_key,
       freelancerPublicKey: jobRow.rows[0].freelancer_public_key,
@@ -393,8 +395,8 @@ class CreateMatchOfferCommandHandler {
 
     const matchId = uuid();
     const matchCreatedEvent = new (require("./events").MatchCreatedEvent)({
-      aggregateId: `Match:${command.payload.projectId}`,
-      version: await getNextVersion("Match", `Match:${command.payload.projectId}`, db),
+      aggregateId: command.payload.projectId,
+      version: await getNextVersion("Match", command.payload.projectId, db),
       actor: command.actor,
       matchId,
       projectId: command.payload.projectId,

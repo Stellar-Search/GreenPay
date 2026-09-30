@@ -21,10 +21,13 @@ const {
   ReleaseEscrowCommand,
   CreateMatchOfferCommand,
 } = require("./commands");
+const { Keypair } = require("@stellar/stellar-sdk");
 const { ProjectAggregate } = require("./aggregates");
 
+const _keys = Array.from({ length: 26 }, () => Keypair.random().publicKey());
 function makePublicKey(char = "A") {
-  return `G${char.repeat(55)}`;
+  const index = Math.abs(char.charCodeAt(0) - 65) % 26;
+  return _keys[index];
 }
 
 function makeTxHash(char = "a") {
@@ -474,7 +477,7 @@ describe("commandBus.js - Event Sourcing Core Engine (Issue #129)", () => {
       const res = await execute(cmd);
       expect(res.events.length).toBe(1);
       expect(res.events[0].eventType).toBe("ProjectStatusChanged");
-      expect(res.data).toEqual({ previousStatus: "paused", newStatus: "paused" });
+      expect(res.data).toEqual({ previousStatus: "active", newStatus: "paused" });
     });
   });
 

@@ -950,6 +950,17 @@
                     },
                     {
                       "key": {
+                        "symbol": "quorum_requirement"
+                      },
+                      "val": {
+                        "i128": {
+                          "hi": 0,
+                          "lo": 120
+                        }
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "snapshot_ledger"
                       },
                       "val": {
@@ -1200,7 +1211,7 @@
                             },
                             {
                               "key": {
-                                "symbol": "quorum"
+                                "symbol": "quorum_bps"
                               },
                               "val": {
                                 "i128": {
@@ -1268,6 +1279,33 @@
                         },
                         "val": {
                           "u64": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "TotalLocked"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "i128": {
+                            "hi": 0,
+                            "lo": 1200
+                          }
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
                         }
                       }
                     ]
@@ -2030,7 +2068,7 @@
                 },
                 {
                   "key": {
-                    "symbol": "quorum"
+                    "symbol": "quorum_bps"
                   },
                   "val": {
                     "i128": {
@@ -2690,7 +2728,7 @@
                 },
                 {
                   "key": {
-                    "symbol": "quorum"
+                    "symbol": "quorum_bps"
                   },
                   "val": {
                     "i128": {
@@ -3345,6 +3383,17 @@
                   },
                   "val": {
                     "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "quorum_requirement"
+                  },
+                  "val": {
+                    "i128": {
+                      "hi": 0,
+                      "lo": 120
+                    }
                   }
                 },
                 {

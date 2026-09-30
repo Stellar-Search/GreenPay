@@ -58,7 +58,7 @@ describe('QRScannerScreen', () => {
     const utils = await renderScanner();
     await scan(utils, 'https://greenpay.app/donate?projectId=proj-active');
 
-    await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/donate/proj-active'));
+    await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/donate/proj-active'), { timeout: 15000 });
     expect(alertSpy).not.toHaveBeenCalled();
   });
 

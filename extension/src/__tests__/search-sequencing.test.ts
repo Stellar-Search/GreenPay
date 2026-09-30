@@ -9,7 +9,7 @@ function createMockProject(id: string, name: string): ProjectSummary {
     name,
     description: `Description for ${name}`,
     category: 'Conservation',
-    walletAddress: `G${'A'.repeat(55)}`,
+    walletAddress: 'GDUQ24STT6QESP4QW33O4KDVYMRTBHWZ3ZE6HXX5TCNWUZH6MRT7PADV',
   };
 }
 

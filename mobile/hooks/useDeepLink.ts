@@ -1,69 +1,144 @@
 /**
  * hooks/useDeepLink.ts
- * Handles greenpay:// deep links and navigates to the correct screen.
  *
- * Supported URLs:
+ * Unified routing hook for deep links, universal web links, and push/local
+ * notification taps.
+ *
+ * Supported URLs & Notifications:
  *   greenpay://project/123       → /projects/123
- *   greenpay://donate/G...ABC    → /donate/G...ABC
+ *   greenpay://projects/123      → /projects/123
+ *   greenpay://donate/<id>       → /donate/<id>
+ *   greenpay://recurring/<id>    → /donate/<projectId>?recurringId=<id>
+ *   greenpay://recurring         → /recurring
+ *   greenpay://impact            → /impact
+ *   greenpay://leaderboard       → /leaderboard
+ *   greenpay://profile/<addr>    → /profile/<addr>
+ *   Push/local notification taps (milestones, updates, donations, reminders)
  *
- * Both forms are validated by `parseGreenPayDeepLink` (utils/qrPayload.ts),
- * the same allowlist/charset rules enforced on the QR path — malformed,
- * oversized, or control-character params are rejected without navigating.
+ * All inputs are strictly validated against an allowlist model (navigationDestinations.ts)
+ * so no externally supplied value becomes a route directly.
  *
- * Fix for issue #32 — deep-link / hydration race condition
- * ─────────────────────────────────────────────────────────
- * Previously, Linking.getInitialURL() was awaited fire-and-forget inside a
- * useEffect, so router.push() could fire before Redux / AsyncStorage hydration
- * completed, causing crashes or blank screens on cold start.
- *
- * Now:
- *  1. Cold-start URLs are passed to AppInitContext.queueDeepLink(), which
- *     holds them until isHydrated === true.
- *  2. The navigation handler is registered via AppInitContext.onDeepLinkReady()
- *     so it is only ever invoked after the root state is fully loaded.
- *  3. Warm-start URLs (app already open) bypass the queue because hydration
- *     is already complete by definition.
+ * Cold-start versus warm-start handling:
+ * - Cold-start URLs & notification responses are held in AppInitContext until
+ *   AsyncStorage/SecureStore state is hydrated and navigation is ready.
+ * - Warm-start events navigate immediately.
  */
-import { useEffect, useCallback } from 'react';
+import { useEffect, useCallback, useRef } from 'react';
 import * as Linking from 'expo-linking';
+import * as Notifications from 'expo-notifications';
 import { useRouter } from 'expo-router';
 import { useAppInit } from '../src/context/AppInitContext';
-import { parseGreenPayDeepLink } from '../utils/qrPayload';
+import {
+  AppDestination,
+  resolveDeepLinkDestination,
+  resolveNotificationDestination,
+  navigateToDestination,
+} from '../utils/navigationDestinations';
+import { setupNotificationChannel, setupNotificationListener } from '../utils/notifications';
+import { getWalletPublicKey } from '../utils/walletKeyStorage';
 
 export function useDeepLink() {
   const router = useRouter();
-  const { queueDeepLink, onDeepLinkReady } = useAppInit();
+  const routerRef = useRef(router);
+  routerRef.current = router;
 
-  /** Validate a greenpay:// URL through the shared parser, then navigate. */
+  const { queueDestination, onDestinationReady, queueDeepLink, onDeepLinkReady } = useAppInit();
+
+  const handleDestination = useCallback(
+    async (destination: AppDestination | null) => {
+      if (!destination) return;
+      await navigateToDestination(routerRef.current, destination);
+    },
+    []
+  );
+
   const handleUrl = useCallback(
-    (url: string | null) => {
+    async (url: string | null) => {
       if (!url) return;
-      const parsed = parseGreenPayDeepLink(url);
-      if (!parsed.ok) return;
-
-      if (parsed.segment === 'project') {
-        router.push(`/projects/${parsed.projectId}`);
-      } else {
-        router.push(`/donate/${parsed.projectId}`);
+      const destination = resolveDeepLinkDestination(url);
+      if (destination) {
+        await handleDestination(destination);
       }
     },
-    [router],
+    [handleDestination]
+  );
+
+  const handleNotificationResponse = useCallback(
+    async (response: Notifications.NotificationResponse | null) => {
+      if (!response) return;
+      const destination = resolveNotificationDestination(response);
+      if (destination) {
+        await handleDestination(destination);
+      }
+    },
+    [handleDestination]
   );
 
   useEffect(() => {
-    // Register our navigation handler with the init context.
-    // It will be called only after isHydrated === true.
-    onDeepLinkReady(handleUrl);
+    // 1. Ensure Android notification channel is initialized
+    void setupNotificationChannel();
 
-    // Fetch the cold-start URL and hand it to the queue.
-    // AppInitContext will hold it until hydration is complete.
+    // 2. Register destination handler for cold-start flush
+    if (onDestinationReady) {
+      onDestinationReady((dest) => {
+        void handleDestination(dest);
+      });
+    } else if (onDeepLinkReady) {
+      onDeepLinkReady((url) => {
+        void handleUrl(url);
+      });
+    }
+
+    // 3. Cold-start deep link detection
     Linking.getInitialURL().then((url) => {
-      if (url) queueDeepLink(url);
+      if (url) {
+        const dest = resolveDeepLinkDestination(url);
+        if (dest && queueDestination) {
+          queueDestination(dest);
+        } else if (queueDeepLink) {
+          queueDeepLink(url);
+        }
+      }
     });
 
-    // Handle links received while the app is already open (warm start).
-    // Hydration is guaranteed to be complete by the time this fires.
-    const subscription = Linking.addEventListener('url', ({ url }) => handleUrl(url));
-    return () => subscription.remove();
-  }, [handleUrl, onDeepLinkReady, queueDeepLink]);
+    // 4. Cold-start notification tap detection
+    if (typeof Notifications.getLastNotificationResponseAsync === 'function') {
+      Notifications.getLastNotificationResponseAsync().then((response) => {
+        if (response) {
+          const dest = resolveNotificationDestination(response);
+          if (dest && queueDestination) {
+            queueDestination(dest);
+          }
+        }
+      });
+    }
+
+    // 5. Warm-start deep link listener
+    const linkingSub = Linking.addEventListener('url', ({ url }) => {
+      void handleUrl(url);
+    });
+
+    // 6. Push notification listener and token rotation
+    const notifSub = setupNotificationListener({
+      onNotificationResponse: (response) => {
+        void handleNotificationResponse(response);
+      },
+      getWalletAddress: async () => {
+        return await getWalletPublicKey();
+      },
+    });
+
+    return () => {
+      linkingSub.remove();
+      notifSub.remove();
+    };
+  }, [
+    handleDestination,
+    handleUrl,
+    handleNotificationResponse,
+    onDestinationReady,
+    onDeepLinkReady,
+    queueDestination,
+    queueDeepLink,
+  ]);
 }

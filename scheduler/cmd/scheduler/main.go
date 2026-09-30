@@ -24,9 +24,13 @@ import (
 	"os"
 	"time"
 
+	"github.com/spf13/cobra"
 	"k8s.io/component-base/cli"
 	_ "k8s.io/component-base/logs/json/register" // register JSON log format
+	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/cmd/kube-scheduler/app"
+	"k8s.io/kubernetes/cmd/kube-scheduler/app/options"
+	schedulerruntime "k8s.io/kubernetes/pkg/scheduler/framework/runtime"
 
 	"github.com/greenpay/scheduler/pkg/plugins"
 )
@@ -41,7 +45,35 @@ func main() {
 		plugins.RegisterPlugins,
 	)
 
+	failFastOnUnwiredPlugins(command)
+
 	// cli.Run handles flag parsing, signal handling, and os.Exit.
 	code := cli.Run(command)
 	os.Exit(code)
+}
+
+// failFastOnUnwiredPlugins wraps the command's RunE so that, once flags are
+// parsed, it loads --config and checks that every GreenPay plugin is
+// actually wired into a profile before the scheduler starts serving — see
+// plugins.ValidateRegisteredPluginsWired for why kube-scheduler's own
+// startup validation doesn't already catch this.
+func failFastOnUnwiredPlugins(command *cobra.Command) {
+	next := command.RunE
+	command.RunE = func(cmd *cobra.Command, args []string) error {
+		configFile, err := cmd.Flags().GetString("config")
+		if err == nil && configFile != "" {
+			cfg, err := options.LoadConfigFromFile(klog.Background(), configFile)
+			if err != nil {
+				return err
+			}
+			registry := schedulerruntime.Registry{}
+			if err := plugins.RegisterPlugins(registry); err != nil {
+				return err
+			}
+			if err := plugins.ValidateRegisteredPluginsWired(cfg, registry); err != nil {
+				return err
+			}
+		}
+		return next(cmd, args)
+	}
 }

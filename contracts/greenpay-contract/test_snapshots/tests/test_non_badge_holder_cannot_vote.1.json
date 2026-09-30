@@ -252,7 +252,10 @@
                         "symbol": "votes_against"
                       },
                       "val": {
-                        "u32": 0
+                        "i128": {
+                          "hi": 0,
+                          "lo": 0
+                        }
                       }
                     },
                     {
@@ -260,7 +263,10 @@
                         "symbol": "votes_for"
                       },
                       "val": {
-                        "u32": 0
+                        "i128": {
+                          "hi": 0,
+                          "lo": 0
+                        }
                       }
                     }
                   ]
@@ -354,6 +360,18 @@
                           "vec": [
                             {
                               "symbol": "ProjectCount"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
                             }
                           ]
                         },
@@ -732,7 +750,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Only badge holders (Seedling or above) can vote' from contract function 'Symbol(obj#157)'"
+                  "string": "caught panic 'Insufficient donation stake to vote (Tree tier / 100 XLM minimum)' from contract function 'Symbol(obj#167)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"

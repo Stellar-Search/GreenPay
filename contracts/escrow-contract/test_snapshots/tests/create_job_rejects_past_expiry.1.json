@@ -193,6 +193,30 @@
                         "val": {
                           "bool": true
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "JobCount"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 0
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -852,7 +876,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Expiry must be in the future' from contract function 'Symbol(obj#185)'"
+                  "string": "caught panic 'Expiry must be in the future' from contract function 'Symbol(obj#193)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"

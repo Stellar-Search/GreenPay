@@ -1,5 +1,12 @@
 {
   "compilerOptions": {
+    // Reserve arithmetic (lib/stellar.ts, lib/reserves.ts) uses BigInt: a
+    // donation rejected for being one stroop over the base-reserve boundary is
+    // exactly the class of bug floating-point XLM produces, so the amounts are
+    // integers end to end. BigInt literals need ES2020 or later. This affects
+    // type-checking only — Next compiles with SWC against its own browser
+    // targets, which have supported BigInt since 2018.
+    "target": "ES2020",
     "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,
     "skipLibCheck": true,
@@ -13,7 +20,15 @@
     "jsx": "preserve",
     "incremental": true,
     "plugins": [{ "name": "next" }],
-    "paths": { "@/*": ["./*"] }
+    "paths": {
+      "@/*": ["./*"],
+      // Two candidates: the repo layout puts config/ beside frontend/, while
+      // the container image copies it to /app/config next to the app root.
+      // TypeScript tries each in order and uses the first that exists.
+      "@greenpay/config/*": ["../config/*", "./config/*"],
+      "@greenpay/i18n": ["../shared/i18n"],
+      "@greenpay/i18n/*": ["../shared/i18n/*"]
+    }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
   "exclude": ["node_modules"]

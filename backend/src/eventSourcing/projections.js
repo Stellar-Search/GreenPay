@@ -1,6 +1,8 @@
 "use strict";
 
 const { xlmToStroops, stroopsToXlm } = require("../utils/xlm");
+const { computeBadges } = require("../services/store");
+const { LEGACY_DONATION_MIGRATED } = require("./events");
 
 const PROJECTION_BATCH_SIZE = 500;
 
@@ -25,15 +27,15 @@ const milestoneProjection = new Projection();
 
 projectProjection.subscribe("DonationRecorded");
 projectProjection.subscribe("MatchApplied");
-projectProjection.subscribe("MigratedDonation");
+projectProjection.subscribe(LEGACY_DONATION_MIGRATED);
 
 donorProjection.subscribe("DonationRecorded");
 donorProjection.subscribe("MatchApplied");
-donorProjection.subscribe("MigratedDonation");
+donorProjection.subscribe(LEGACY_DONATION_MIGRATED);
 
 matchProjection.subscribe("MatchApplied");
 matchProjection.subscribe("MatchCreated");
-matchProjection.subscribe("MigratedDonation");
+matchProjection.subscribe(LEGACY_DONATION_MIGRATED);
 
 jobProjection.subscribe("JobReleased");
 
@@ -45,6 +47,9 @@ function getAllProjections() {
 
 async function dispatchToProjections(client, event) {
   const subscribers = registry.get(event.eventType) || [];
+  if (subscribers.length === 0) {
+    console.warn(`[Projections] Warning: No subscribers registered for event type "${event.eventType}"`);
+  }
   for (const projection of subscribers) {
     await projection.apply(client, event);
   }
@@ -80,7 +85,7 @@ async function applyProjectProjection(client, event) {
        WHERE id = $3`,
       [xlmDonation, event.version, data.projectId]
     );
-  } else if (event.eventType === "MigratedDonation") {
+  } else if (event.eventType === LEGACY_DONATION_MIGRATED) {
     const amt = exactXlmAmount(data);
     await client.query(
       `UPDATE projects
@@ -96,23 +101,6 @@ async function applyProjectProjection(client, event) {
 projectProjection.apply = async (client, event) => {
   await applyProjectProjection(client, event);
 };
-
-function computeBadges(totalXLM) {
-  const BADGE_THRESHOLDS = [
-    { tier: "earth", min: 2000 },
-    { tier: "forest", min: 500 },
-    { tier: "tree", min: 100 },
-    { tier: "seedling", min: 10 },
-  ];
-  const earned = [];
-  for (const badge of BADGE_THRESHOLDS) {
-    if (totalXLM >= badge.min) {
-      earned.push({ tier: badge.tier, earnedAt: new Date().toISOString() });
-      break;
-    }
-  }
-  return earned;
-}
 
 async function getExistingDonorStats(client, donorAddress) {
   const result = await client.query(
@@ -174,11 +162,11 @@ async function syncDonorProjectCount(client, donorAddress, version) {
      FROM (
        SELECT COUNT(DISTINCT (payload->'data'->>'projectId')) AS proj_count
        FROM event_stream
-       WHERE aggregate_type IN ('Donation', 'MigratedDonation', 'MatchApplied')
+       WHERE aggregate_type IN ('Donation', $3, 'MatchApplied')
          AND payload->'data'->>'donorAddress' = $1
      ) sub
      WHERE donor_stats.public_key = $1`,
-    [donorAddress, version]
+    [donorAddress, version, LEGACY_DONATION_MIGRATED]
   );
 }
 
@@ -186,7 +174,7 @@ async function applyDonorProjection(client, event) {
   const data = event.data;
   let xlmDelta = "0.0000000";
 
-  if (event.eventType === "MigratedDonation") {
+  if (event.eventType === LEGACY_DONATION_MIGRATED) {
     xlmDelta = data.isMatch ? exactXlmAmount(data) : (data.currency === "XLM" ? exactXlmAmount(data) : "0.0000000");
   } else {
     xlmDelta = data.currency === "XLM" ? exactXlmAmount(data) : "0.0000000";
@@ -212,7 +200,7 @@ async function applyMatchProjection(client, event) {
        WHERE match_id = $3`,
       [data.matchAmount.toFixed(7), event.version, matchId]
     );
-  } else if (event.eventType === "MatchCreated" || event.eventType === "MigratedDonation" && data.isMatch === true) {
+  } else if (event.eventType === "MatchCreated" || (event.eventType === LEGACY_DONATION_MIGRATED && data.isMatch === true)) {
     await client.query(
       `INSERT INTO match_state (match_id, matched_xlm, cap_xlm, multiplier, projection_cursor)
        VALUES ($1, '0'::numeric, $2, $3, $4)
@@ -227,7 +215,9 @@ matchProjection.apply = async (client, event) => {
 };
 
 async function applyJobProjection(client, event) {
-  const jobId = event.aggregateId.split(":")[1];
+  // JobReleasedEvent carries no jobId in its `data` payload, so the job being
+  // released is identified only by the event's own (unprefixed) aggregateId.
+  const jobId = event.aggregateId;
   await client.query(
     `UPDATE jobs
      SET status = 'completed',

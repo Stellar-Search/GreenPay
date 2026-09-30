@@ -354,6 +354,30 @@
                             }
                           ]
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "JobCount"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -1265,7 +1289,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Job is not disputed' from contract function 'Symbol(obj#295)'"
+                  "string": "caught panic 'Job is not disputed' from contract function 'Symbol(obj#311)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"

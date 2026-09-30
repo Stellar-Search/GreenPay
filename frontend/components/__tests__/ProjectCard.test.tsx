@@ -69,5 +69,23 @@ describe("ProjectCard", () => {
       const { container } = renderWithLocale(<ProjectCard project={mockProject} />, "ar");
       expect(container).toMatchSnapshot();
     });
+
+    it("isolates Arabic project content as RTL even when the interface is English", () => {
+      const arabicProject: ClimateProject = {
+        ...mockProject,
+        name: "مبادرة إعادة تشجير الأمازون",
+        description: "زراعة الأشجار المحلية واستعادة الغابات المتدهورة.",
+        category: "إعادة التشجير",
+        location: "البرازيل",
+        contentLanguage: "ar",
+        contentDirection: "rtl",
+        sourceLanguage: "en",
+        requestedLanguage: "ar",
+        machineTranslated: true,
+      };
+      const { container } = renderWithLocale(<ProjectCard project={arabicProject} />, "en");
+      expect(container.querySelector('[lang="ar"][dir="rtl"]')).toBeInTheDocument();
+      expect(screen.getByTestId("content-language-notice")).toHaveTextContent("Machine-translated");
+    });
   });
 });

@@ -69,9 +69,14 @@ if (!dbAvailable) {
   );
 }
 
+const { Keypair } = require("@stellar/stellar-sdk");
+
+const _keyCache = new Map();
 function makePublicKey(seed) {
-  const cleaned = seed.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
-  return ("G" + cleaned.padEnd(55, "A")).slice(0, 56);
+  if (!_keyCache.has(seed)) {
+    _keyCache.set(seed, Keypair.random().publicKey());
+  }
+  return _keyCache.get(seed);
 }
 
 function makeTxHash(seed) {

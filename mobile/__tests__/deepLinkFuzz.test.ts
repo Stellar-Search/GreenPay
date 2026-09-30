@@ -21,7 +21,7 @@ function isWellFormed(result: GreenPayDeepLinkResult): boolean {
     return (
       typeof result.projectId === 'string' &&
       result.projectId.length > 0 &&
-      (result.segment === 'donate' || result.segment === 'project')
+      (result.segment === 'donate' || result.segment === 'project' || result.segment === 'recurring')
     );
   }
   if (result.ok === false) {
@@ -162,6 +162,11 @@ describe('Hand-picked adversarial deep-link cases', () => {
       ok: true,
       segment: 'project',
       projectId: '42',
+    });
+    expect(parseGreenPayDeepLink('greenpay://recurring/rec_abc_123')).toEqual({
+      ok: true,
+      segment: 'recurring',
+      projectId: 'rec_abc_123',
     });
   });
 

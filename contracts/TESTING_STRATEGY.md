@@ -79,23 +79,36 @@ fn test_donation_snapshot() {
 }
 ```
 
-### 4. Fuzz Tests
-**What**: Generate random inputs to find edge cases
-**Where**: `src/fuzz_tests.rs`
-**When**: Before mainnet deployment
-**Command**: `cargo fuzz` or `cargo test --test fuzz`
+### 4. Property Tests (Money Paths)
+**What**: State-machine and conservation invariants over donation, escrow, and lock/withdraw sequences
+**Where**: `contracts/INVARIANTS.md` (spec), `src/fuzz_tests.rs`, `src/property_tests.rs`
+**When**: Every PR (fast) and nightly (deep)
+**Commands**:
+```bash
+# Fast profile (CI)
+PROPTEST_CASES=32 cargo test --workspace --features testutils prop_ regression_ -- --test-threads=1
 
-```rust
-#[test]
-fn fuzz_donate_amount() {
-    for amount in 0..u128::MAX {
-        let result = contract.donate(amount);
-        assert!(!result.is_err());
-    }
-}
+# Deep profile (nightly)
+PROPTEST_CASES=2000 cargo test --workspace --features testutils prop_ -- --test-threads=1
+
+# Coverage report on money paths
+./contracts/scripts/money-path-coverage.sh
 ```
 
-### 5. Upgrade Tests
+Property tests use `proptest` with shrinking. Counterexample seeds are saved under
+`proptest-regressions/` and converted to deterministic `regression_*` unit tests.
+
+| Profile | `PROPTEST_CASES` | Trigger |
+|---------|------------------|---------|
+| Fast | 32 | Every PR (`ci.yml`) |
+| Deep | 2000 | Nightly (`contracts-property-deep.yml`) |
+
+### 5. Fuzz Tests (Legacy name — see Property Tests above)
+**What**: Random input exploration for donation amounts and CO₂ arithmetic
+**Where**: `greenpay-contract/src/fuzz_tests.rs`
+**Command**: `cargo test --features testutils prop_`
+
+### 6. Upgrade Tests
 **What**: Verify storage compatibility and state preservation
 **Where**: `src/lib.rs` with upgrade regression test
 **When**: Every contract upgrade

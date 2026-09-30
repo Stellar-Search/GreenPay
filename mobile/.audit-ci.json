@@ -1,0 +1,46 @@
+{
+  "high": true,
+  "package-manager": "npm",
+  "allowlist": [
+    // Review by: 2027-02-22. Expo's transitive fast-xml-parser dependency
+    // has no compatible fix in the current Expo SDK line; re-evaluate when
+    // upgrading Expo or when the advisory receives a compatible release.
+    "GHSA-gh4j-gqv2-49f6",
+
+    // Review by: 2027-02-22. PostCSS is transitive through Expo tooling and
+    // the available fixes require an SDK/toolchain upgrade; re-evaluate with
+    // the next Expo upgrade.
+    "GHSA-qx2v-qp2m-jg93",
+    "GHSA-fxqj-rqcc-2cmp",
+
+    // Review by: 2027-02-22. These tar advisories come from Expo's
+    // transitive packaging toolchain; the compatible fix requires upgrading
+    // that toolchain, so re-evaluate on the next Expo SDK upgrade.
+    "GHSA-vmf3-w455-68vh",
+    "GHSA-w8wr-v893-vjvp",
+    "GHSA-gvwx-54wh-qm9j",
+    "GHSA-r292-9mhp-454m",
+
+    // Review by: 2027-02-22. send is transitive through Expo CLI and cannot
+    // be upgraded independently without changing the Expo SDK toolchain.
+    "GHSA-m6fv-jmcg-4jfg",
+
+    "GHSA-wh4c-j3r5-mjhp",
+    "GHSA-2v35-w6hq-6mfw",
+    "GHSA-f6ww-3ggp-fr8h",
+    "GHSA-x6wf-f3px-wcqx",
+    "GHSA-j759-j44w-7fr8",
+    "GHSA-6g55-p6wh-862q",
+    "GHSA-r28c-9q8g-f849",
+    "GHSA-34x7-hfp2-rc4v",
+    "GHSA-8qq5-rm4j-mr97",
+    "GHSA-83g3-92jg-28cx",
+    "GHSA-qffp-2rhf-9h96",
+    "GHSA-9ppj-qmqm-q256",
+    "GHSA-r6q2-hw4h-h46w",
+    "GHSA-23hp-3jrh-7fpw",
+    "GHSA-8x88-c5mf-7j5w",
+    "GHSA-w3rx-r6r6-pgpr",
+    "GHSA-5p2g-fcmc-qvqq"
+  ]
+}

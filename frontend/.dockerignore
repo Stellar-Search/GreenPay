@@ -1,8 +1,17 @@
 node_modules
+npm-debug.log
 .next
-out
-build
 .git
 .github
-*.log
-.env*.local
+.dockerignore
+Dockerfile
+*.md
+*.test.js
+*.spec.js
+coverage
+.nyc_output
+# Never let a developer- or CI-present env file reach the build context:
+# it would be baked into the published image (or its NEXT_PUBLIC_* values
+# inlined into the build output).
+.env
+.env.*

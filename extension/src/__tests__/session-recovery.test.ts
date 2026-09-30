@@ -8,13 +8,16 @@ import {
   type StorageArea,
 } from '../session-state';
 
-const PUBLIC_KEY = `G${'A'.repeat(55)}`;
+const PUBLIC_KEY = 'GCFANSV7I32AGAS5N4EJEZRZCRGNDH32QDHP3A3BWFV66A7BK5PYTUUS';
 const PROJECT = {
   id: 'project-1',
   name: 'Ocean Cleanup',
   description: 'Removing ocean plastic',
   category: 'Ocean Conservation',
-  walletAddress: `G${'B'.repeat(55)}`,
+  // Real checksum-valid Ed25519 public key — required now that isProject()
+  // validates walletAddress with StrKey.isValidEd25519PublicKey rather than
+  // only checking typeof === 'string' (fix for issue #339).
+  walletAddress: 'GDUQ24STT6QESP4QW33O4KDVYMRTBHWZ3ZE6HXX5TCNWUZH6MRT7PADV',
 };
 
 class MemoryStorage implements StorageArea {
@@ -172,8 +175,8 @@ describe('MV3 session recovery', () => {
     const localStorage = new DelayedStorage(5);
     const worker = new WorkerSessionState(sessionStorage, localStorage, () => 50_000, 'worker-concurrent');
 
-    const keyA = `G${'A'.repeat(55)}`;
-    const keyB = `G${'B'.repeat(55)}`;
+    const keyA = 'GCFANSV7I32AGAS5N4EJEZRZCRGNDH32QDHP3A3BWFV66A7BK5PYTUUS';
+    const keyB = 'GDUQ24STT6QESP4QW33O4KDVYMRTBHWZ3ZE6HXX5TCNWUZH6MRT7PADV';
 
     // Interleave setWallet(A) then clearWallet() concurrently
     const [walletA] = await Promise.all([

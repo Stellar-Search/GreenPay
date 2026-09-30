@@ -1,4 +1,6 @@
 import {
+  getNetwork,
+  getNetworkDetails,
   getUserInfo,
   isAllowed,
   setAllowed,
@@ -7,74 +9,125 @@ import {
 import {
   Asset,
   Horizon,
-  Networks,
+  Keypair,
   Operation,
   TransactionBuilder,
 } from '@stellar/stellar-sdk';
 import { isBadSequenceError } from './horizon-errors';
 import type { BackgroundRequest, BackgroundResponse } from './messages';
+import { activeManifest } from './network-config';
 import { recoverPopupSession, type PopupRecoveryClient } from './popup-session';
 import { SearchCoordinator } from './popup-search';
 import {
   STORAGE_KEYS,
+  isValidStellarAddress,
   type ProjectSummary,
   type RecoverySnapshot,
   type WalletSession,
 } from './session-state';
 
-const server = new Horizon.Server('https://horizon-testnet.stellar.org');
-const sessionArea = chrome.storage.session ?? chrome.storage.local;
+export const server = new Horizon.Server(activeManifest.horizonUrl);
+function getSessionArea(): StorageArea {
+  if (typeof chrome !== 'undefined' && chrome.storage?.session) {
+    return chrome.storage.session;
+  }
+  if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+    return chrome.storage.local;
+  }
+  return undefined as unknown as StorageArea;
+}
 
-const connectBtn = document.getElementById('connect-btn') as HTMLButtonElement;
-const walletInfo = document.getElementById('wallet-info') as HTMLDivElement;
-const walletAddress = document.getElementById('wallet-address') as HTMLSpanElement;
-const walletBalance = document.getElementById('wallet-balance') as HTMLHeadingElement;
-const projectList = document.getElementById('project-list') as HTMLUListElement;
-const projectCount = document.querySelector('.section-header .badge') as HTMLSpanElement;
-const presetBtns = document.querySelectorAll<HTMLButtonElement>('.preset-btn');
-const customInput = document.getElementById('custom-amount-input') as HTMLInputElement;
-const donateBtn = document.getElementById('donate-submit') as HTMLButtonElement;
-const statusMsg = document.getElementById('status-message') as HTMLDivElement;
-const searchInput = document.getElementById('project-search') as HTMLInputElement;
-const searchDropdown = document.getElementById('search-dropdown') as HTMLUListElement;
+export function getElements() {
+  if (typeof document === 'undefined') return null;
+  return {
+    connectBtn: document.getElementById('connect-btn') as HTMLButtonElement | null,
+    walletInfo: document.getElementById('wallet-info') as HTMLDivElement | null,
+    walletAddress: document.getElementById('wallet-address') as HTMLSpanElement | null,
+    walletBalance: document.getElementById('wallet-balance') as HTMLHeadingElement | null,
+    projectList: document.getElementById('project-list') as HTMLUListElement | null,
+    projectCount: document.querySelector('.section-header .badge') as HTMLSpanElement | null,
+    presetBtns: document.querySelectorAll<HTMLButtonElement>('.preset-btn'),
+    customInput: document.getElementById('custom-amount-input') as HTMLInputElement | null,
+    donateBtn: document.getElementById('donate-submit') as HTMLButtonElement | null,
+    statusMsg: document.getElementById('status-message') as HTMLDivElement | null,
+    searchInput: document.getElementById('project-search') as HTMLInputElement | null,
+    searchDropdown: document.getElementById('search-dropdown') as HTMLUListElement | null,
+  };
+}
 
 let currentWallet: WalletSession | null = null;
 let currentProjects: ProjectSummary[] = [];
 let activeProject: ProjectSummary | null = null;
 let currentDonationAmount = 0;
 
-function setInteractive(enabled: boolean) {
-  connectBtn.disabled = !enabled;
-  searchInput.disabled = !enabled;
-  customInput.disabled = !enabled;
-  presetBtns.forEach((button) => {
+export const DEFAULT_POPUP_SEND_TIMEOUT_MS = 10000;
+
+export function setInteractive(enabled: boolean) {
+  const els = getElements();
+  if (els?.connectBtn) els.connectBtn.disabled = !enabled;
+  if (els?.searchInput) els.searchInput.disabled = !enabled;
+  if (els?.customInput) els.customInput.disabled = !enabled;
+  els?.presetBtns?.forEach((button) => {
     button.disabled = !enabled;
   });
+  const retryBtn = typeof document !== 'undefined' ? (document.getElementById('retry-projects-btn') as HTMLButtonElement | null) : null;
+  if (retryBtn) {
+    retryBtn.disabled = !enabled;
+  }
   updateDonateButton();
 }
 
-function showStatus(message: string, kind?: 'error' | 'success') {
-  statusMsg.textContent = message;
-  statusMsg.className = `status-message${kind ? ` ${kind}` : ''}`;
+export function showStatus(message: string, kind?: 'error' | 'success') {
+  const els = getElements();
+  if (!els?.statusMsg) return;
+  els.statusMsg.textContent = message;
+  els.statusMsg.className = `status-message${kind ? ` ${kind}` : ''}`;
 }
 
-function updateDonateButton() {
-  donateBtn.disabled =
-    connectBtn.disabled ||
+export function updateDonateButton() {
+  // Guard: the donate button must not arm against an invalid destination.
+  // isValidStellarAddress performs the full StrKey checksum check — a
+  // non-empty but checksum-invalid address that slipped through would cause
+  // the Horizon operation to fail after the user has already confirmed in
+  // Freighter.  Blocking it here provides the earliest possible feedback.
+  const destinationOk = isValidStellarAddress(activeProject?.walletAddress);
+  const els = getElements();
+  if (!els?.donateBtn) return;
+  els.donateBtn.disabled =
+    (els.connectBtn ? els.connectBtn.disabled : false) ||
     !currentWallet ||
-    !activeProject?.walletAddress ||
+    !destinationOk ||
     currentDonationAmount <= 0;
 }
 
-async function send(request: BackgroundRequest): Promise<BackgroundResponse> {
-  const response = (await chrome.runtime.sendMessage(request)) as BackgroundResponse;
-  if (!response?.ok) {
-    throw new Error(response?.error ?? 'The GreenPay service worker did not respond');
+export async function send(
+  request: BackgroundRequest,
+  timeoutMs = DEFAULT_POPUP_SEND_TIMEOUT_MS
+): Promise<BackgroundResponse> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`Background request timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  try {
+    const response = await Promise.race([
+      chrome.runtime.sendMessage(request) as Promise<BackgroundResponse>,
+      timeoutPromise,
+    ]);
+    if (!response?.ok) {
+      throw new Error(response?.error ?? 'The GreenPay service worker did not respond');
+    }
+    return response;
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
   }
-  return response;
 }
 
-async function probeWallet(): Promise<string | null> {
+export async function probeWallet(): Promise<string | null> {
   try {
     if (!(await isAllowed())) return null;
     const info = await getUserInfo();
@@ -84,8 +137,10 @@ async function probeWallet(): Promise<string | null> {
   }
 }
 
-const recoveryClient: PopupRecoveryClient = {
+export const recoveryClient: PopupRecoveryClient = {
   async getPreviousWorkerInstanceId() {
+    const sessionArea = getSessionArea();
+    if (!sessionArea) return null;
     const stored = await sessionArea.get(STORAGE_KEYS.lastPopupWorker);
     const value = stored[STORAGE_KEYS.lastPopupWorker];
     return typeof value === 'string' ? value : null;
@@ -113,53 +168,100 @@ const recoveryClient: PopupRecoveryClient = {
     throw new Error('Invalid project response');
   },
   async rememberWorkerInstanceId(workerInstanceId) {
+    const sessionArea = getSessionArea();
+    if (!sessionArea) return;
     await sessionArea.set({ [STORAGE_KEYS.lastPopupWorker]: workerInstanceId });
   },
 };
 
-function renderWallet(wallet: WalletSession | null) {
+export function renderWallet(wallet: WalletSession | null) {
   currentWallet = wallet;
-  connectBtn.classList.toggle('hidden', wallet !== null);
-  walletInfo.classList.toggle('hidden', wallet === null);
-  walletAddress.textContent = wallet
-    ? `${wallet.publicKey.slice(0, 5)}...${wallet.publicKey.slice(-4)}`
-    : '--';
-  walletBalance.textContent = '0.00 XLM';
+  const els = getElements();
+  if (els?.connectBtn) els.connectBtn.classList.toggle('hidden', wallet !== null);
+  if (els?.walletInfo) els.walletInfo.classList.toggle('hidden', wallet === null);
+  if (els?.walletAddress) {
+    els.walletAddress.textContent = wallet
+      ? `${wallet.publicKey.slice(0, 5)}...${wallet.publicKey.slice(-4)}`
+      : '--';
+  }
+  if (els?.walletBalance) els.walletBalance.textContent = '0.00 XLM';
   updateDonateButton();
   if (wallet) void fetchBalance(wallet.publicKey);
 }
 
-async function fetchBalance(publicKey: string) {
+export async function fetchBalance(publicKey: string) {
   try {
     const account = await server.loadAccount(publicKey);
     const balance = account.balances.find((item) => item.asset_type === 'native');
-    if (currentWallet?.publicKey === publicKey && balance) {
-      walletBalance.textContent = `${Number.parseFloat(balance.balance).toFixed(2)} XLM`;
+    const els = getElements();
+    if (currentWallet?.publicKey === publicKey && balance && els?.walletBalance) {
+      els.walletBalance.textContent = `${Number.parseFloat(balance.balance).toFixed(2)} XLM`;
     }
   } catch {
-    if (currentWallet?.publicKey === publicKey) walletBalance.textContent = '0.00 XLM';
+    const els = getElements();
+    if (currentWallet?.publicKey === publicKey && els?.walletBalance) {
+      els.walletBalance.textContent = '0.00 XLM';
+    }
   }
 }
 
-function selectProject(project: ProjectSummary) {
+export function selectProject(project: ProjectSummary) {
   activeProject = project;
-  projectList.querySelectorAll<HTMLElement>('.project-item').forEach((item) => {
-    item.classList.toggle('active', item.dataset.projectId === project.id);
-  });
+  const els = getElements();
+  if (els?.projectList) {
+    els.projectList.querySelectorAll<HTMLElement>('.project-item').forEach((item) => {
+      item.classList.toggle('active', item.dataset.projectId === project.id);
+    });
+  }
   updateDonateButton();
 }
 
-function renderProjects(projects: ProjectSummary[]) {
+export async function retryLoadProjects() {
+  setInteractive(false);
+  showStatus('Loading projects…');
+  try {
+    const projects = await recoveryClient.refreshProjects();
+    renderProjects(projects);
+    showStatus('');
+  } catch (error) {
+    renderProjects([]);
+    showStatus(
+      error instanceof Error ? `Failed to load projects: ${error.message}` : 'Failed to load projects.',
+      'error'
+    );
+  } finally {
+    setInteractive(true);
+  }
+}
+
+export function renderProjects(projects: ProjectSummary[]) {
   currentProjects = projects;
   activeProject = null;
-  projectList.innerHTML = '';
-  projectCount.textContent = String(projects.length);
+  const els = getElements();
+  if (!els?.projectList) return;
+  els.projectList.innerHTML = '';
+  if (els.projectCount) els.projectCount.textContent = String(projects.length);
 
   if (projects.length === 0) {
     const empty = document.createElement('li');
-    empty.className = 'glass-panel project-item';
-    empty.textContent = 'Projects are temporarily unavailable.';
-    projectList.appendChild(empty);
+    empty.className = 'glass-panel project-item empty-state';
+
+    const message = document.createElement('span');
+    message.className = 'project-desc';
+    message.textContent = 'Projects are temporarily unavailable.';
+
+    const retryBtn = document.createElement('button');
+    retryBtn.id = 'retry-projects-btn';
+    retryBtn.className = 'btn glow-btn';
+    retryBtn.textContent = 'Retry';
+    retryBtn.type = 'button';
+    retryBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      void retryLoadProjects();
+    });
+
+    empty.append(message, retryBtn);
+    els.projectList.appendChild(empty);
     return;
   }
 
@@ -181,14 +283,14 @@ function renderProjects(projects: ProjectSummary[]) {
     info.append(name, description);
     item.append(avatar, info);
     item.addEventListener('click', () => selectProject(project));
-    projectList.appendChild(item);
+    els.projectList!.appendChild(item);
 
     if (index === 0) activeProject = project;
   });
   updateDonateButton();
 }
 
-function renderSearchResults(
+export function renderSearchResults(
   projects: ProjectSummary[],
   sequence?: number,
   query?: string
@@ -196,18 +298,20 @@ function renderSearchResults(
   if (sequence !== undefined && sequence !== searchCoordinator.getLatestSequence()) {
     return;
   }
+  const els = getElements();
   if (
     query !== undefined &&
-    (query !== searchCoordinator.getLatestQuery() || query !== searchInput.value.trim())
+    (query !== searchCoordinator.getLatestQuery() || query !== els?.searchInput?.value.trim())
   ) {
     return;
   }
-  searchDropdown.innerHTML = '';
+  if (!els?.searchDropdown) return;
+  els.searchDropdown.innerHTML = '';
   if (projects.length === 0) {
     const empty = document.createElement('li');
     empty.className = 'search-no-results';
     empty.textContent = 'No projects found';
-    searchDropdown.appendChild(empty);
+    els.searchDropdown.appendChild(empty);
   } else {
     projects.forEach((project) => {
       const item = document.createElement('li');
@@ -226,23 +330,29 @@ function renderSearchResults(
           renderProjects([project, ...currentProjects].slice(0, 3));
         }
         selectProject(project);
-        searchInput.value = project.name;
-        searchDropdown.classList.add('hidden');
+        if (els.searchInput) els.searchInput.value = project.name;
+        els.searchDropdown?.classList.add('hidden');
       });
-      searchDropdown.appendChild(item);
+      els.searchDropdown.appendChild(item);
     });
   }
-  searchDropdown.classList.remove('hidden');
+  els.searchDropdown.classList.remove('hidden');
 }
 
-const searchCoordinator = new SearchCoordinator({
+export const searchCoordinator = new SearchCoordinator({
   send,
   renderSearchResults,
-  hideDropdown: () => searchDropdown.classList.add('hidden'),
-  getCurrentQuery: () => searchInput.value,
+  hideDropdown: () => {
+    const els = getElements();
+    els?.searchDropdown?.classList.add('hidden');
+  },
+  getCurrentQuery: () => {
+    const els = getElements();
+    return els?.searchInput?.value ?? '';
+  },
 });
 
-async function connectWallet() {
+export async function connectWallet() {
   setInteractive(false);
   showStatus('Connecting…');
   try {
@@ -262,12 +372,73 @@ async function connectWallet() {
   }
 }
 
-async function buildDonationTransaction(project: ProjectSummary, amount: number) {
+export async function verifyFreighterNetwork(): Promise<void> {
+  let checked = false;
+  try {
+    const details = await getNetworkDetails();
+    if (details && typeof details === 'object') {
+      if (details.networkPassphrase) {
+        checked = true;
+        if (details.networkPassphrase !== activeManifest.networkPassphrase) {
+          throw new Error(
+            `Freighter is connected to "${details.network || 'another network'}", but GreenPay requires "${activeManifest.network.toUpperCase()}". Please switch networks in Freighter.`
+          );
+        }
+        return;
+      }
+      if (details.network) {
+        checked = true;
+        const activeUpper = activeManifest.network.toUpperCase();
+        const freighterUpper = details.network.toUpperCase();
+        const isMatch =
+          freighterUpper === activeUpper ||
+          (activeUpper === 'MAINNET' && freighterUpper === 'PUBLIC') ||
+          (activeUpper === 'TESTNET' && freighterUpper === 'TESTNET');
+        if (!isMatch) {
+          throw new Error(
+            `Freighter is connected to "${details.network}", but GreenPay requires "${activeUpper}". Please switch networks in Freighter.`
+          );
+        }
+        return;
+      }
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('switch networks')) {
+      throw error;
+    }
+  }
+
+  if (!checked) {
+    try {
+      const network = await getNetwork();
+      if (network && typeof network === 'string') {
+        const activeUpper = activeManifest.network.toUpperCase();
+        const freighterUpper = network.toUpperCase();
+        const isMatch =
+          freighterUpper === activeUpper ||
+          (activeUpper === 'MAINNET' && freighterUpper === 'PUBLIC') ||
+          (activeUpper === 'TESTNET' && freighterUpper === 'TESTNET');
+        if (!isMatch) {
+          throw new Error(
+            `Freighter is connected to "${network}", but GreenPay requires "${activeUpper}". Please switch networks in Freighter.`
+          );
+        }
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('switch networks')) {
+        throw error;
+      }
+    }
+  }
+}
+
+export async function buildDonationTransaction(project: ProjectSummary, amount: number) {
   if (!currentWallet) throw new Error('Connect your wallet first.');
+  await verifyFreighterNetwork();
   const account = await server.loadAccount(currentWallet.publicKey);
   const transaction = new TransactionBuilder(account, {
     fee: (await server.fetchBaseFee()).toString(),
-    networkPassphrase: Networks.TESTNET,
+    networkPassphrase: activeManifest.networkPassphrase,
   })
     .addOperation(
       Operation.payment({
@@ -281,16 +452,50 @@ async function buildDonationTransaction(project: ProjectSummary, amount: number)
   return transaction.toXDR();
 }
 
-async function submitDonation(
+export async function submitDonation(
   project: ProjectSummary,
   amount: number,
   retryCount = 0
 ): Promise<{ hash: string }> {
+  if (!currentWallet) throw new Error('Connect your wallet first.');
+  const expectedPublicKey = currentWallet.publicKey;
+
   const xdr = await buildDonationTransaction(project, amount);
   const signedXdr = await signTransaction(xdr, {
-    networkPassphrase: Networks.TESTNET,
+    networkPassphrase: activeManifest.networkPassphrase,
+    network: activeManifest.network.toUpperCase(),
+    accountToSign: expectedPublicKey,
   });
-  const transaction = TransactionBuilder.fromXDR(signedXdr, Networks.TESTNET);
+
+  if (!signedXdr || typeof signedXdr !== 'string') {
+    throw new Error('Signing was cancelled or returned an empty transaction.');
+  }
+
+  const transaction = TransactionBuilder.fromXDR(signedXdr, activeManifest.networkPassphrase);
+
+  if (transaction.source !== expectedPublicKey) {
+    throw new Error('Transaction source account does not match active session wallet.');
+  }
+
+  const keypair = Keypair.fromPublicKey(expectedPublicKey);
+  const isSignedByExpectedAccount = transaction.signatures.some((sig) => {
+    try {
+      return keypair.verify(transaction.hash(), sig.signature());
+    } catch {
+      return false;
+    }
+  });
+
+  if (!isSignedByExpectedAccount) {
+    throw new Error('Transaction was signed with a different account than expected.');
+  }
+
+  const currentPublicKey = await probeWallet();
+  if (currentPublicKey && currentPublicKey !== expectedPublicKey) {
+    await recoveryClient.clearWallet();
+    renderWallet(null);
+    throw new Error('Wallet account changed during signing. Reconnect to continue.');
+  }
 
   try {
     return await server.submitTransaction(transaction);
@@ -303,11 +508,12 @@ async function submitDonation(
   }
 }
 
-async function donate() {
+export async function donate() {
   if (!currentWallet || !activeProject || currentDonationAmount <= 0) return;
   setInteractive(false);
   showStatus('Confirm the donation in Freighter…');
   try {
+    await verifyFreighterNetwork();
     const currentPublicKey = await probeWallet();
     if (currentPublicKey !== currentWallet.publicKey) {
       await recoveryClient.clearWallet();
@@ -324,7 +530,7 @@ async function donate() {
   }
 }
 
-async function bootstrap() {
+export async function bootstrap() {
   setInteractive(false);
   showStatus('Restoring session…');
   try {
@@ -344,27 +550,41 @@ async function bootstrap() {
   }
 }
 
-connectBtn.addEventListener('click', () => void connectWallet());
-donateBtn.addEventListener('click', () => void donate());
-customInput.addEventListener('input', () => {
-  presetBtns.forEach((button) => button.classList.remove('active'));
-  currentDonationAmount = Number.parseFloat(customInput.value) || 0;
-  updateDonateButton();
-});
-for (const button of presetBtns) {
-  button.addEventListener('click', () => {
-    presetBtns.forEach((item) => item.classList.remove('active'));
-    button.classList.add('active');
-    customInput.value = '';
-    currentDonationAmount = Number.parseFloat(button.dataset.amount ?? '0');
-    updateDonateButton();
-  });
-}
-searchInput.addEventListener('input', () => {
-  searchCoordinator.handleInput(searchInput.value);
-});
-searchInput.addEventListener('blur', () => {
-  setTimeout(() => searchDropdown.classList.add('hidden'), 150);
-});
+export function setupEventListeners() {
+  const els = getElements();
+  if (!els) return;
 
-void bootstrap();
+  if (els.connectBtn) els.connectBtn.addEventListener('click', () => void connectWallet());
+  if (els.donateBtn) els.donateBtn.addEventListener('click', () => void donate());
+  if (els.customInput) {
+    els.customInput.addEventListener('input', () => {
+      els.presetBtns?.forEach((button) => button.classList.remove('active'));
+      currentDonationAmount = Number.parseFloat(els.customInput!.value) || 0;
+      updateDonateButton();
+    });
+  }
+  if (els.presetBtns) {
+    for (const button of els.presetBtns) {
+      button.addEventListener('click', () => {
+        els.presetBtns.forEach((item) => item.classList.remove('active'));
+        button.classList.add('active');
+        if (els.customInput) els.customInput.value = '';
+        currentDonationAmount = Number.parseFloat(button.dataset.amount ?? '0');
+        updateDonateButton();
+      });
+    }
+  }
+  if (els.searchInput) {
+    els.searchInput.addEventListener('input', () => {
+      searchCoordinator.handleInput(els.searchInput!.value);
+    });
+    els.searchInput.addEventListener('blur', () => {
+      setTimeout(() => els.searchDropdown?.classList.add('hidden'), 150);
+    });
+  }
+}
+
+if (typeof document !== 'undefined' && document.getElementById('connect-btn')) {
+  setupEventListeners();
+  void bootstrap();
+}

@@ -44,10 +44,6 @@ function createTooltip(): HTMLDivElement {
     z-index: 10000;
     pointer-events: none;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-    bottom: 100%;
-    left: 50%;
-    transform: translateX(-50%);
-    margin-bottom: 8px;
   `;
   return tooltip;
 }
@@ -106,8 +102,9 @@ export function highlightAddresses(node: Node): void {
 
         const tooltip = createTooltip();
         const rect = span.getBoundingClientRect();
-        tooltip.style.left = rect.left + rect.width / 2 + 'px';
-        tooltip.style.top = rect.top + window.scrollY + 'px';
+        const bodyRect = document.body ? document.body.getBoundingClientRect() : { left: 0, top: 0 };
+        tooltip.style.left = rect.left - bodyRect.left + rect.width / 2 + 'px';
+        tooltip.style.top = rect.top - bodyRect.top + 'px';
         document.body.appendChild(tooltip);
         ACTIVE_TOOLTIPS.set(span, tooltip);
       });

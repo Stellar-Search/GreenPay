@@ -5,7 +5,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { fetchProjectDonations } from "@/lib/api";
 import { formatXLM, timeAgo, shortenAddress } from "@/utils/format";
-import { explorerUrl, streamProjectPayments } from "@/lib/stellar";
+import { explorerUrl, streamProjectPayments, type HorizonPagingToken } from "@/lib/stellar";
 import { useDonationSocket } from "@/hooks/useDonationSocket";
 import type { Donation } from "@/utils/types";
 
@@ -22,10 +22,13 @@ export default function DonationFeed({ projectId, walletAddress, refreshKey = 0,
   const [loadingMore, setLoadingMore] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [newIds, setNewIds] = useState<Set<string>>(new Set());
-  const latestIdRef = useRef<string | null>(null);
+  const [streamDisconnected, setStreamDisconnected] = useState(false);
+  const latestPagingTokenRef = useRef<HorizonPagingToken | null>(null);
   const seenTxHashesRef = useRef<Set<string>>(new Set());
 
-  // Load initial donation data from the backend API
+  // Load initial donation data from the backend API. Note: `d.id` is a
+  // backend database identifier, not a Horizon paging token, so it must
+  // never seed the SSE cursor below.
   useEffect(() => {
     setLoading(true);
     fetchProjectDonations(projectId, 10)
@@ -33,9 +36,6 @@ export default function DonationFeed({ projectId, walletAddress, refreshKey = 0,
         setDonations(data);
         setNextCursor(cursor);
         data.forEach((d) => seenTxHashesRef.current.add(d.transactionHash));
-        if (data.length > 0) {
-          latestIdRef.current = data[0].id;
-        }
       })
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -44,6 +44,7 @@ export default function DonationFeed({ projectId, walletAddress, refreshKey = 0,
   // Handle incoming SSE payment
   const handleNewPayment = useCallback((payment: {
     id: string;
+    pagingToken: HorizonPagingToken;
     from: string;
     amount: string;
     asset: string;
@@ -80,7 +81,7 @@ export default function DonationFeed({ projectId, walletAddress, refreshKey = 0,
 
     onNewDonation?.(newDonation);
 
-    latestIdRef.current = payment.id;
+    latestPagingTokenRef.current = payment.pagingToken;
   }, [projectId, onNewDonation]);
 
   // Handle incoming donation pushed over the Socket.io "donation_event" channel
@@ -123,8 +124,14 @@ export default function DonationFeed({ projectId, walletAddress, refreshKey = 0,
   useEffect(() => {
     if (loading || !walletAddress) return;
 
-    const cursor = latestIdRef.current || undefined;
-    const closeStream = streamProjectPayments(walletAddress, handleNewPayment, cursor);
+    setStreamDisconnected(false);
+    const cursor = latestPagingTokenRef.current || undefined;
+    const closeStream = streamProjectPayments(
+      walletAddress,
+      handleNewPayment,
+      cursor,
+      () => setStreamDisconnected(true),
+    );
 
     return () => {
       closeStream();
@@ -159,26 +166,23 @@ export default function DonationFeed({ projectId, walletAddress, refreshKey = 0,
     </div>
   );
 
+  const renderStreamStatus = (connectedText: string, className: string) => walletAddress && (
+    <div className={`flex items-center gap-2 text-xs font-body ${className} ${streamDisconnected ? "text-red-600" : "text-forest-500"}`}>
+      <span className={`w-2 h-2 rounded-full ${streamDisconnected ? "bg-red-500" : "bg-emerald-500 animate-pulse"}`} />
+      {streamDisconnected ? "Disconnected — live updates paused" : connectedText}
+    </div>
+  );
+
   if (donations.length === 0) return (
     <div>
-      {walletAddress && (
-        <div className="flex items-center gap-2 mb-3 text-xs text-forest-500 font-body">
-          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-          Listening for live donations…
-        </div>
-      )}
+      {renderStreamStatus("Listening for live donations…", "mb-3")}
       <p className="text-center text-[#4b654b] text-sm py-6 font-body">No donations yet — be the first! 🌱</p>
     </div>
   );
 
   return (
     <div className="space-y-2">
-      {walletAddress && (
-        <div className="flex items-center gap-2 mb-1 text-xs text-forest-500 font-body">
-          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-          Live — new donations appear automatically
-        </div>
-      )}
+      {renderStreamStatus("Live — new donations appear automatically", "mb-1")}
       {donations.map((d) => (
         <div
           key={d.id}

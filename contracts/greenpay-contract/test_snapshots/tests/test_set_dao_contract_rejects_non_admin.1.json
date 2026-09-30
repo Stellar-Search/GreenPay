@@ -249,6 +249,18 @@
                         "val": {
                           "u32": 1
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -498,7 +510,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Only admin can set DAO contract' from contract function 'Symbol(obj#103)'"
+                  "string": "caught panic 'Only admin can set DAO contract' from contract function 'Symbol(obj#107)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"

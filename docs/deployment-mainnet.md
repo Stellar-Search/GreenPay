@@ -208,12 +208,12 @@ stellar contract invoke \
   --project_id "project-001" \
   --name "Amazon Reforestation" \
   --wallet <project-wallet-address> \
-  --co2_per_xlm 8500
+  --co2_per_xlm 0
 ```
 
 - `project_id` should be unique and stable (e.g. `amazon-reforestation`).
 - `wallet` is the project's Stellar destination account.
-- `co2_per_xlm` is grams of CO₂ offset per XLM donated.
+- `co2_per_xlm` is a deprecated ABI slot and must be `0`; environmental outcomes use evidence-backed claim attestations.
 
 ### Recommended initial registration process
 
@@ -316,6 +316,8 @@ The Mainnet overlay turns TLS on and wires cert-manager so the certificate is is
 If the cluster already has a `ClusterIssuer`, leave `certManager.enabled: false` (or `--set certManager.enabled=false`) and point `ingress.tls.clusterIssuer` at that existing issuer. The Ingress `tls` block and annotation still render; the chart just does not create a second issuer.
 
 `ALLOWED_ORIGINS` is derived from `ingress.host` and follows `ingress.tls.enabled`, so the backend's CORS origin always matches the scheme actually served. The guard rejects a Mainnet release whose origins are not `https`.
+
+The chart's ConfigMap sets `TRUST_PROXY=true` and `TRUST_PROXY_HOPS=1` because the backend always sits behind the nginx ingress controller. If a cloud load balancer is fronted in front of the ingress (so the request crosses two proxies), set `TRUST_PROXY_HOPS=2` to match; a wrong hop count either collapses every rate-limit bucket onto the proxy address or lets clients forge their address — both are worse than the latency of getting it right. Never set `TRUST_PROXY=true` as a bare boolean: express-rate-limit rejects it as permissive (it would trust any client-supplied `X-Forwarded-For`).
 
 ### Network passphrase
 

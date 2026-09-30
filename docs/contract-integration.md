@@ -1,5 +1,14 @@
 # GreenPay Smart Contract Integration Guide
 
+> **Evidence-first update:** Donation-derived CO2 calculations in older
+> sections of this historical guide are retired. `co2_per_xlm`, donor
+> `co2_offset_grams`, `get_global_co2` and related examples are compatibility
+> fields only; new donations leave them unchanged. Current integrations read
+> ranges from `/api/v1/impact`, recompute the canonical payload SHA-256, and
+> check `verify_impact_attestation` plus revocation state. See
+> [impact accounting](impact-accounting.md) and
+> [ADR-006](adr/ADR-006-evidence-first-impact-claims.md).
+
 This guide enables third-party developers to integrate with the **GreenPay Donation Contract** on Stellar Soroban. You can record donations from your own contracts, query donor statistics, and leverage badge tiers in your dApps.
 
 **Table of Contents**
@@ -22,18 +31,18 @@ The GreenPay contract is a **climate donation tracking system** on Stellar Sorob
 
 - **Records donations** immutably on-chain with project, donor, and amount
 - **Calculates donor badges** based on cumulative lifetime donations
-- **Tracks CO₂ impact** per donation using project-specific offsets
+- **Anchors environmental claim hashes** separately from donation accounting
 - **Enables cross-contract calls** so your contracts can integrate with GreenPay
 
 Your contract can:
 1. Call `donate()` to record a climate donation on behalf of your users
-2. Query `get_donor_stats()` to show a donor's impact and badge tier
+2. Query `get_donor_stats()` to show donation totals and donation badge tier
 3. Emit events when donations are recorded
-4. Build impact-driven features on top of GreenPay data
+4. Build evidence-driven features from the claim API and on-chain anchors
 
 ### Key Advantage
 
-Unlike off-chain databases, all donation data is **cryptographically verified** on the Stellar blockchain. Users can prove their impact independently.
+Unlike off-chain databases, donation data is recorded on Stellar. Users can independently prove payment facts and the integrity/status of separately attested environmental claim payloads.
 
 ---
 
@@ -126,7 +135,7 @@ pub fn donate(
 2. Updates donor's cumulative stats (`total_donated`, `donation_count`)
 3. Recalculates and updates the donor's badge tier
 4. Increments project's `total_raised` and `donor_count`
-5. Calculates CO₂ offset: `co2_offset = (amount / 10_000_000) * project.co2_per_xlm`
+5. Leaves legacy CO₂ accumulators unchanged; outcome claims enter through the evidence and attestation flow
 6. Emits a `donated` event with (donor, project_id, amount, badge, msg_hash)
 
 ### Step 2: Call from Your Soroban Contract
@@ -258,7 +267,7 @@ async function getProjectStats(projectId: string): Promise<any> {
 
 **Functions:**
 - `get_global_total() -> i128` — Total XLM raised platform-wide
-- `get_global_co2() -> i128` — Total CO₂ offset (grams) platform-wide
+- `get_global_co2() -> i128` — Deprecated compatibility accumulator; not updated by evidence-first donations
 - `get_donation_count() -> u32` — Total number of donations recorded
 - `get_project_count() -> u32` — Total projects registered
 
@@ -300,6 +309,55 @@ Badge tiers are **automatically calculated** when a donor's cumulative total exc
 2. **Automatic minting**: When a donor reaches a new tier, an impact NFT is automatically minted for them.
 3. **Governance**: Badge holders (Seedling and above) can vote to verify new projects via community proposals.
 4. **Query anytime**: Use `get_donor_stats()` to check the current badge at any time.
+
+---
+
+## Impact Badge NFTs
+
+Every earned badge is minted as a **real, non-fungible token** — not just an
+internal flag — so it is discoverable, displayable, and transferable by any
+standard Stellar wallet, explorer, or marketplace integration. Each badge is a
+distinct token with a stable `u32` token id, an owner, and full on-chain
+metadata (`ImpactNFT`: `owner`, `tier`, `total_donated` at mint,
+`minted_at_ledger`).
+
+The contract exposes a minimal NFT interface in the spirit of SEP-41 (the
+Soroban Token Interface), with NFT-style operations because each badge is
+non-fungible:
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `name` | `() -> String` | Collection name: `GreenPay Impact Badge` |
+| `symbol` | `() -> String` | Collection symbol: `GPB` |
+| `decimals` | `() -> u32` | Always `0` (badges are indivisible) |
+| `total_supply` | `() -> u32` | Total badge tokens minted |
+| `balance_of` | `(owner: Address) -> u32` | Number of badge tokens `owner` holds |
+| `owner_of` | `(token_id: u32) -> Address` | Current owner of `token_id` |
+| `tokens_of` | `(owner: Address) -> Vec<u32>` | Token ids held by `owner` |
+| `token_metadata` | `(token_id: u32) -> ImpactNFT` | Full on-chain metadata |
+| `token_tier` | `(token_id: u32) -> BadgeTier` | Badge tier of `token_id` |
+| `get_token_id` | `(donor: Address, tier: BadgeTier) -> Option<u32>` | Token id for a donor's badge, if minted |
+| `transfer` | `(from: Address, to: Address, token_id: u32)` | Transfer a badge (owner-authenticated) |
+| `has_nft` | `(donor: Address, tier: BadgeTier) -> bool` | Whether `donor` holds a badge for `tier` |
+
+**How a wallet/explorer integration discovers badges:**
+
+1. Call `name()`, `symbol()`, and `decimals()` for collection metadata.
+2. For a donor, call `balance_of(donor)` and `tokens_of(donor)` to enumerate
+   their badge token ids.
+3. For each token id, call `token_metadata(id)` (full metadata incl. tier and
+   `total_donated`) and `owner_of(id)`.
+
+**Transfer semantics:** `transfer(from, to, token_id)` requires `from`'s
+signature and only succeeds when `from` is the current `owner_of(token_id)`.
+Transferring a badge does **not** change the donor's giving-based badge tier
+(`get_badge`/`get_donor_stats` reflect donation history); the token itself is a
+portable collectible.
+
+**Backward compatibility:** badges minted before this interface existed (legacy
+`ImpactNFT(donor, tier)` markers) are backfilled into the token registry on
+first query, so existing donors' badges are immediately discoverable through
+the interface above without any migration step.
 
 ### Example: Displaying Badges
 

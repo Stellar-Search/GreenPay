@@ -6,16 +6,24 @@ const express = require("express");
 const router  = express.Router();
 const pool = require("../db/pool");
 const { mapProfileRow } = require("../services/store");
-const { createRateLimiter } = require("../middleware/rateLimiter");
+const { createLayeredRateLimiter } = require("../middleware/rateLimiter");
 const { createApiError } = require("../middleware/apiEnvelope");
+const { isValidStellarAddress } = require("../../../shared/validators/stellarValidator");
 
 function validateKey(k) {
-  if (!k || !/^G[A-Z0-9]{55}$/.test(k)) {
+  if (!k || !isValidStellarAddress(k)) {
     throw createApiError(400, "INVALID_PUBLIC_KEY", "Invalid public key");
   }
 }
 
-const profilePostLimiter = createRateLimiter(20, 1, "profile-post");
+// Layered: per-IP floor (shared egresses don't starve each other) + per-wallet
+// cap so profile writes are bounded per identity, not per address.
+const profilePostLimiter = createLayeredRateLimiter({
+  name: "profile-post",
+  windowMinutes: 1,
+  ip: 60,
+  wallet: 20,
+});
 
 router.get("/:publicKey", async (req, res, next) => {
   try {

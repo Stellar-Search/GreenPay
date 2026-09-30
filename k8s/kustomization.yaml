@@ -7,7 +7,12 @@ resources:
   - namespace.yaml
   - configmap.yaml
   - secret.yaml
+  - secret-store.yaml
+  - external-secret.yaml
   - postgres.yaml
+  # Backs the Socket.IO adapter and the realtime replay stream. Without it the
+  # live feed silently reaches only the clients of whichever pod emitted.
+  - redis.yaml
   - backend.yaml
   - frontend.yaml
   - hpa.yaml
@@ -19,6 +24,10 @@ resources:
   - ml-workloads/ml-inference.yaml
   - ml-workloads/ml-training.yaml
   - network-policy.yaml
+  # PodDisruptionBudgets. Selectors verified against the Rollout pod labels in
+  # backend.yaml, frontend.yaml and ml-workloads/. Present in the tree but
+  # never referenced here, so kustomize never created them.
+  - pdb.yaml
 
 components:
   # Deploy the custom scheduler infrastructure.

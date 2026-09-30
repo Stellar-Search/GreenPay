@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
 
+# Default token to read-only; the release job below overrides to the wider
+# set (contents/issues/pull-requests: write) semantic-release needs.
+permissions:
+  contents: read
+
 jobs:
   release:
     name: Semantic Release

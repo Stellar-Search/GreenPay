@@ -1,0 +1,3 @@
+# Intentional compatibility exceptions printed by check-openapi-compatibility.
+# An empty registry means every detected breaking difference fails CI.
+approvedBreakingChanges: []

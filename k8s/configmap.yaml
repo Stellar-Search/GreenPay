@@ -12,6 +12,10 @@ data:
   HORIZON_URL: "https://horizon-testnet.stellar.org"
   ALLOWED_ORIGINS: "https://greenpay.app,http://localhost:3000"
   APP_URL: "http://frontend-svc:3000"
+  # Enables cross-replica Socket.IO delivery and the realtime replay log. With
+  # this unset the backend runs in single-process mode: correct for local
+  # development, silently partial at the two-plus replicas this deploys with.
+  REDIS_URL: "redis://redis-svc:6379"
   EMAIL_FROM: "GreenPay <updates@yourdomain.com>"
   CONTRACT_ID: ""
   # Frontend

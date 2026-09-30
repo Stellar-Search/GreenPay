@@ -2,6 +2,7 @@
 
 const { v4: uuid } = require("uuid");
 const { xlmToStroops, stroopsToXlm } = require("../utils/xlm");
+const { isValidStellarAddress } = require("../../../shared/validators/stellarValidator");
 
 class Command {
   static COMMAND_TYPE = null;
@@ -39,7 +40,7 @@ class RecordDonationCommand extends Command {
   validate() {
     const errors = [];
     if (!this.payload.projectId) errors.push("projectId is required");
-    if (!this.payload.donorAddress || !/^G[A-Z0-9]{55}$/.test(this.payload.donorAddress)) {
+    if (!this.payload.donorAddress || !isValidStellarAddress(this.payload.donorAddress)) {
       errors.push("donorAddress must be a valid Stellar public key");
     }
     if (!this.payload.transactionHash || !/^[a-fA-F0-9]{64}$/.test(this.payload.transactionHash)) {
@@ -96,7 +97,7 @@ class ApplyMatchCommand extends Command {
     const errors = [];
     if (!this.payload.matchId) errors.push("matchId is required");
     if (!this.payload.projectId) errors.push("projectId is required");
-    if (!this.payload.donorAddress || !/^G[A-Z0-9]{55}$/.test(this.payload.donorAddress)) {
+    if (!this.payload.donorAddress || !isValidStellarAddress(this.payload.donorAddress)) {
       errors.push("donorAddress must be a valid Stellar public key");
     }
     const matchAmt = Number.parseFloat(this.payload.matchAmount);
@@ -168,7 +169,7 @@ class CreateMatchOfferCommand extends Command {
   validate() {
     const errors = [];
     if (!this.payload.projectId) errors.push("projectId is required");
-    if (!this.payload.matcherAddress || !/^G[A-Z0-9]{55}$/.test(this.payload.matcherAddress)) {
+    if (!this.payload.matcherAddress || !isValidStellarAddress(this.payload.matcherAddress)) {
       errors.push("matcherAddress must be a valid Stellar public key");
     }
     const cap = Number.parseFloat(this.payload.capXlm);

@@ -272,6 +272,8 @@ dependencies = [
 name = "dao-governance-contract"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
+ "proptest",
  "soroban-sdk",
 ]
 
@@ -517,6 +519,8 @@ checksum = "2bfcf67fea2815c2fc3b90873fae90957be12ff417335dfadc7f52927feb03b2"
 name = "escrow-contract"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
+ "proptest",
  "soroban-sdk",
 ]
 

@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 4712cf87a312cebe5e6c03449e16928bfd97433b1f6243fcef4d04689f87d77a # shrinks to balance = 200000000, first = 36597178, second = 169777137
+cc 9f86639d3ed66cfa814cf8749bedff68f92a3f4ec7b5d6b0b70e267f6cc85710 # shrinks to balance = 300000000, ops = [Lock(411423708), Lock(381723047)]
+cc 645afe7c78405b5fbfe79d38400847729417aeac6457595ccffa3c86b6077840 # shrinks to balance = 100000000, lock_amount = 93476583

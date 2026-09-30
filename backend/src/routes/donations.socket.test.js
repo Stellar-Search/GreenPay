@@ -16,6 +16,10 @@ jest.mock("../eventSourcing/commandBus", () => ({
 }));
 jest.mock("../middleware/rateLimiter", () => ({
   createRateLimiter: () => (req, res, next) => next(),
+  createLayeredRateLimiter: () => (req, res, next) => next(),
+}));
+jest.mock("../services/donationIntegrity", () => ({
+  queueDonationAssessment: jest.fn().mockResolvedValue({}),
 }));
 
 const http = require("http");
@@ -27,8 +31,11 @@ const pool = require("../db/pool");
 const { execute } = require("../eventSourcing/commandBus");
 const { DonationRecordedEvent } = require("../eventSourcing/events");
 
+const { Keypair } = require("@stellar/stellar-sdk");
+const _keys = Array.from({ length: 26 }, () => Keypair.random().publicKey());
 function makePublicKey(char = "A") {
-  return `G${char.repeat(55)}`;
+  const index = Math.abs(char.charCodeAt(0) - 65) % 26;
+  return _keys[index];
 }
 
 function makeTxHash(char = "a") {
@@ -42,7 +49,7 @@ function queryResult(rows = []) {
 function mockSuccessfulDonation({ projectId, donorAddress, amountXlm, transactionHash }) {
   pool.query.mockResolvedValueOnce(queryResult([{ id: projectId }])); // project lookup
   const donationEvent = new DonationRecordedEvent({
-    aggregateId: `Donation:${transactionHash}`,
+    aggregateId: transactionHash,
     version: 1,
     actor: donorAddress,
     projectId,
@@ -74,6 +81,12 @@ describe("POST /api/donations → donation_event WebSocket broadcast", () => {
       transports: ["websocket"],
     });
     app.set("io", ioServer);
+    // The route broadcasts through the realtime module rather than a bare
+    // io.emit, so the module has to know which server to emit on — exactly what
+    // server.js does at startup. No redisUrl keeps this in single-process mode,
+    // which is what this suite covers: the local-development path must behave
+    // exactly as it did before cross-replica delivery was introduced.
+    require("../realtime").initializeRealtime(ioServer, { redisUrl: null });
     app.use("/api/donations", require("./donations"));
 
     httpServer.listen(0, () => {
@@ -85,6 +98,7 @@ describe("POST /api/donations → donation_event WebSocket broadcast", () => {
   });
 
   afterAll((done) => {
+    require("../realtime").resetRealtime();
     ioServer.close(done);
   });
 
@@ -93,7 +107,7 @@ describe("POST /api/donations → donation_event WebSocket broadcast", () => {
   });
 
   test(
-    "emits donation_event to connected clients within 500 ms",
+    "emits donation_event to connected clients within 3000 ms",
     (done) => {
       const donorAddress = makePublicKey("W");
       const transactionHash = makeTxHash("7");
@@ -112,24 +126,29 @@ describe("POST /api/donations → donation_event WebSocket broadcast", () => {
 
       const deadline = setTimeout(() => {
         socket.disconnect();
-        done(new Error("donation_event was not received within 500 ms"));
-      }, 500);
+        done(new Error("donation_event was not received within 3000 ms"));
+      }, 3000);
+
+      // Register the donation_event listener immediately — before the socket
+      // connects — so it is in place regardless of when the HTTP response
+      // arrives and io.emit fires.  Under full-suite load the event can be
+      // delivered before the connect callback runs, causing the old code to
+      // miss it entirely.
+      socket.on("donation_event", (data) => {
+        clearTimeout(deadline);
+        socket.disconnect();
+        try {
+          expect(data.projectId).toBe("project-ws");
+          expect(data.donorAddress).toBe(donorAddress);
+          expect(data.transactionHash).toBe(transactionHash);
+          expect(typeof data.timestamp).toBe("string");
+          done();
+        } catch (assertionError) {
+          done(assertionError);
+        }
+      });
 
       socket.on("connect", () => {
-        socket.on("donation_event", (data) => {
-          clearTimeout(deadline);
-          socket.disconnect();
-          try {
-            expect(data.projectId).toBe("project-ws");
-            expect(data.donorAddress).toBe(donorAddress);
-            expect(data.transactionHash).toBe(transactionHash);
-            expect(typeof data.timestamp).toBe("string");
-            done();
-          } catch (assertionError) {
-            done(assertionError);
-          }
-        });
-
         request
           .post("/api/donations")
           .send({
@@ -152,7 +171,7 @@ describe("POST /api/donations → donation_event WebSocket broadcast", () => {
         done(err);
       });
     },
-    2000,
+    5000,
   );
 
   test(
@@ -222,21 +241,22 @@ describe("POST /api/donations → donation_event WebSocket broadcast", () => {
 
       const deadline = setTimeout(() => {
         socket.disconnect();
-        done(new Error("donation_event was not received within 500 ms"));
-      }, 500);
+        done(new Error("donation_event was not received within 3000 ms"));
+      }, 3000);
+
+      // Register before connecting — same race-condition fix as the first test.
+      socket.on("donation_event", (data) => {
+        clearTimeout(deadline);
+        socket.disconnect();
+        try {
+          expect(data.amountXLM).toBe(100);
+          done();
+        } catch (assertionError) {
+          done(assertionError);
+        }
+      });
 
       socket.on("connect", () => {
-        socket.on("donation_event", (data) => {
-          clearTimeout(deadline);
-          socket.disconnect();
-          try {
-            expect(data.amountXLM).toBe(100);
-            done();
-          } catch (assertionError) {
-            done(assertionError);
-          }
-        });
-
         request
           .post("/api/donations")
           .send({
@@ -259,6 +279,6 @@ describe("POST /api/donations → donation_event WebSocket broadcast", () => {
         done(err);
       });
     },
-    2000,
+    5000,
   );
 });

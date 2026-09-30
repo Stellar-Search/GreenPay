@@ -352,6 +352,30 @@
                             }
                           ]
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "JobCount"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -1263,7 +1287,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Only the client can cancel this job' from contract function 'Symbol(obj#291)'"
+                  "string": "caught panic 'Only the client can cancel this job' from contract function 'Symbol(obj#307)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"

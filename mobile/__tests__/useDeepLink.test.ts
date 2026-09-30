@@ -26,6 +26,10 @@ jest.mock('expo-linking', () => ({
   },
 }));
 
+jest.mock('../utils/recurringDonations', () => ({
+  getRecurringDonation: jest.fn().mockResolvedValue(null),
+}));
+
 import { useDeepLink } from '../hooks/useDeepLink';
 
 const wrapper = ({ children }: { children: React.ReactNode }) =>

@@ -4,6 +4,22 @@ const { v4: uuid } = require("uuid");
 const { getCorrelationId } = require("../utils/logger");
 const { xlmToStroops, stroopsToXlm } = require("../utils/xlm");
 
+const LEGACY_DONATION_MIGRATED = "MigratedDonation";
+
+/**
+ * The single place that builds an event stream id from an aggregate type and
+ * aggregate id. Every reader (EventStoreService.getStream/getStreamVersion,
+ * commandBus.loadAggregateStream) must build the id it queries with through
+ * this same helper — and every writer must pass `aggregateId` UNPREFIXED
+ * (e.g. a bare transaction hash or UUID, never "Donation:<hash>") so this is
+ * the only place the "<type>:<id>" prefix is ever added. Prefixing aggregateId
+ * itself before it reaches a DomainEvent double-prefixes the stored stream_id
+ * and silently breaks every stream read.
+ */
+function buildStreamId(aggregateType, aggregateId) {
+  return `${aggregateType}:${aggregateId}`;
+}
+
 class DomainEvent {
   static AGGREGATE_TYPE = null;
   static EVENT_TYPE = null;
@@ -27,7 +43,7 @@ class DomainEvent {
   }
 
   getStreamId() {
-    return `${this.aggregateType}:${this.aggregateId}`;
+    return buildStreamId(this.aggregateType, this.aggregateId);
   }
 
   toRow() {
@@ -251,7 +267,7 @@ class ProfileCreatedEvent extends DomainEvent {
 
 class MigratedDonationEvent extends DomainEvent {
   static AGGREGATE_TYPE = "MigratedDonation";
-  static EVENT_TYPE = "LegacyDonationMigrated";
+  static EVENT_TYPE = LEGACY_DONATION_MIGRATED;
 
   constructor({ originalId, donationId, version, actor, originalCreatedAt, projectId, donorAddress, amountXlm, currency, message, transactionHash, isMatch = false, matchId = null, originalDonationTxHash = null }) {
     super({ aggregateId: donationId, version, actor });
@@ -380,7 +396,7 @@ function fromPayload(payload) {
       displayName: data.displayName,
       bio: data.bio,
     });
-  case "LegacyDonationMigrated":
+  case LEGACY_DONATION_MIGRATED:
     return new MigratedDonationEvent({
       originalId: payload.originalId,
       donationId: payload.aggregateId,
@@ -404,6 +420,7 @@ function fromPayload(payload) {
 }
 
 module.exports = {
+  LEGACY_DONATION_MIGRATED,
   DomainEvent,
   DonationRecordedEvent,
   MatchAppliedEvent,
@@ -415,4 +432,5 @@ module.exports = {
   ProfileCreatedEvent,
   MigratedDonationEvent,
   fromPayload,
+  buildStreamId,
 };

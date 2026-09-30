@@ -36,6 +36,22 @@ jest.mock('expo-linking', () => ({
 
 jest.mock('expo-status-bar', () => ({ StatusBar: () => null }));
 
+jest.mock('expo-notifications', () => ({
+  setNotificationHandler: jest.fn(),
+  getPermissionsAsync: jest.fn().mockResolvedValue({ status: 'granted' }),
+  requestPermissionsAsync: jest.fn().mockResolvedValue({ status: 'granted' }),
+  scheduleNotificationAsync: jest.fn().mockResolvedValue('notif-1'),
+  cancelScheduledNotificationAsync: jest.fn(),
+  addNotificationResponseReceivedListener: jest.fn(() => ({ remove: jest.fn() })),
+}));
+
+jest.mock('../utils/recurringDonations', () => ({
+  createRecurringDonation: jest.fn(),
+  completeRecurringCycle: jest.fn(),
+  getRecurringDonation: jest.fn().mockResolvedValue(null),
+  requestNotificationPermissionsIfNeeded: jest.fn().mockResolvedValue(true),
+}));
+
 const MOCK_PROJECT = {
   id: 'proj-1',
   name: 'Amazon Reforestation',
@@ -44,7 +60,17 @@ const MOCK_PROJECT = {
   walletAddress: 'GB3SNSNLN74VSNSEL3C7NDHNZLPK7DO5JROSZ5DDS4OWVAJNAKAWWS2S',
 };
 
+import * as SecureStore from 'expo-secure-store';
 import DonateScreen from '../app/donate/[id]';
+
+// The expo-secure-store manual mock keeps one module-level store for the
+// whole file. Without clearing it, a wallet connected by one test stays
+// connected in the next, so WalletConnect renders its connected badge and
+// the 'Connect Wallet' button the helper drives is no longer present.
+beforeEach(() => {
+  const store = (SecureStore as unknown as { __store: Record<string, string> }).__store;
+  Object.keys(store).forEach((k) => delete store[k]);
+});
 
 // app/donate/[id].tsx reads theme colors via useTheme(), which requires a
 // ThemeProvider ancestor.
@@ -118,14 +144,17 @@ describe('DonateScreen – biometric auth gate', () => {
 // MOCK_PROJECT.walletAddress above.
 const DONOR_PUBLIC_KEY = 'GA4JHZX455IELW533547WFB5LV57LLSUJURFFIIYG7AV4HTQNW4W4FUD';
 
-/** Drives the "Connect Wallet" Alert.alert prompt exactly like a user would. */
-async function connectWallet(getByText: any, alertSpy: jest.SpyInstance, publicKey: string) {
+/** Drives the "Connect Wallet" flow exactly like a user would. */
+async function connectWallet(getByText: any, getByPlaceholderText: any, publicKey: string) {
   fireEvent.press(getByText('Connect Wallet'));
-  const call = alertSpy.mock.calls.find((c) => c[0] === 'Connect Wallet');
-  const buttons = call?.[2] as Array<{ text: string; onPress?: (input: any) => void }>;
-  const okButton = buttons.find((b) => b.text === 'OK');
+  // The address has to be committed in its own act() so WalletConnect
+  // re-renders before the press below. Doing both in one act() leaves
+  // handleConnect closing over the previous (empty) input value.
   await act(async () => {
-    await okButton?.onPress?.(publicKey);
+    fireEvent.changeText(getByPlaceholderText('GABC...XYZ'), publicKey);
+  });
+  await act(async () => {
+    fireEvent.press(getByText('Connect'));
   });
 }
 
@@ -164,7 +193,7 @@ describe('DonateScreen – offline queueing', () => {
     const { getByText, getByPlaceholderText } = renderDonateScreen();
     await waitFor(() => expect(getByText('Donate to Amazon Reforestation')).toBeTruthy());
 
-    await connectWallet(getByText, alertSpy, DONOR_PUBLIC_KEY);
+    await connectWallet(getByText, getByPlaceholderText, DONOR_PUBLIC_KEY);
     fireEvent.changeText(getByPlaceholderText('1.00'), '7');
     // Type a secret key too — it must never be persisted, even if present in the field.
     fireEvent.changeText(getByPlaceholderText('S...'), 'SBOGUSSECRETKEYFORTESTPURPOSESONLYXXXXXXXXXXXXXXXXXXXX');
@@ -207,7 +236,12 @@ describe('DonateScreen – offline queueing', () => {
 // the real signing path (only `Server` is mocked, per @stellar/stellar-sdk
 // jest.mock above), unlike the offline-queueing tests which never reach
 // Keypair.fromSecret().
-const REAL_KEYPAIR = Keypair.fromSecret('SBI47VVMEHV2IC6NKD6RYGOURFGZK5CN7ARSODC4VDKGJZM7DYAQLJIB');
+//
+// Derived from a fixed all-zero seed rather than a literal secret string, so
+// the suite stays deterministic without committing a usable Stellar secret to
+// the repository. Anyone can reproduce it: Keypair.fromRawEd25519Seed of 32
+// zero bytes.
+const REAL_KEYPAIR = Keypair.fromRawEd25519Seed(Buffer.alloc(32));
 const REAL_PUBLIC_KEY = REAL_KEYPAIR.publicKey();
 
 describe('DonateScreen – completing a queued donation ("Complete now")', () => {
@@ -255,7 +289,7 @@ describe('DonateScreen – completing a queued donation ("Complete now")', () =>
     const { getByText, getByPlaceholderText } = renderDonateScreen();
     await waitFor(() => expect(getByPlaceholderText('1.00').props.value).toBe('5.0000000'));
 
-    await connectWallet(getByText, alertSpy, REAL_PUBLIC_KEY);
+    await connectWallet(getByText, getByPlaceholderText, REAL_PUBLIC_KEY);
     fireEvent.changeText(getByPlaceholderText('S...'), REAL_KEYPAIR.secret());
     fireEvent.press(getByText(/🌱 Donate/));
 
@@ -286,7 +320,7 @@ describe('DonateScreen – completing a queued donation ("Complete now")', () =>
     const { getByText, getByPlaceholderText } = renderDonateScreen();
     await waitFor(() => expect(getByPlaceholderText('1.00').props.value).toBe('5.0000000'));
 
-    await connectWallet(getByText, alertSpy, REAL_PUBLIC_KEY);
+    await connectWallet(getByText, getByPlaceholderText, REAL_PUBLIC_KEY);
     fireEvent.changeText(getByPlaceholderText('S...'), REAL_KEYPAIR.secret());
     fireEvent.press(getByText(/🌱 Donate/));
 
@@ -369,7 +403,7 @@ describe('DonateScreen – issue #359: online donation Horizon-success / backend
       await waitFor(() => expect(getByText('Donate to Amazon Reforestation')).toBeTruthy());
 
       // Connect wallet and submit without a prior queueId param.
-      await connectWallet(getByText, alertSpy, REAL_PUBLIC_KEY);
+      await connectWallet(getByText, getByPlaceholderText, REAL_PUBLIC_KEY);
       fireEvent.changeText(getByPlaceholderText('1.00'), '3');
       fireEvent.changeText(getByPlaceholderText('S...'), REAL_KEYPAIR.secret());
       fireEvent.press(getByText(/🌱 Donate/));
@@ -447,7 +481,7 @@ describe('DonateScreen – issue #359: online donation Horizon-success / backend
     const { getByText, getByPlaceholderText } = renderDonateScreen();
     await waitFor(() => expect(getByText('Donate to Amazon Reforestation')).toBeTruthy());
 
-    await connectWallet(getByText, alertSpy, REAL_PUBLIC_KEY);
+    await connectWallet(getByText, getByPlaceholderText, REAL_PUBLIC_KEY);
     fireEvent.changeText(getByPlaceholderText('1.00'), '2');
     fireEvent.changeText(getByPlaceholderText('S...'), REAL_KEYPAIR.secret());
     fireEvent.press(getByText(/🌱 Donate/));

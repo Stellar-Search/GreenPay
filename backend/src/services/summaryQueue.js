@@ -10,9 +10,11 @@ const crypto = require("crypto");
 const { v4: uuid } = require("uuid");
 const PgBoss = require("pg-boss");
 const pool = require("../db/pool");
+const { env } = require("../config/env");
 const { generateProjectSummary } = require("./claude");
 const { logAdminAction } = require("./audit");
 const { logger: rootLogger, getCorrelationId, runWithCorrelationId } = require("../utils/logger");
+const { publish } = require("../realtime");
 
 const logger = rootLogger.child({ service: "summary-queue" });
 
@@ -20,8 +22,6 @@ const QUEUE = "ai-summary";
 const DEAD_LETTER_QUEUE = "ai-summary-dlq";
 const RETRY_LIMIT = 3;
 const RETRY_DELAY = 10;
-
-const ALERT_WEBHOOK_URL = process.env.SUMMARY_FAILURE_ALERT_WEBHOOK_URL || "";
 
 let boss = null;
 
@@ -33,8 +33,7 @@ let boss = null;
  * @param {import('socket.io').Server} io  Socket.IO server instance
  */
 async function start(io) {
-  const connectionString =
-    process.env.DATABASE_URL || "postgres://postgres:postgres@localhost:5432/greenpay";
+  const connectionString = env.databaseUrl;
 
   boss = new PgBoss(connectionString);
 
@@ -114,8 +113,11 @@ async function processSummaryJob(io, job) {
     const row = updated.rows[0];
     if (!row) return; // project was deleted while job was queued
 
+    // Same cross-replica problem as the donation feed: the pod running this
+    // queue worker is rarely the pod holding the socket of the operator waiting
+    // on the summary.
     if (io) {
-      io.emit("ai_summary_ready", {
+      await publish("ai_summary_ready", {
         projectId,
         aiSummary:            row.ai_summary,
         aiSummaryGeneratedAt: new Date(row.ai_summary_generated_at).toISOString(),
@@ -186,13 +188,13 @@ async function recordPermanentFailure(job) {
  * whichever alerting provider is wired up later.
  */
 async function notifyRepeatedFailure({ projectId, errorMessage, retryLimit }) {
-  if (!ALERT_WEBHOOK_URL) {
+  if (!env.summaryFailureAlertWebhookUrl) {
     logger.warn({ msg: "SUMMARY_FAILURE_ALERT_WEBHOOK_URL not set — skipping alert", projectId });
     return;
   }
 
   try {
-    await fetch(ALERT_WEBHOOK_URL, {
+    await fetch(env.summaryFailureAlertWebhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

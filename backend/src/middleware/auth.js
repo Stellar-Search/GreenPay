@@ -1,9 +1,10 @@
 "use strict";
 const jwt = require("jsonwebtoken");
 const { createApiError } = require("./apiEnvelope");
+const { env } = require("../config/env");
 
 function getSecret() {
-  return process.env.JWT_SECRET || "dev-secret-do-not-use-in-prod";
+  return env.jwtSecret;
 }
 
 function signToken(payload, expiresIn) {

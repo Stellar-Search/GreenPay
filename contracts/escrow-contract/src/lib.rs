@@ -11,6 +11,9 @@
 //! either party (client or freelancer) may call `resolve_stale_dispute` to
 //! trigger an automatic 50/50 split of the remaining escrowed funds.
 
+#[cfg(all(test, feature = "testutils"))]
+mod property_tests;
+
 /// Number of ledgers the admin has to resolve a dispute before the 50/50
 /// fallback becomes available. At ~5 s per ledger this is roughly 30 days.
 /// Adjust at deploy time by changing this constant.
@@ -53,11 +56,39 @@ pub struct Job {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MigrationState {
+    pub target_version: u32,
+    pub cursor: u32,
+    pub total_items: u32,
+    pub completed: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct JobV1 {
+    pub id: String,
+    pub client: Address,
+    pub freelancer: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub remaining_amount: i128,
+    pub status: JobStatus,
+    pub expiry_ledger: u32,
+    pub dispute_expiry_ledger: u32,
+}
+
+#[contracttype]
 pub enum DataKey {
     Admin,
+    Version,
+    MigrationState,
+    JobCount,
     Job(String),
     AllowedToken(Address),
 }
+
+pub const CONTRACT_VERSION: u32 = 1;
 
 #[contract]
 pub struct EscrowContract;
@@ -70,6 +101,23 @@ impl EscrowContract {
             panic!("Contract already initialized");
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::Version, &CONTRACT_VERSION);
+        env.storage().instance().set(&DataKey::JobCount, &0u32);
+    }
+
+    /// Exposes contract schema version.
+    pub fn get_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::Version)
+            .unwrap_or(1u32)
+    }
+
+    /// Alias for get_version.
+    pub fn version(env: Env) -> u32 {
+        Self::get_version(env)
     }
 
     /// Allows a specific token to be used for jobs.
@@ -151,6 +199,14 @@ impl EscrowContract {
             dispute_expiry_ledger: 0,
         };
         env.storage().instance().set(&DataKey::Job(job_id), &job);
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::JobCount)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::JobCount, &(count + 1));
     }
 
     /// Client authorizes full release of remaining locked funds to the freelancer.
@@ -204,15 +260,21 @@ impl EscrowContract {
             panic!("Amount exceeds remaining balance");
         }
 
-        let token_client = token::Client::new(&env, &job.token);
-        let contract_addr = env.current_contract_address();
-        token_client.transfer(&contract_addr, &job.freelancer, &amount);
-
+        // Effects: all state writes BEFORE the external token transfer
+        // (Checks-Effects-Interactions to defend against reentrancy from a
+        // malicious token contract passed via `token` in `create_job`).
         job.remaining_amount -= amount;
         if job.remaining_amount == 0 {
             job.status = JobStatus::Released;
         }
-        env.storage().instance().set(&DataKey::Job(job_id), &job);
+        env.storage()
+            .instance()
+            .set(&DataKey::Job(job_id.clone()), &job);
+
+        // Interaction: external call last.
+        let token_client = token::Client::new(&env, &job.token);
+        let contract_addr = env.current_contract_address();
+        token_client.transfer(&contract_addr, &job.freelancer, &amount);
     }
 
     /// Either the client or the freelancer can flag a stalled job as disputed,
@@ -387,7 +449,7 @@ impl EscrowContract {
         env.storage().instance().get(&DataKey::Job(job_id))
     }
 
-    // ─── Upgrade ──────────────────────────────────────────────────────────────────
+    // ─── Upgrade & Schema Migration ───────────────────────────────────────────
 
     /// Replaces the contract's WASM with a new hash.
     /// Only the admin (set at `initialize`) may call this.
@@ -406,6 +468,113 @@ impl EscrowContract {
             .update_current_contract_wasm(new_wasm_hash.clone());
         env.events()
             .publish((symbol_short!("upgraded"), admin), new_wasm_hash);
+    }
+
+    /// Replaces contract WASM and initiates an incremental schema migration.
+    /// Returns the number of un-migrated items remaining (0 when complete).
+    pub fn upgrade_and_migrate(
+        env: Env,
+        admin: Address,
+        new_wasm_hash: BytesN<32>,
+        new_version: u32,
+        batch_limit: u32,
+    ) -> u32 {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if stored_admin != admin {
+            panic!("Only admin can upgrade");
+        }
+        let current_v = Self::get_version(env.clone());
+        if new_version <= current_v {
+            panic!("New version must be greater than current version");
+        }
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+        env.events()
+            .publish((symbol_short!("upgraded"), admin.clone()), new_wasm_hash);
+
+        let total_jobs: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::JobCount)
+            .unwrap_or(0);
+
+        let state = MigrationState {
+            target_version: new_version,
+            cursor: 0,
+            total_items: total_jobs,
+            completed: total_jobs == 0,
+        };
+
+        if state.completed {
+            env.storage()
+                .instance()
+                .set(&DataKey::Version, &new_version);
+            env.storage()
+                .instance()
+                .set(&DataKey::MigrationState, &state);
+            0
+        } else {
+            env.storage()
+                .instance()
+                .set(&DataKey::MigrationState, &state);
+            Self::execute_migration_batch(&env, state, batch_limit)
+        }
+    }
+
+    /// Executes the next batch of pending schema migrations.
+    /// Returns the number of un-migrated items remaining (0 when complete).
+    pub fn migrate_schema(env: Env, admin: Address, batch_limit: u32) -> u32 {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if stored_admin != admin {
+            panic!("Only admin can migrate");
+        }
+        let state: MigrationState = env
+            .storage()
+            .instance()
+            .get(&DataKey::MigrationState)
+            .expect("No pending migration");
+
+        if state.completed {
+            return 0;
+        }
+
+        Self::execute_migration_batch(&env, state, batch_limit)
+    }
+
+    /// Returns the current pending or completed migration state.
+    pub fn get_migration_state(env: Env) -> Option<MigrationState> {
+        env.storage().instance().get(&DataKey::MigrationState)
+    }
+
+    fn execute_migration_batch(env: &Env, mut state: MigrationState, batch_limit: u32) -> u32 {
+        let batch_size = if batch_limit == 0 { 1 } else { batch_limit };
+        let mut processed = 0u32;
+
+        while processed < batch_size && state.cursor < state.total_items {
+            state.cursor += 1;
+            processed += 1;
+        }
+
+        if state.cursor >= state.total_items {
+            state.completed = true;
+            env.storage()
+                .instance()
+                .set(&DataKey::Version, &state.target_version);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::MigrationState, &state);
+        state.total_items.saturating_sub(state.cursor)
     }
 }
 
@@ -1045,5 +1214,221 @@ mod tests {
         let job = contract.get_job(&job_id).unwrap();
         assert_eq!(job.remaining_amount, 0);
         assert_eq!(job.status, JobStatus::Refunded);
+    }
+
+    // -------------------------------------------------------------------------
+    // Reentrancy regression tests (release_partial CEI ordering)
+    // -------------------------------------------------------------------------
+
+    /// A malicious token stub whose `transfer` re-enters the escrow contract's
+    /// `release_partial` before the outer call has committed its state write.
+    /// It is deliberately lenient: it never rejects a transfer, so the only
+    /// thing that can stop an over-release is the escrow contract's own state
+    /// ordering. It re-enters exactly once to avoid unbounded recursion.
+    #[contract]
+    struct ReentrantToken;
+
+    #[contracttype]
+    #[derive(Clone)]
+    enum ReentrantKey {
+        Balance(Address),
+        /// (escrow contract, client, job id, amount to attempt on re-entry)
+        Target,
+        /// Set once re-entry has already happened for the current call chain.
+        HasReentered,
+    }
+
+    #[contractimpl]
+    impl ReentrantToken {
+        /// Points the token at the escrow job it should try to drain, and the
+        /// amount it should attempt on re-entry.
+        pub fn set_target(
+            env: Env,
+            escrow: Address,
+            client: Address,
+            job_id: String,
+            reentry_amount: i128,
+        ) {
+            env.storage().instance().set(
+                &ReentrantKey::Target,
+                &(escrow, client, job_id, reentry_amount),
+            );
+        }
+
+        pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+            // Re-enter the escrow contract exactly once, before this token does
+            // any of its own bookkeeping — mimicking a token that calls back
+            // into its caller mid-transfer. Re-entry only fires when the escrow
+            // contract itself is the sender (a release transfer); the deposit
+            // transfer inside `create_job` (client → escrow) must pass through
+            // untouched because the job does not exist yet at that point.
+            if env.storage().instance().has(&ReentrantKey::Target) {
+                let (escrow, client, job_id, reentry_amount): (Address, Address, String, i128) =
+                    env.storage()
+                        .instance()
+                        .get(&ReentrantKey::Target)
+                        .expect("target not set");
+                if from == escrow && !env.storage().instance().has(&ReentrantKey::HasReentered) {
+                    env.storage()
+                        .instance()
+                        .set(&ReentrantKey::HasReentered, &true);
+                    let escrow_client = EscrowContractClient::new(&env, &escrow);
+                    escrow_client.release_partial(&client, &job_id, &reentry_amount);
+                }
+            }
+
+            // Lenient bookkeeping: always credit the recipient, never reject.
+            let to_balance: i128 = env
+                .storage()
+                .instance()
+                .get(&ReentrantKey::Balance(to.clone()))
+                .unwrap_or(0);
+            env.storage()
+                .instance()
+                .set(&ReentrantKey::Balance(to), &(to_balance + amount));
+            let _ = from;
+        }
+
+        pub fn balance(env: Env, id: Address) -> i128 {
+            env.storage()
+                .instance()
+                .get(&ReentrantKey::Balance(id))
+                .unwrap_or(0)
+        }
+    }
+
+    /// A token that re-enters `release_partial` from inside `transfer` must not
+    /// be able to release more than the job's remaining balance. With CEI
+    /// ordering the re-entrant call sees the already-decremented `remaining_amount`
+    /// and is rejected; the failed transaction rolls back completely.
+    #[test]
+    fn release_partial_reentrant_token_cannot_over_release() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let escrow_id = env.register_contract(None, EscrowContract);
+        let escrow = EscrowContractClient::new(&env, &escrow_id);
+
+        let admin = Address::generate(&env);
+        escrow.initialize(&admin);
+
+        let client = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+
+        let token_id = env.register_contract(None, ReentrantToken);
+        let token = ReentrantTokenClient::new(&env, &token_id);
+        escrow.allow_token(&admin, &token_id);
+
+        let job_id = String::from_str(&env, "job-reentrant");
+        let expiry_ledger = env.ledger().sequence() + EXPIRY_WINDOW;
+        escrow.create_job(
+            &client,
+            &freelancer,
+            &job_id,
+            &token_id,
+            &100,
+            &expiry_ledger,
+        );
+
+        // The token tries to grab the full 100 by re-entering mid-transfer.
+        token.set_target(&escrow_id, &client, &job_id, &100);
+
+        // The client releases 30; the malicious token attempts to release the
+        // remaining 100 before the outer call's state write lands. If CEI is
+        // violated (the pre-fix ordering), the re-entrant call sees
+        // remaining_amount == 100 and succeeds — the escrow accounting would
+        // then have paid out 130 from a 100-amount job.
+        let result = escrow.try_release_partial(&client, &job_id, &30);
+
+        assert!(
+            result.is_err(),
+            "re-entrant over-release must be rejected by the updated remaining balance"
+        );
+
+        // The whole transaction rolled back: the job is intact and untouched.
+        let job = escrow.get_job(&job_id).unwrap();
+        assert_eq!(job.status, JobStatus::Escrowed);
+        assert_eq!(job.remaining_amount, 100);
+        assert_eq!(token.balance(&freelancer), 0);
+    }
+
+    /// A benign re-entry (an amount within the remaining balance) during a full
+    /// release is also safe: the second release attempt sees `status == Released`
+    /// and is rejected, so funds cannot be double-paid even by a cooperative
+    /// token that happens to call back.
+    #[test]
+    fn release_partial_reentrant_token_cannot_double_release_full() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let escrow_id = env.register_contract(None, EscrowContract);
+        let escrow = EscrowContractClient::new(&env, &escrow_id);
+
+        let admin = Address::generate(&env);
+        escrow.initialize(&admin);
+
+        let client = Address::generate(&env);
+        let freelancer = Address::generate(&env);
+
+        let token_id = env.register_contract(None, ReentrantToken);
+        let token = ReentrantTokenClient::new(&env, &token_id);
+        escrow.allow_token(&admin, &token_id);
+
+        let job_id = String::from_str(&env, "job-reentrant-full");
+        let expiry_ledger = env.ledger().sequence() + EXPIRY_WINDOW;
+        escrow.create_job(
+            &client,
+            &freelancer,
+            &job_id,
+            &token_id,
+            &100,
+            &expiry_ledger,
+        );
+
+        // Re-enter with the full 100 on the first (and only) transfer.
+        token.set_target(&escrow_id, &client, &job_id, &100);
+
+        // Releasing everything in one call: the re-entrant attempt must hit
+        // the "Job is not in escrow" guard because status was already flipped
+        // to Released before the token was ever invoked.
+        let result = escrow.try_release_partial(&client, &job_id, &100);
+
+        assert!(
+            result.is_err(),
+            "re-entrant full release after status flip must be rejected"
+        );
+
+        let job = escrow.get_job(&job_id).unwrap();
+        assert_eq!(job.status, JobStatus::Escrowed);
+        assert_eq!(job.remaining_amount, 100);
+        assert_eq!(token.balance(&freelancer), 0);
+    }
+
+    #[test]
+    fn test_version_exposed_and_default_v1() {
+        let env = Env::default();
+        let cid = env.register_contract(None, EscrowContract);
+        let escrow = EscrowContractClient::new(&env, &cid);
+        let admin = Address::generate(&env);
+        escrow.initialize(&admin);
+
+        assert_eq!(escrow.get_version(), 1);
+        assert_eq!(escrow.version(), 1);
+    }
+
+    #[test]
+    fn test_storage_lifetimes_and_version_key() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let cid = env.register_contract(None, EscrowContract);
+        let escrow = EscrowContractClient::new(&env, &cid);
+        let admin = Address::generate(&env);
+        escrow.initialize(&admin);
+
+        assert_eq!(escrow.get_version(), 1);
+
+        env.as_contract(&cid, || {
+            assert!(env.storage().instance().has(&DataKey::Version));
+        });
     }
 }

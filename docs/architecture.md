@@ -75,11 +75,16 @@ Donations go straight to the project wallet via a standard Stellar payment. The 
 ### Backend as optional layer
 The Node.js backend provides project metadata, the leaderboard, and the update feed. If the backend is unavailable, core donations still work — users just can't see the leaderboard or feed.
 
-### Soroban as the source of truth
-The contract is the immutable, auditable record of all donations. Anyone can verify total raised, donor stats, and CO₂ offsets without trusting the backend.
+### Two auditable records, never one invented conversion
+The contract is the immutable, auditable record of donations and total raised.
+Environmental outcomes are separate project-level claims with methodology,
+measurement period, baseline and uncertainty in PostgreSQL. An approved
+verifier anchors the canonical claim SHA-256 and revocation state in Soroban.
+Anyone can verify payload integrity without treating a donation amount as a
+physical measurement.
 
 ### Community features
-The leaderboard and donation feed create social accountability — donors can see their rank and impact publicly, encouraging more giving.
+The leaderboard and donation feed create social accountability — donors can see their rank and donation history publicly. Environmental outcome claims remain on their evidence/provenance surfaces and are not used to rank donors.
 
 ## Security
 

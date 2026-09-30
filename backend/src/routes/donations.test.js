@@ -20,6 +20,10 @@ jest.mock("../eventSourcing/commandBus", () => ({
 
 jest.mock("../middleware/rateLimiter", () => ({
   createRateLimiter: () => (req, res, next) => next(),
+  createLayeredRateLimiter: () => (req, res, next) => next(),
+}));
+jest.mock("../services/donationIntegrity", () => ({
+  queueDonationAssessment: jest.fn().mockResolvedValue({}),
 }));
 
 const pool = require("../db/pool");
@@ -28,8 +32,11 @@ const { computeBadges } = require("../services/store");
 const { DonationRecordedEvent } = require("../eventSourcing/events");
 const { recordDonation } = require("./donations");
 
+const { Keypair } = require("@stellar/stellar-sdk");
+const _keys = Array.from({ length: 26 }, () => Keypair.random().publicKey());
 function makePublicKey(char = "A") {
-  return `G${char.repeat(55)}`;
+  const index = Math.abs(char.charCodeAt(0) - 65) % 26;
+  return _keys[index];
 }
 
 function makeTxHash(char = "a") {
@@ -42,7 +49,7 @@ function queryResult(rows = []) {
 
 function makeDonationRecordedEvent({ projectId, donorAddress, amountXlm, transactionHash, currency = "XLM", message = null }) {
   return new DonationRecordedEvent({
-    aggregateId: `Donation:${transactionHash}`,
+    aggregateId: transactionHash,
     version: 1,
     actor: donorAddress,
     projectId,

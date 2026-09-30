@@ -6,6 +6,11 @@ const { apiEnvelope, errorHandler } = require("../middleware/apiEnvelope");
 
 jest.mock("../middleware/rateLimiter", () => ({
   createRateLimiter: () => (req, res, next) => next(),
+  createLayeredRateLimiter: () => (req, res, next) => next(),
+}));
+
+jest.mock("../middleware/progressiveDelay", () => ({
+  createProgressiveDelay: () => (req, res, next) => next(),
 }));
 
 jest.mock("../db/pool", () => ({
@@ -35,6 +40,25 @@ function buildApp() {
 function adminToken() {
   return signToken({ role: "admin", sub: "admin" }, "1h");
 }
+
+describe("GET /api/admin/api-usage", () => {
+  it("requires an admin session and returns bounded adoption series metadata", async () => {
+    await request(buildApp()).get("/api/admin/api-usage").expect(401);
+
+    const response = await request(buildApp())
+      .get("/api/admin/api-usage")
+      .set("Authorization", `Bearer ${adminToken()}`)
+      .expect(200);
+
+    expect(response.body.data).toEqual(expect.objectContaining({
+      scope: "process",
+      startedAt: expect.any(String),
+      generatedAt: expect.any(String),
+      durableSource: "structured logs where event=api_request",
+      series: expect.any(Array),
+    }));
+  });
+});
 
 describe("POST /api/admin/login", () => {
   let app;
@@ -68,10 +92,28 @@ describe("POST /api/admin/login", () => {
   });
 
   it("returns 503 when ADMIN_PASSWORD is not configured", async () => {
+    const saved = process.env.ADMIN_PASSWORD;
     delete process.env.ADMIN_PASSWORD;
-    const res = await request(app).post("/api/admin/login").send({ username: "admin", password: "testpass" });
+
+    // config/env validates and freezes the environment the first time it is
+    // required, so clearing the variable on an already-built router has no
+    // effect. Rebuild it in a fresh module registry to observe the change.
+    let unconfiguredApp;
+    jest.isolateModules(() => {
+      const { apiEnvelope: envelope, errorHandler: handler } = require("../middleware/apiEnvelope");
+      unconfiguredApp = express();
+      unconfiguredApp.use(express.json());
+      unconfiguredApp.use(envelope);
+      unconfiguredApp.use("/api/admin", require("./admin"));
+      unconfiguredApp.use(handler);
+    });
+
+    const res = await request(unconfiguredApp)
+      .post("/api/admin/login")
+      .send({ username: "admin", password: "testpass" });
     expect(res.status).toBe(503);
-    process.env.ADMIN_PASSWORD = "testpass";
+
+    process.env.ADMIN_PASSWORD = saved;
   });
 });
 
@@ -264,5 +306,76 @@ describe("adminRequired middleware", () => {
     const res = await request(app).get("/protected").set("Authorization", `Bearer ${token}`);
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
+  });
+});
+
+describe("GET /api/admin/audit pagination", () => {
+  let app;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    app = buildApp();
+  });
+
+  it("counts the filtered set, not what remains after the cursor", async () => {
+    const { encodeCursor } = require("../utils/pagination");
+    const cursor = encodeCursor({
+      createdAt: "2026-01-02T00:00:00.000Z",
+      id: "11111111-1111-1111-1111-111111111111",
+    });
+
+    pool.query
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ total: "500" }] });
+
+    const res = await request(app)
+      .get("/api/admin/audit")
+      .query({ actor: "admin", cursor })
+      .set("Authorization", `Bearer ${adminToken()}`);
+
+    expect(res.status).toBe(200);
+
+    const [dataSql, dataValues] = pool.query.mock.calls[0];
+    const [countSql, countValues] = pool.query.mock.calls[1];
+
+    // The page query seeks past the cursor.
+    expect(dataSql).toMatch(/\(created_at, id\) < \(\$2::timestamptz, \$3::uuid\)/);
+    expect(dataValues).toEqual(["admin", "2026-01-02T00:00:00.000Z", "11111111-1111-1111-1111-111111111111", 51]);
+
+    // The count must not, or `total` would shrink on every page fetched.
+    expect(countSql).not.toMatch(/created_at/);
+    expect(countSql).toMatch(/WHERE actor = \$1/);
+    expect(countValues).toEqual(["admin"]);
+    expect(res.body.meta.pagination.total).toBe(500);
+  });
+
+  it("keeps the count stable across successive cursor pages", async () => {
+    const { encodeCursor } = require("../utils/pagination");
+
+    pool.query
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ total: "500" }] });
+
+    const first = await request(app)
+      .get("/api/admin/audit")
+      .set("Authorization", `Bearer ${adminToken()}`);
+
+    pool.query
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ total: "500" }] });
+
+    const second = await request(app)
+      .get("/api/admin/audit")
+      .query({
+        cursor: encodeCursor({
+          createdAt: "2026-01-02T00:00:00.000Z",
+          id: "11111111-1111-1111-1111-111111111111",
+        }),
+      })
+      .set("Authorization", `Bearer ${adminToken()}`);
+
+    expect(first.body.meta.pagination.total).toBe(500);
+    expect(second.body.meta.pagination.total).toBe(500);
+    expect(pool.query.mock.calls[3][0]).toBe(pool.query.mock.calls[1][0]);
   });
 });

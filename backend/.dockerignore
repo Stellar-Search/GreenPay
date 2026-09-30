@@ -2,6 +2,8 @@ node_modules
 .git
 .github
 *.log
+# Never let a developer- or CI-present env file reach the build context:
+# backend/Dockerfile copies the whole tree into the final image.
 .env
-.env.local
+.env.*
 tests

@@ -5,15 +5,20 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/router";
 import Link from "next/link";
 import DonateForm from "@/components/DonateForm";
+import { loadStarterAccount } from "@/lib/starterAccount";
 import DonationFeed from "@/components/DonationFeed";
 import ToastNotification, { type ToastItem } from "@/components/ToastNotification";
 import WalletConnect from "@/components/WalletConnect";
 import CircularProgress from "@/components/CircularProgress";
 import MonthlyGivingSetup from "@/components/MonthlyGivingSetup";
 import DescriptionAccordion from "@/components/DescriptionAccordion";
-import { createProjectCampaign, fetchProject, fetchProjectMatches, fetchProjectUpdates, fetchSubscriberCount, generateProjectSummary, getApiErrorMessage, subscribeToProject, toggleUpdateLike } from "@/lib/api";
+import ImpactClaimCard from "@/components/ImpactClaimCard";
+import { createProjectCampaign, fetchImpactProject, fetchProject, fetchProjectMatches, fetchProjectUpdateHistory, fetchProjectUpdates, fetchSubscriberCount, generateProjectSummary, getApiErrorMessage, reportProjectUpdate, subscribeToProject, toggleUpdateLike } from "@/lib/api";
+import type { ImpactProjectStats } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
-import { formatXLM, formatCO2, progressPercent, timeAgo, statusClass, statusLabel, CATEGORY_ICONS, copyToClipboard, shortenAddress } from "@/utils/format";
+import ContentLanguageNotice from "@/components/ContentLanguageNotice";
+import { formatXLM, progressPercent, timeAgo, statusClass, statusLabel, CATEGORY_ICONS, copyToClipboard, shortenAddress } from "@/utils/format";
+import { buildReportHtml } from "@/utils/buildReportHtml";
 import { accountUrl, fetchProjectDiscussion, type ProjectDiscussionMessage } from "@/lib/stellar";
 import { markMonthlySubscriptionPaid } from "@/lib/monthlyGiving";
 import type {
@@ -21,8 +26,11 @@ import type {
   Donation,
   ProjectCampaign,
   ProjectUpdate,
+  ProjectUpdateHistory,
+  ProjectUpdateReportReason,
 } from "@/utils/types";
 import { useWishlist } from "@/hooks/useWishlist";
+import { renderMarkdown } from "@/lib/safeMarkdown";
 
 interface ProjectDetailProps {
   publicKey: string | null;
@@ -35,17 +43,41 @@ export default function ProjectDetail({
 }: ProjectDetailProps) {
   const router = useRouter();
   const { id } = router.query;
-  const { t, localeTag } = useI18n();
+  const { t, localeTag, locale } = useI18n();
 
   const [project, setProject] = useState<ClimateProject | null>(null);
   const [updates, setUpdates] = useState<ProjectUpdate[]>([]);
   const [updateLikes, setUpdateLikes] = useState<Record<string, { liked: boolean; likeCount: number }>>({});
+  const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
+  const [updateHistories, setUpdateHistories] = useState<Record<string, ProjectUpdateHistory>>({});
+  const [historyLoadingId, setHistoryLoadingId] = useState<string | null>(null);
+  const [reportingUpdateId, setReportingUpdateId] = useState<string | null>(null);
+  const [reportReason, setReportReason] = useState<ProjectUpdateReportReason>("fraudulent_claim");
+  const [reportDetails, setReportDetails] = useState("");
+  const [reportState, setReportState] = useState<"idle" | "submitting" | "success" | "error">("idle");
+  const [reportError, setReportError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
   const [shareState, setShareState] = useState<'idle' | 'copied'>('idle');
   const [shareCount, setShareCount] = useState<number>(0);
-  const [calcAmount, setCalcAmount] = useState<string>("50");
+  const [projectImpact, setProjectImpact] = useState<ImpactProjectStats | null>(null);
+
+  /**
+   * Which key signs this donation.
+   *
+   * Derived from whether the connected address *is* the browser-held starter
+   * account rather than from a flag set during onboarding, so it stays correct
+   * across a page reload, a second visit, or a donor who has since connected a
+   * real wallet — in all of which a remembered flag would be stale and would
+   * send the donation to the wrong signer.
+   */
+  const [donationSigner, setDonationSigner] = useState<"wallet" | "starter">("wallet");
+
+  useEffect(() => {
+    const starter = loadStarterAccount();
+    setDonationSigner(starter && starter.publicKey === publicKey ? "starter" : "wallet");
+  }, [publicKey]);
   const [subState, setSubState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [subError, setSubError] = useState<string | null>(null);
   const [subscriberCount, setSubscriberCount] = useState<number | null>(null);
@@ -83,21 +115,23 @@ export default function ProjectDetail({
   useEffect(() => {
     if (!id) return;
     Promise.all([
-      fetchProject(id as string),
-      fetchProjectUpdates(id as string),
+      fetchProject(id as string, locale),
+      fetchProjectUpdates(id as string, locale),
       fetchProjectMatches(id as string),
+      fetchImpactProject(id as string).catch(() => null),
     ])
-      .then(([p, u, m]) => {
+      .then(([p, u, m, impact]) => {
         setProject(p);
         setUpdates(u);
         setMatches(m);
+        setProjectImpact(impact);
         if (p.serverNow) {
           setServerOffset(p.serverNow - Date.now());
         }
       })
       .catch(() => router.push("/projects"))
       .finally(() => setLoading(false));
-  }, [id, router]);
+  }, [id, router, locale]);
 
   useEffect(() => {
     if (!project) return;
@@ -139,6 +173,54 @@ export default function ProjectDetail({
       setUpdateLikes((prev) => ({ ...prev, [updateId]: result }));
     } catch {
       // silently fail
+    }
+  };
+
+  const handleToggleHistory = async (updateId: string) => {
+    if (expandedHistoryId === updateId) {
+      setExpandedHistoryId(null);
+      return;
+    }
+    setExpandedHistoryId(updateId);
+    if (updateHistories[updateId]) return;
+    setHistoryLoadingId(updateId);
+    try {
+      const history = await fetchProjectUpdateHistory(updateId);
+      setUpdateHistories((previous) => ({ ...previous, [updateId]: history }));
+    } catch {
+      setUpdateHistories((previous) => ({
+        ...previous,
+        [updateId]: { currentRevision: 1, editedAt: null, revisions: [] },
+      }));
+    } finally {
+      setHistoryLoadingId(null);
+    }
+  };
+
+  const openReportForm = (updateId: string) => {
+    setReportingUpdateId(updateId);
+    setReportReason("fraudulent_claim");
+    setReportDetails("");
+    setReportState("idle");
+    setReportError(null);
+  };
+
+  const handleReportUpdate = async (event: React.FormEvent, updateId: string) => {
+    event.preventDefault();
+    if (!publicKey) return;
+    setReportState("submitting");
+    setReportError(null);
+    try {
+      await reportProjectUpdate({
+        updateId,
+        donorAddress: publicKey,
+        reason: reportReason,
+        details: reportDetails.trim() || undefined,
+      });
+      setReportState("success");
+    } catch (error) {
+      setReportState("error");
+      setReportError(getApiErrorMessage(error, "Report could not be submitted."));
     }
   };
 
@@ -192,405 +274,80 @@ export default function ProjectDetail({
   const handlePrintReport = () => {
     if (!project) return;
 
-    const pct = progressPercent(project.raisedXLM, project.goalXLM);
-    const reportDate = new Date().toLocaleDateString("en-US", {
-      year: "numeric",
-      month: "long",
-      day: "numeric",
+    // ── Build the report HTML via the pure buildReportHtml utility ────────────
+    //
+    // Security architecture (enforced inside buildReportHtml):
+    //  1. Every user-controlled field is escaped with escapeHtml() before
+    //     interpolation, neutralising stored XSS payloads.
+    //  2. The HTML string is delivered via a sandboxed <iframe srcdoc="…">
+    //     rather than window.open + document.write:
+    //       • "allow-same-origin" absent → null origin → no sessionStorage
+    //         access (admin JWT is unreachable even if a script ran).
+    //       • "allow-scripts" absent → inline <script> blocks are blocked by
+    //         the sandbox as a second layer of defence.
+    //       • "allow-modals" present → contentWindow.print() works.
+    //  3. Print/Close buttons are on the overlay outside the iframe — always
+    //     reachable; no setTimeout race condition.
+    const printContent = buildReportHtml({ project, updates });
+
+    // ── Render in a sandboxed srcdoc iframe instead of window.open ───────────
+    //
+    // A sandboxed iframe with no "allow-same-origin" token runs in a unique
+    // null origin — it cannot access the parent's sessionStorage (which holds
+    // the admin JWT) even if a script somehow reached execution.  Omitting
+    // "allow-scripts" provides a second layer: inline script blocks that
+    // survive HTML escaping are still blocked by the sandbox policy.
+    //
+    // The overlay is added to the current document; the user clicks "Print"
+    // (which calls iframe.contentWindow.print()) or "Close" to remove it.
+    // This replaces the setTimeout race that could crash if the popup was
+    // closed before 250 ms elapsed.
+    const overlay = document.createElement("div");
+    overlay.setAttribute("data-print-overlay", "true");
+    overlay.style.cssText = [
+      "position:fixed",
+      "inset:0",
+      "z-index:9999",
+      "background:rgba(0,0,0,0.7)",
+      "display:flex",
+      "flex-direction:column",
+      "align-items:center",
+      "justify-content:center",
+      "gap:12px",
+    ].join(";");
+
+    const iframe = document.createElement("iframe");
+    iframe.setAttribute("sandbox", "allow-modals allow-same-origin");
+    // allow-same-origin is needed only so contentWindow.print() works.
+    // Scripts are still blocked because "allow-scripts" is absent.
+    iframe.style.cssText =
+      "width:860px;max-width:95vw;height:80vh;border:none;border-radius:8px;background:white;";
+    iframe.srcdoc = printContent;
+
+    const btnRow = document.createElement("div");
+    btnRow.style.cssText = "display:flex;gap:12px;";
+
+    const printBtn = document.createElement("button");
+    printBtn.textContent = "🖨 Print";
+    printBtn.style.cssText =
+      "padding:10px 24px;background:#227239;color:white;border:none;border-radius:6px;font-size:15px;cursor:pointer;font-weight:600;";
+    printBtn.addEventListener("click", () => {
+      iframe.contentWindow?.print();
     });
 
-    // Create print window content
-    const printContent = `
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <meta charset="utf-8">
-          <title>${project.name} - Impact Report</title>
-          <style>
-            @media print {
-              @page { margin: 0.75in; }
-              body { margin: 0; }
-            }
-            
-            * { box-sizing: border-box; }
-            
-            body {
-              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-              line-height: 1.6;
-              color: #1a2e1a;
-              max-width: 800px;
-              margin: 0 auto;
-              padding: 40px 20px;
-              background: white;
-            }
-            
-            .header {
-              text-align: center;
-              margin-bottom: 40px;
-              padding-bottom: 30px;
-              border-bottom: 3px solid #227239;
-            }
-            
-            .logo {
-              font-size: 48px;
-              margin-bottom: 10px;
-            }
-            
-            .header h1 {
-              font-size: 28px;
-              color: #227239;
-              margin: 0 0 10px 0;
-              font-weight: 700;
-            }
-            
-            .header .subtitle {
-              font-size: 14px;
-              color: #4b654b;
-              text-transform: uppercase;
-              letter-spacing: 2px;
-              font-weight: 600;
-            }
-            
-            .project-header {
-              margin-bottom: 30px;
-            }
-            
-            .project-title {
-              font-size: 32px;
-              color: #1a2e1a;
-              margin: 0 0 10px 0;
-              font-weight: 700;
-            }
-            
-            .project-meta {
-              display: flex;
-              gap: 20px;
-              flex-wrap: wrap;
-              font-size: 14px;
-              color: #4b654b;
-              margin-bottom: 20px;
-            }
-            
-            .project-meta span {
-              display: inline-flex;
-              align-items: center;
-              gap: 5px;
-            }
-            
-            .badges {
-              display: flex;
-              gap: 10px;
-              flex-wrap: wrap;
-              margin-bottom: 20px;
-            }
-            
-            .badge {
-              display: inline-block;
-              padding: 6px 12px;
-              border-radius: 20px;
-              font-size: 12px;
-              font-weight: 600;
-              border: 2px solid;
-            }
-            
-            .badge-verified {
-              background: #e8f5e9;
-              color: #2e7d32;
-              border-color: #4caf50;
-            }
-            
-            .badge-funded {
-              background: #e8f5e9;
-              color: #1b5e20;
-              border-color: #4caf50;
-            }
-            
-            .badge-category {
-              background: #f0f7f0;
-              color: #227239;
-              border-color: #c8dfc8;
-            }
-            
-            .section {
-              margin-bottom: 30px;
-              page-break-inside: avoid;
-            }
-            
-            .section-title {
-              font-size: 20px;
-              color: #227239;
-              margin: 0 0 15px 0;
-              font-weight: 700;
-              border-bottom: 2px solid #e8f3e8;
-              padding-bottom: 8px;
-            }
-            
-            .description {
-              font-size: 15px;
-              line-height: 1.8;
-              color: #1a2e1a;
-              white-space: pre-wrap;
-            }
-            
-            .stats-grid {
-              display: grid;
-              grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-              gap: 20px;
-              margin-bottom: 30px;
-            }
-            
-            .stat-card {
-              background: #f0f7f0;
-              border: 2px solid #c8dfc8;
-              border-radius: 12px;
-              padding: 20px;
-              text-align: center;
-            }
-            
-            .stat-icon {
-              font-size: 32px;
-              margin-bottom: 8px;
-            }
-            
-            .stat-value {
-              font-size: 24px;
-              font-weight: 700;
-              color: #227239;
-              margin-bottom: 5px;
-            }
-            
-            .stat-label {
-              font-size: 13px;
-              color: #4b654b;
-              text-transform: uppercase;
-              letter-spacing: 1px;
-              font-weight: 600;
-            }
-            
-            .progress-section {
-              background: #f0f7f0;
-              border: 2px solid #c8dfc8;
-              border-radius: 12px;
-              padding: 25px;
-              margin-bottom: 30px;
-            }
-            
-            .progress-header {
-              display: flex;
-              justify-content: space-between;
-              margin-bottom: 12px;
-              font-size: 14px;
-              font-weight: 600;
-            }
-            
-            .progress-bar {
-              height: 24px;
-              background: #c8dfc8;
-              border-radius: 12px;
-              overflow: hidden;
-              position: relative;
-            }
-            
-            .progress-fill {
-              height: 100%;
-              background: linear-gradient(90deg, #227239, #4caf70);
-              border-radius: 12px;
-              display: flex;
-              align-items: center;
-              justify-content: center;
-              color: white;
-              font-weight: 700;
-              font-size: 13px;
-            }
-            
-            .updates-list {
-              list-style: none;
-              padding: 0;
-              margin: 0;
-            }
-            
-            .update-item {
-              padding: 15px 0;
-              border-bottom: 1px solid #e8f3e8;
-            }
-            
-            .update-item:last-child {
-              border-bottom: none;
-            }
-            
-            .update-title {
-              font-weight: 600;
-              color: #1a2e1a;
-              margin-bottom: 5px;
-            }
-            
-            .update-date {
-              font-size: 12px;
-              color: #547454;
-              margin-bottom: 8px;
-            }
-            
-            .update-body {
-              font-size: 14px;
-              color: #4b654b;
-              line-height: 1.6;
-            }
-            
-            .footer {
-              margin-top: 50px;
-              padding-top: 30px;
-              border-top: 2px solid #e8f3e8;
-              text-align: center;
-              font-size: 12px;
-              color: #547454;
-            }
-            
-            .footer-logo {
-              font-size: 24px;
-              margin-bottom: 10px;
-            }
-            
-            .wallet-address {
-              font-family: 'Courier New', monospace;
-              background: #f0f7f0;
-              padding: 8px 12px;
-              border-radius: 6px;
-              font-size: 11px;
-              color: #227239;
-              border: 1px solid #c8dfc8;
-              word-break: break-all;
-            }
-            
-            @media print {
-              body { font-size: 12pt; }
-              .no-print { display: none; }
-            }
-          </style>
-        </head>
-        <body>
-          <div class="header">
-            <div class="logo">🌱</div>
-            <h1>Stellar GreenPay</h1>
-            <div class="subtitle">Project Impact Report</div>
-          </div>
-          
-          <div class="project-header">
-            <h2 class="project-title">${project.name}</h2>
-            <div class="project-meta">
-              <span>📍 ${project.location}</span>
-              <span>📅 Report Date: ${reportDate}</span>
-            </div>
-            <div class="badges">
-              ${project.verified ? '<span class="badge badge-verified">✓ Verified Project</span>' : ""}
-              ${pct >= 100 ? '<span class="badge badge-funded">✅ Fully Funded</span>' : ""}
-              <span class="badge badge-category">${project.category}</span>
-            </div>
-          </div>
-          
-          <div class="section">
-            <h3 class="section-title">Project Overview</h3>
-            <div class="description">${project.description}</div>
-          </div>
-          
-          <div class="section">
-            <h3 class="section-title">Impact Metrics</h3>
-            <div class="stats-grid">
-              <div class="stat-card">
-                <div class="stat-icon">💰</div>
-                <div class="stat-value">${formatXLM(project.raisedXLM)}</div>
-                <div class="stat-label">Total Raised</div>
-              </div>
-              <div class="stat-card">
-                <div class="stat-icon">🎯</div>
-                <div class="stat-value">${formatXLM(project.goalXLM)}</div>
-                <div class="stat-label">Funding Goal</div>
-              </div>
-              <div class="stat-card">
-                <div class="stat-icon">👥</div>
-                <div class="stat-value">${project.donorCount.toLocaleString()}</div>
-                <div class="stat-label">Total Donors</div>
-              </div>
-              <div class="stat-card">
-                <div class="stat-icon">♻️</div>
-                <div class="stat-value">${formatCO2(project.co2OffsetKg)}</div>
-                <div class="stat-label">CO₂ Offset</div>
-              </div>
-            </div>
-          </div>
-          
-          <div class="section">
-            <h3 class="section-title">Funding Progress</h3>
-            <div class="progress-section">
-              <div class="progress-header">
-                <span>${formatXLM(project.raisedXLM)} raised</span>
-                <span>${pct}% of goal</span>
-              </div>
-              <div class="progress-bar">
-                <div class="progress-fill" style="width: ${Math.min(pct, 100)}%">
-                  ${pct >= 100 ? "Goal Reached!" : `${pct}%`}
-                </div>
-              </div>
-            </div>
-          </div>
-          
-          ${
-            updates.length > 0
-              ? `
-          <div class="section">
-            <h3 class="section-title">Recent Project Updates</h3>
-            <ul class="updates-list">
-              ${updates
-                .slice(0, 5)
-                .map(
-                  (update) => `
-                <li class="update-item">
-                  <div class="update-title">${update.title}</div>
-                  <div class="update-date">${new Date(update.createdAt).toLocaleDateString()}</div>
-                  <div class="update-body">${update.body}</div>
-                </li>
-              `,
-                )
-                .join("")}
-            </ul>
-          </div>
-          `
-              : ""
-          }
-          
-          <div class="section">
-            <h3 class="section-title">Project Wallet</h3>
-            <p style="margin-bottom: 10px; font-size: 14px; color: #4b654b;">
-              All donations are sent directly to this Stellar blockchain address:
-            </p>
-            <div class="wallet-address">${project.walletAddress}</div>
-          </div>
-          
-          <div class="footer">
-            <div class="footer-logo">🌍</div>
-            <p>
-              <strong>Stellar GreenPay</strong><br>
-              Blockchain-powered climate finance<br>
-              Open Source • Built on Stellar • Powered by Soroban
-            </p>
-            <p style="margin-top: 15px;">
-              Learn more at stellar-greenpay.org
-            </p>
-          </div>
-        </body>
-      </html>
-    `;
+    const closeBtn = document.createElement("button");
+    closeBtn.textContent = "✕ Close";
+    closeBtn.style.cssText =
+      "padding:10px 24px;background:#fff;color:#1a2e1a;border:2px solid #c8dfc8;border-radius:6px;font-size:15px;cursor:pointer;font-weight:600;";
+    closeBtn.addEventListener("click", () => {
+      document.body.removeChild(overlay);
+    });
 
-    // Open print window
-    const printWindow = window.open("", "_blank");
-    if (printWindow) {
-      printWindow.document.write(printContent);
-      printWindow.document.close();
-      printWindow.focus();
-      // Small delay to ensure content is loaded before printing
-      setTimeout(() => {
-        printWindow.print();
-      }, 250);
-    }
+    btnRow.appendChild(printBtn);
+    btnRow.appendChild(closeBtn);
+    overlay.appendChild(iframe);
+    overlay.appendChild(btnRow);
+    document.body.appendChild(overlay);
   };
 
   const handleSubscribe = async (e: React.FormEvent) => {
@@ -603,6 +360,7 @@ export default function ProjectDetail({
         projectId: project.id,
         email: subEmail,
         donorAddress: publicKey || undefined,
+        preferredLanguage: locale,
       });
       setSubState("success");
       setSubEmail("");
@@ -620,7 +378,7 @@ export default function ProjectDetail({
     setCampaignError(null);
     try {
       await createProjectCampaign(project.id, campaignForm);
-      const updatedProject = await fetchProject(project.id);
+      const updatedProject = await fetchProject(project.id, locale);
       setProject(updatedProject);
       setCampaignForm({
         title: "",
@@ -660,17 +418,6 @@ export default function ProjectDetail({
   const countdownText = activeCampaign
     ? formatCountdown(activeCampaign.deadline, countdownNow)
     : null;
-
-  const calcAmountNum = parseFloat(calcAmount) || 0;
-  const estimatedCO2 = calcAmountNum * (project.co2OffsetKg || 0);
-  const treesEquivalent = estimatedCO2 / 22;
-  
-  let analogy = "";
-  if (treesEquivalent === 0) analogy = "Enter an amount to see your impact!";
-  else if (treesEquivalent < 1) analogy = "A tiny sprout of change! 🌱";
-  else if (treesEquivalent < 10) analogy = "A small grove taking root! 🌳";
-  else if (treesEquivalent < 50) analogy = "A growing mini-forest! 🌲";
-  else analogy = "A massive impact for our planet! 🌍";
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-10 pb-24 sm:pb-10 animate-fade-in">
@@ -796,7 +543,7 @@ export default function ProjectDetail({
           <div className="card">
             <div className="flex items-start gap-4 mb-5">
               <div className="w-14 h-14 rounded-2xl bg-forest-100 flex items-center justify-center text-3xl border border-forest-200 flex-shrink-0">
-                {CATEGORY_ICONS[project.category] || "🌿"}
+                {CATEGORY_ICONS[(project.sourceCategory || project.category) as keyof typeof CATEGORY_ICONS] || "🌿"}
               </div>
               <div className="flex-1">
                 <div className="flex flex-wrap items-center gap-2 mb-2">
@@ -856,9 +603,10 @@ export default function ProjectDetail({
                     </svg>
                   </button>
                 </div>
-                <h1 className="font-display text-2xl sm:text-3xl font-bold text-forest-900">
-                  {project.name}
-                </h1>
+                <div dir={project.contentDirection} lang={project.contentLanguage} className="text-start">
+                  <h1 className="font-display text-2xl sm:text-3xl font-bold text-forest-900">
+                    {project.name}
+                  </h1>
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-1">
                   <p className="text-[#4b654b] text-sm font-body">
                     📍 {project.location}
@@ -871,6 +619,8 @@ export default function ProjectDetail({
                     </div>
                   )}
                 </div>
+                </div>
+                <div className="mt-2"><ContentLanguageNotice content={project} /></div>
               </div>
             </div>
 
@@ -900,9 +650,9 @@ export default function ProjectDetail({
                   value: project.donorCount.toString(),
                 },
                 {
-                  icon: "♻️",
-                  label: "CO₂ Offset",
-                  value: formatCO2(project.co2OffsetKg, localeTag),
+                  icon: "📋",
+                  label: "Outcome Claims",
+                  value: `${projectImpact?.claimSummary.total ?? 0} (${projectImpact?.claimSummary.verified ?? 0} verified)`,
                 },
                 {
                   icon: "🎯",
@@ -916,32 +666,42 @@ export default function ProjectDetail({
                     <p className="font-semibold text-forest-900 text-sm font-body">
                       {s.value}
                     </p>
-                    {s.label === "CO₂ Offset" && (
-                      <span
-                        className="tooltip"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          e.preventDefault();
-                        }}
-                      >
-                        <button
-                          type="button"
-                          className="w-3.5 h-3.5 flex items-center justify-center rounded-full bg-forest-100 text-[8px] text-forest-600 border border-forest-200 hover:bg-forest-200 transition-colors focus:outline-none focus:ring-1 focus:ring-forest-400"
-                          aria-label="CO2 offset estimate methodology info"
-                        >
-                          ℹ️
-                        </button>
-                        <span className="tooltip-text" role="tooltip">
-                          Estimated CO₂ offset based on this project&apos;s declared
-                          impact rate per XLM donated. Actual results may vary.
-                        </span>
-                      </span>
-                    )}
                   </div>
                   <p className="text-xs text-[#547454] font-body">{s.label}</p>
                 </div>
               ))}
             </div>
+
+            <section className="mt-5 border-t border-forest-100 pt-5">
+              <div className="flex flex-wrap items-end justify-between gap-2">
+                <div>
+                  <h2 className="font-display text-xl font-bold text-forest-900">Measured outcome claims</h2>
+                  <p className="mt-1 text-xs text-forest-600">
+                    Project-level evidence records; they are never calculated from your donation amount.
+                  </p>
+                </div>
+                {projectImpact && (
+                  <p className="text-xs font-semibold text-forest-700">
+                    {projectImpact.claimSummary.operatorStated} operator-stated · {projectImpact.claimSummary.unverified} unverified · {projectImpact.claimSummary.revoked} withdrawn
+                  </p>
+                )}
+              </div>
+              {projectImpact === null ? (
+                <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                  Outcome claim records are temporarily unavailable. No environmental quantity is inferred from the donation data.
+                </p>
+              ) : projectImpact.claims.length ? (
+                <div className="mt-4 space-y-4">
+                  {projectImpact.claims.map((claim) => (
+                    <ImpactClaimCard key={claim.id} claim={claim} locale={localeTag} />
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                  No measured outcome claim has been published for this project. The donation destination and amount remain verifiable on-chain.
+                </p>
+              )}
+            </section>
 
             {/* Wallet link */}
             <div className="mt-4 pt-4 border-t border-forest-100 flex items-center gap-2 text-xs text-[#547454] font-body">
@@ -1085,7 +845,9 @@ export default function ProjectDetail({
             <h2 className="font-display text-lg font-semibold text-forest-900 mb-3">
               About this Project
             </h2>
-            <DescriptionAccordion description={project.description} />
+            <div dir={project.contentDirection} lang={project.contentLanguage} className="text-start">
+              <DescriptionAccordion description={project.description} />
+            </div>
             {project.tags.length > 0 && (
               <div className="flex flex-wrap gap-2 mt-4">
                 {project.tags.map((tag) => (
@@ -1281,21 +1043,34 @@ export default function ProjectDetail({
                   return (
                     <div
                       key={u.id}
-                      className="pb-4 border-b border-forest-100 last:border-0 last:pb-0"
+                      className="pb-4 border-b border-forest-100 last:border-0 last:pb-0 text-start"
+                      dir={u.contentDirection}
+                      lang={u.contentLanguage}
                     >
-                      <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-start justify-between gap-3 mb-2">
                         <h3 className="font-semibold text-forest-900 text-sm font-body">
                           {u.title}
                         </h3>
-                        <span className="text-xs text-[#547454] font-body">
-                          {timeAgo(u.createdAt)}
-                        </span>
+                        <div className="flex flex-wrap justify-end items-center gap-1.5 text-xs font-body">
+                          {u.isEdited && (
+                            <span className="rounded-full bg-amber-50 px-2 py-0.5 text-amber-800">
+                              Edited · revision {u.revision}
+                            </span>
+                          )}
+                          {u.underReview && (
+                            <span className="rounded-full bg-sky-50 px-2 py-0.5 text-sky-800">
+                              Published · review pending
+                            </span>
+                          )}
+                          <span className="text-[#547454]">{timeAgo(u.createdAt)}</span>
+                        </div>
                       </div>
                       <div
                         className="text-[#4b654b] text-sm leading-relaxed font-body prose prose-sm max-w-none"
                         dangerouslySetInnerHTML={{ __html: renderMarkdown(u.body) }}
                       />
-                      <div className="flex items-center gap-3 mt-2">
+                      <div className="mt-2"><ContentLanguageNotice content={u} /></div>
+                      <div className="flex flex-wrap items-center gap-3 mt-2">
                         <button
                           onClick={() => handleToggleLike(u.id)}
                           disabled={!publicKey}
@@ -1308,7 +1083,105 @@ export default function ProjectDetail({
                           <span>{like?.liked ? "❤️" : "🤍"}</span>
                           <span>{like?.likeCount ?? 0}</span>
                         </button>
+                        {u.isEdited && (
+                          <button
+                            type="button"
+                            onClick={() => handleToggleHistory(u.id)}
+                            className="text-xs font-body text-forest-700 hover:underline"
+                          >
+                            {expandedHistoryId === u.id ? "Hide edit history" : "View edit history"}
+                          </button>
+                        )}
+                        {publicKey && (
+                          <button
+                            type="button"
+                            onClick={() => reportingUpdateId === u.id
+                              ? setReportingUpdateId(null)
+                              : openReportForm(u.id)}
+                            className="text-xs font-body text-[#76553a] hover:underline"
+                          >
+                            {reportingUpdateId === u.id ? "Cancel report" : "Report update"}
+                          </button>
+                        )}
                       </div>
+                      {expandedHistoryId === u.id && (
+                        <div className="mt-3 rounded-lg border border-forest-100 bg-forest-50/40 p-3">
+                          <p className="text-xs font-semibold text-forest-900 mb-2">Public edit history</p>
+                          {historyLoadingId === u.id ? (
+                            <p className="text-xs text-[#547454]">Loading history…</p>
+                          ) : (updateHistories[u.id]?.revisions.length ?? 0) === 0 ? (
+                            <p className="text-xs text-[#547454]">No earlier public revision is available.</p>
+                          ) : (
+                            <div className="space-y-3">
+                              {updateHistories[u.id].revisions.map((revision) => (
+                                <div key={revision.revision} className="border-t border-forest-100 pt-2 first:border-0 first:pt-0">
+                                  <p className="text-xs font-semibold text-forest-800">
+                                    Revision {revision.revision} · replaced {timeAgo(revision.replacedAt)}
+                                  </p>
+                                  <p className="text-xs text-[#547454] mt-0.5">Reason: {revision.editReason}</p>
+                                  <p className="text-xs font-medium text-forest-900 mt-2">{revision.title}</p>
+                                  <div
+                                    className="text-xs text-[#4b654b] mt-1 prose prose-sm max-w-none"
+                                    dangerouslySetInnerHTML={{ __html: renderMarkdown(revision.body) }}
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {reportingUpdateId === u.id && (
+                        <form
+                          className="mt-3 rounded-lg border border-amber-200 bg-amber-50/50 p-3 space-y-2"
+                          onSubmit={(event) => handleReportUpdate(event, u.id)}
+                        >
+                          <p className="text-xs font-semibold text-amber-950">
+                            Reports are reviewed by moderators and do not automatically hide an update.
+                          </p>
+                          {reportState === "success" ? (
+                            <p role="status" className="text-xs text-green-700">
+                              Report submitted. A moderator will review it.
+                            </p>
+                          ) : (
+                            <>
+                              <label className="block text-xs text-amber-950">
+                                Reason
+                                <select
+                                  value={reportReason}
+                                  onChange={(event) => setReportReason(event.target.value as ProjectUpdateReportReason)}
+                                  className="input-field mt-1 w-full text-sm"
+                                >
+                                  <option value="fraudulent_claim">Unsupported or misleading impact claim</option>
+                                  <option value="abuse">Abuse or harassment</option>
+                                  <option value="spam">Spam</option>
+                                  <option value="off_topic_solicitation">Off-topic solicitation</option>
+                                  <option value="dangerous_content">Dangerous content</option>
+                                  <option value="privacy">Personal or private information</option>
+                                  <option value="other">Other</option>
+                                </select>
+                              </label>
+                              <label className="block text-xs text-amber-950">
+                                Details (optional)
+                                <textarea
+                                  value={reportDetails}
+                                  maxLength={2000}
+                                  onChange={(event) => setReportDetails(event.target.value)}
+                                  className="input-field mt-1 min-h-20 w-full text-sm"
+                                  placeholder="Describe the specific statement or policy concern."
+                                />
+                              </label>
+                              {reportError && <p role="alert" className="text-xs text-red-700">{reportError}</p>}
+                              <button
+                                type="submit"
+                                disabled={reportState === "submitting"}
+                                className="btn-primary px-3 py-1.5 text-xs disabled:opacity-60"
+                              >
+                                {reportState === "submitting" ? "Submitting…" : "Submit report"}
+                              </button>
+                            </>
+                          )}
+                        </form>
+                      )}
                     </div>
                   );
                 })}
@@ -1411,55 +1284,25 @@ export default function ProjectDetail({
                 Donate to {project.name}
               </a>
             ) : (
-              <WalletConnect onConnect={onConnect} />
+              <WalletConnect
+                onConnect={onConnect}
+                allowGuidedOnboarding
+                projectId={project.id}
+              />
             )}
           </div>
 
-          {/* Impact Calculator */}
+          {/* Outcome provenance */}
           <div className="card bg-forest-50 border-forest-200">
-            <h3 className="font-display font-semibold text-forest-900 mb-2">Impact Calculator</h3>
-            <p className="text-xs text-[#4b654b] mb-3 font-body">See what your donation can achieve before you give.</p>
-            
-            <div className="flex flex-wrap gap-2 mb-3">
-              {["10", "25", "50", "100", "250"].map(p => (
-                <button
-                  key={p}
-                  onClick={() => setCalcAmount(p)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
-                    calcAmount === p ? "bg-forest-600 text-white border-forest-600 shadow-sm" : "bg-white text-forest-700 border-forest-200 hover:border-forest-400"
-                  }`}
-                >
-                  {p} XLM
-                </button>
-              ))}
-            </div>
-            
-            <div className="mb-4">
-              <input
-                type="number"
-                value={calcAmount}
-                onChange={(e) => setCalcAmount(e.target.value)}
-                placeholder="Custom amount"
-                min="0"
-                className="w-full px-3 py-2 text-sm rounded-lg border border-forest-200 bg-white focus:outline-none focus:ring-2 focus:ring-forest-400 font-body placeholder:text-forest-300"
-              />
-            </div>
-            
-            {calcAmountNum > 0 && (
-              <div className="p-3 bg-white rounded-lg border border-forest-100 shadow-sm animate-fade-in">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-lg">♻️</span>
-                  <span className="font-semibold text-forest-800 text-sm font-body">{formatCO2(estimatedCO2, localeTag)} offset</span>
-                </div>
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-lg">🌳</span>
-                  <span className="font-semibold text-forest-800 text-sm font-body">~{treesEquivalent.toFixed(1)} trees/year</span>
-                </div>
-                <div className="pt-2 border-t border-forest-50 text-center">
-                  <span className="text-xs text-forest-600 font-medium italic font-body">{analogy}</span>
-                </div>
-              </div>
-            )}
+            <h3 className="font-display font-semibold text-forest-900 mb-2">How outcome reporting works</h3>
+            <p className="text-xs text-[#4b654b] font-body leading-relaxed">
+              A payment does not automatically become avoided emissions, sequestration, or an offset. Project operators submit measured ranges and evidence; independent verifiers attest a canonical hash on-chain. Withdrawn attestations stay visible.
+            </p>
+            <p className="mt-3 rounded-lg border border-forest-100 bg-white p-3 text-xs font-semibold text-forest-800">
+              {projectImpact === null
+                ? "Outcome records temporarily unavailable"
+                : `${projectImpact.claimSummary.total} current and historical claim record${projectImpact.claimSummary.total === 1 ? "" : "s"}`}
+            </p>
           </div>
 
           {publicKey ? (
@@ -1467,6 +1310,7 @@ export default function ProjectDetail({
             <DonateForm
               project={project}
               publicKey={publicKey}
+              signer={donationSigner}
               initialAmount={prefillAmount}
               initialMessage={prefillReplyMemo}
               onSuccess={() => {
@@ -1484,7 +1328,7 @@ export default function ProjectDetail({
                 }
                 setRefreshKey((k) => k + 1);
                 setTimeout(
-                  () => fetchProject(project.id).then(setProject),
+                  () => fetchProject(project.id, locale).then(setProject),
                   2000,
                 );
               }}
@@ -1495,7 +1339,11 @@ export default function ProjectDetail({
               <p className="text-center text-[#4b654b] text-sm mb-4 font-body">
                 Connect your wallet to donate
               </p>
-              <WalletConnect onConnect={onConnect} />
+              <WalletConnect
+                onConnect={onConnect}
+                allowGuidedOnboarding
+                projectId={project.id}
+              />
             </div>
           )}
 
@@ -1611,21 +1459,6 @@ export default function ProjectDetail({
       )}
     </div>
   );
-}
-
-/** Simple markdown-to-HTML: bold, italic, links, line breaks. */
-function renderMarkdown(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*(.+?)\*/g, "<em>$1</em>")
-    .replace(
-      /\[([^\]]+)\]\(([^)]+)\)/g,
-      '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-forest-600 hover:underline">$1</a>',
-    )
-    .replace(/\n/g, "<br />");
 }
 
 function formatCountdown(deadline: string, nowMs: number) {

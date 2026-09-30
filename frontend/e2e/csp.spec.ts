@@ -24,7 +24,7 @@
 import { test, expect } from "@playwright/test";
 
 const MOCK_PROJECT_ID = "8d9ac19b-52eb-42f7-80d9-19a88ba59e43";
-const MOCK_PUBLIC_KEY = "GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGLEWZE5BGYTG2XTGQBC3VP";
+const MOCK_PUBLIC_KEY = "GDNNXUMEULKSN4PL3VOAN7NNSNM3EKDVTNGX66OWM2E7UJKKVWCUN3GZ";
 
 // Every path middleware.ts applies CSP to, covering both the plain
 // `frame-ancestors 'none'` branch and the `isWidget` branch.

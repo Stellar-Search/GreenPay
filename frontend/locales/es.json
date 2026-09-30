@@ -83,7 +83,10 @@
     "milestones": "Hitos del Proyecto",
     "proof": "Prueba ↗",
     "loadMore": "Cargar más",
-    "noUpdatesYet": "Aún no hay actualizaciones publicadas."
+    "noUpdatesYet": "Aún no hay actualizaciones publicadas.",
+    "contentLanguage": "Contenido mostrado en {language}.",
+    "fallbackContent": "La traducción solicitada no está disponible. Se muestra el original en {language}.",
+    "machineTranslatedContent": "Contenido traducido automáticamente al {language}. Revisa el original antes de confiar en las afirmaciones de impacto."
   },
   "admin": {
     "title": "Administración del Proyecto",

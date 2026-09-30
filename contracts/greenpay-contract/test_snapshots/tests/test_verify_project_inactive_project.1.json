@@ -305,6 +305,18 @@
                         "val": {
                           "u32": 1
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -751,7 +763,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Cannot verify an inactive project' from contract function 'Symbol(obj#211)'"
+                  "string": "caught panic 'Cannot verify an inactive project' from contract function 'Symbol(obj#219)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"

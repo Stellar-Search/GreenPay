@@ -3,10 +3,12 @@
  * Donation form for a climate project.
  */
 import { useState, useEffect } from "react";
-import { buildDonationTransaction, buildContractDonationTransaction, buildChangeTrustTransaction, submitTransaction, submitAndConfirmDonation, DonationSubmissionError, explorerUrl, getXLMBalance, getAssetBalance, getDonorStats, hashMessage, CONTRACT_ID } from "@/lib/stellar";
+import { buildDonationTransaction, buildContractDonationTransaction, buildChangeTrustTransaction, submitTransaction, submitAndConfirmDonation, DonationSubmissionError, explorerUrl, getXLMBalance, getAssetBalance, getDonorStats, hashMessage, CONTRACT_ID, NATIVE_ASSET_CONTRACT_ID, getReserveStatus } from "@/lib/stellar";
 import { signTransactionWithWallet } from "@/lib/wallet";
+import { loadStarterAccount, signWithStarterAccount, shouldPromptExport } from "@/lib/starterAccount";
+import { track, completeFunnel } from "@/lib/funnel";
 import { recordDonation } from "@/lib/api";
-import { formatXLM, formatCO2 } from "@/utils/format";
+import { formatXLM } from "@/utils/format";
 import { useI18n } from "@/lib/i18n";
 import { parseToStroops, stroopsToXLM, isValidDonationAmount, hasSufficientBalance, multiply } from "@/utils/amount";
 import type { ClimateProject } from "@/utils/types";
@@ -17,6 +19,15 @@ interface DonateFormProps {
   initialAmount?: string;
   initialMessage?: string;
   onSuccess?: () => void;
+  /**
+   * Which key signs. Defaults to "wallet", so every existing call site keeps
+   * the Freighter flow byte for byte; "starter" routes signing through the
+   * browser-held key created by the sponsored path. The two differ only in who
+   * holds the key — the transaction built, submitted and recorded is the same,
+   * which is what keeps a sponsored donation a first-class donation rather than
+   * a lesser parallel flow.
+   */
+  signer?: "wallet" | "starter";
 }
 
 type Step = "idle" | "building" | "signing" | "submitting" | "recording" | "success" | "error";
@@ -31,12 +42,12 @@ type Step = "idle" | "building" | "signing" | "submitting" | "recording" | "succ
  *    success or failure, just point the donor at their transaction history.
  *  - "generic": any other failure (build/sign/validation errors, etc.).
  */
-type ErrorKind = "wallet_rejected" | "execution_failed" | "network_unknown" | "generic";
+type ErrorKind = "wallet_rejected" | "execution_failed" | "network_unknown" | "record_failed" | "generic";
 
 const PRESETS_XLM = ["10", "25", "50", "100", "250"];
 const PRESETS_USDC = ["5", "10", "25", "50", "100"];
 
-export default function DonateForm({ project, publicKey, initialAmount, initialMessage, onSuccess }: DonateFormProps) {
+export default function DonateForm({ project, publicKey, initialAmount, initialMessage, onSuccess, signer = "wallet" }: DonateFormProps) {
   const { t, localeTag } = useI18n();
   const [amount, setAmount]   = useState("");
   const [message, setMessage] = useState("");
@@ -61,6 +72,36 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
   // Counter to force a balance re-fetch after a trustline is added
   const [balanceRefresh, setBalanceRefresh] = useState(0);
 
+  // What this account can actually send, as opposed to what it holds. An
+  // account at the base-reserve boundary looks funded and is not: 1.4 XLM with
+  // a trustline has 1.5 XLM locked and can send nothing. Surfacing that before
+  // the donor signs turns an opaque `tx_insufficient_balance` into a sentence.
+  const [spendableXlm, setSpendableXlm] = useState<string | null>(null);
+
+  const isStarterAccount = signer === "starter";
+
+  /**
+   * Signs with whichever key this donor actually holds.
+   *
+   * Both branches return the same shape, so nothing downstream — building,
+   * submitting, confirming, recording — needs to know which one ran. A
+   * sponsored donor's donation takes exactly the same path as anyone else's.
+   */
+  const signDonation = async (xdr: string) => {
+    if (isStarterAccount) {
+      try {
+        return { signedXDR: signWithStarterAccount(xdr), error: null, rejected: false };
+      } catch (err) {
+        return {
+          signedXDR: null,
+          error: err instanceof Error ? err.message : "Could not sign with your saved key.",
+          rejected: false,
+        };
+      }
+    }
+    return signTransactionWithWallet(xdr);
+  };
+
   useEffect(() => {
     if (!initialAmount) return;
     setAmount(initialAmount);
@@ -70,6 +111,24 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
     if (!initialMessage) return;
     setMessage(initialMessage);
   }, [initialMessage]);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("pendingDonationRecord");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.projectId === project.id) {
+          setTxHash(parsed.hash);
+          setAmount(parsed.amount);
+          if (parsed.message) setMessage(parsed.message);
+          setCurrency(parsed.currency);
+          setErrorKind("record_failed");
+          setError("We received your donation on-chain, but couldn't record it on the server.");
+          setStep("error");
+        }
+      }
+    } catch (e) {}
+  }, [project.id]);
 
   useEffect(() => {
     let mounted = true;
@@ -103,17 +162,31 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
     return () => { mounted = false; };
   }, [publicKey, currency, balanceRefresh]);
 
+  useEffect(() => {
+    let mounted = true;
+    if (!publicKey) return;
+    getReserveStatus(publicKey)
+      .then((status) => {
+        if (!mounted) return;
+        // "unknown" means Horizon did not answer. Leaving this null renders no
+        // claim at all, which is the only honest thing to show.
+        setSpendableXlm(status.readiness === "unknown" ? null : status.spendableXlm);
+        if (status.readiness === "ready") {
+          void track("funds_available", {
+            path: isStarterAccount ? "sponsored_account" : "connected_wallet",
+            projectId: project.id,
+          });
+        }
+      })
+      .catch(() => {
+        if (mounted) setSpendableXlm(null);
+      });
+    return () => { mounted = false; };
+  }, [publicKey, balanceRefresh, isStarterAccount, project.id]);
+
   const amountNum = Number.parseFloat(amount);
   const amountStroops = parseToStroops(amount);
   const isValid = isValidDonationAmount(amount) && parseToStroops(amount) >= parseToStroops("1");
-
-  // Calculate CO₂ impact for XLM donations
-  const co2Impact = currency === "XLM" && amount && isValid && project.co2_per_xlm
-    ? (parseFloat(stroopsToXLM(amountStroops)) * project.co2_per_xlm) / 1000 // Convert to kg
-    : 0;
-
-  // Calculate tree equivalent (rough estimate: 1 tree absorbs ~22kg CO₂ per year)
-  const treeEquivalent = co2Impact > 0 ? Math.round(co2Impact / 22) : 0;
 
     const charCount = message.length;
 
@@ -175,7 +248,7 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
   };
 
   const handleDonate = async () => {
-    if (!isValid || step !== "idle") return;
+    if (!isValid || (step !== "idle" && !(step === "error" && errorKind === "record_failed"))) return;
     setError(null);
     setErrorKind(null);
     setFailedTxHash(null);
@@ -185,19 +258,46 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
     const preDonationBadge = donorBadge;
 
     try {
+      if (step === "error" && errorKind === "record_failed" && txHash) {
+        setStep("recording");
+        let recordAmount = currency === "XLM" ? stroopsToXLM(amountStroops) : amountNum.toFixed(2);
+        let recordCurrency = currency;
+        let recordMessage = message.trim() || undefined;
+        try {
+          const saved = localStorage.getItem("pendingDonationRecord");
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            recordAmount = parsed.currency === "XLM" ? stroopsToXLM(parseToStroops(parsed.amount)) : Number.parseFloat(parsed.amount).toFixed(2);
+            recordCurrency = parsed.currency;
+            recordMessage = parsed.message?.trim() || undefined;
+          }
+        } catch (e) {}
+        
+        await recordDonation({
+          projectId: project.id,
+          donorAddress: publicKey,
+          amount: recordAmount,
+          currency: recordCurrency,
+          message: recordMessage,
+          transactionHash: txHash,
+        });
+        localStorage.removeItem("pendingDonationRecord");
+        setStep("success");
+        onSuccess?.();
+        return;
+      }
+
       const useContract = CONTRACT_ID && currency === "XLM";
 
       let tx;
       if (useContract) {
         setStep("building");
 
-        // Get native XLM token address (for testnet/mainnet)
-        const nativeTokenAddress = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"; // Native XLM on testnet
         const msgHash = message.trim() ? hashMessage(message.trim()) : 0;
 
         tx = await buildContractDonationTransaction({
           contractId: CONTRACT_ID,
-          tokenAddress: nativeTokenAddress,
+          tokenAddress: NATIVE_ASSET_CONTRACT_ID,
           donor: publicKey,
           projectId: project.id,
           amount: stroopsToXLM(amountStroops),
@@ -225,7 +325,7 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
       }
 
       setStep("signing");
-      const { signedXDR, error: signErr, rejected } = await signTransactionWithWallet(tx.toXDR());
+      const { signedXDR, error: signErr, rejected } = await signDonation(tx.toXDR());
       if (rejected) {
         // Wallet rejection happens before anything is submitted — nothing to
         // revert, and it isn't an error the donor needs to be alarmed by.
@@ -242,8 +342,18 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
       // after a successful simulation (e.g. a checked-arithmetic overflow), so
       // nothing below this point may run until execution is actually confirmed.
       setStep("submitting");
+      void track("donation_submitted", { path: isStarterAccount ? "sponsored_account" : "connected_wallet", projectId: project.id });
       const { hash } = await submitAndConfirmDonation(signedXDR);
       setTxHash(hash);
+      void track("donation_confirmed", { path: isStarterAccount ? "sponsored_account" : "connected_wallet", projectId: project.id });
+      
+      localStorage.setItem("pendingDonationRecord", JSON.stringify({
+        hash,
+        amount,
+        message,
+        currency,
+        projectId: project.id,
+      }));
 
       setStep("recording");
       if (useContract) {
@@ -270,6 +380,11 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
         message: message.trim() || undefined,
         transactionHash: hash,
       });
+      
+      localStorage.removeItem("pendingDonationRecord");
+
+      void track("donation_recorded", { path: isStarterAccount ? "sponsored_account" : "connected_wallet", projectId: project.id });
+      void completeFunnel("completed", isStarterAccount ? "sponsored_account" : "connected_wallet");
 
       setStep("success");
       onSuccess?.();
@@ -277,7 +392,14 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
       // Revert any optimistic state a previous attempt (or this one, before
       // hitting the confirmed-failure branch above) may have set.
       setDonorBadge(preDonationBadge);
-      setTxHash(null);
+      
+      const isRecordPhase = localStorage.getItem("pendingDonationRecord") !== null;
+      if (isRecordPhase) {
+        setErrorKind("record_failed");
+        setError(err instanceof Error ? err.message : "Failed to record donation.");
+        setStep("error");
+      } else {
+        setTxHash(null);
 
       if (err instanceof DonationSubmissionError) {
         if (err.outcome === "execution_failed") {
@@ -293,8 +415,11 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
         setErrorKind("generic");
         setError(err instanceof Error ? err.message : "An error occurred");
       }
-      setStep("error");
-      setTimeout(() => setStep("idle"), 6000);
+      }
+      if (!isRecordPhase) {
+        setStep("error");
+        setTimeout(() => setStep("idle"), 6000);
+      }
     }
   };
 
@@ -359,19 +484,11 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
             className="input-field" />
           {amount && !isValid && <p className="mt-1 text-xs text-red-500">Minimum donation is 1 {currency}</p>}
           
-          {/* CO₂ Impact Calculator */}
-          {currency === "XLM" && amount && !isNaN(amountNum) && co2Impact > 0 && (
-            <div className="mt-3 p-3 bg-forest-50 border border-forest-200 rounded-xl">
-              <p className="text-sm font-medium text-forest-900 mb-1">
-                🌱 Your donation will offset approximately <span className="font-bold text-forest-700">{formatCO2(co2Impact, localeTag)}</span>
-              </p>
-              {treeEquivalent > 0 && (
-                <p className="text-xs text-forest-600 mt-1 font-semibold">
-                  {t("donate.treeEquivalent", { count: treeEquivalent })}
-                </p>
-              )}
-            </div>
-          )}
+          <div className="mt-3 p-3 bg-forest-50 border border-forest-200 rounded-xl">
+            <p className="text-xs text-forest-700">
+              Your payment is recorded on-chain. Environmental outcomes are reported separately as measured project claims; this amount does not generate an automatic CO₂ estimate.
+            </p>
+          </div>
         </div>
 
         {/* Message */}
@@ -392,6 +509,46 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
             {charCount} / 100 characters
           </p>
         </div>
+
+        {/* The base-reserve boundary, before the donor signs rather than after
+            Horizon rejects them. Only shown when we actually know the number:
+            a null spendable means Horizon did not answer, and inventing a
+            reassurance would be worse than saying nothing. */}
+        {currency === "XLM" && spendableXlm !== null && isValid && (
+          (() => {
+            const spendable = Number.parseFloat(spendableXlm);
+            const requested = Number.parseFloat(stroopsToXLM(amountStroops));
+            if (!Number.isFinite(spendable) || spendable >= requested) return null;
+            return (
+              <div
+                data-testid="donate-reserve-warning"
+                className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-sm font-body"
+              >
+                <p className="font-semibold mb-1">Your account can&apos;t send this much yet</p>
+                <p>
+                  It can send {spendableXlm} XLM. Stellar keeps a minimum balance locked in every
+                  account, so part of your balance can never be spent.
+                </p>
+              </div>
+            );
+          })()
+        )}
+
+        {/* Shown once a sponsored donor has something to lose. Nudging someone
+            with an empty account to back it up trains them to ignore the
+            warning that matters. */}
+        {isStarterAccount && shouldPromptExport(loadStarterAccount(), Boolean(txHash)) && (
+          <div
+            data-testid="donate-export-nudge"
+            className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-sm font-body"
+          >
+            <p className="font-semibold mb-1">Save your key</p>
+            <p>
+              You&apos;ve donated from an account whose key only exists in this browser. Save it
+              somewhere else, or connect a full wallet and bring your history across.
+            </p>
+          </div>
+        )}
 
         {step === "error" && error && errorKind === "wallet_rejected" && (
           <div
@@ -425,6 +582,22 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
           >
             <p className="font-semibold mb-1">We couldn&apos;t confirm this donation</p>
             <p>{error}</p>
+          </div>
+        )}
+
+        {step === "error" && error && errorKind === "record_failed" && (
+          <div
+            data-testid="donate-error-record-failed"
+            className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 text-sm font-body"
+          >
+            <p className="font-semibold mb-1">We couldn&apos;t record this donation</p>
+            <p>{error}</p>
+            {txHash && (
+              <a href={explorerUrl(txHash)} target="_blank" rel="noopener noreferrer"
+                className="underline text-amber-800 hover:text-amber-900 block mt-2">
+                View on Stellar Expert ↗
+              </a>
+            )}
           </div>
         )}
 
@@ -467,19 +640,21 @@ export default function DonateForm({ project, publicKey, initialAmount, initialM
           </div>
         )}
 
-        <button onClick={handleDonate} disabled={!isValid || step !== "idle"}
+        <button onClick={handleDonate} disabled={!isValid || (step !== "idle" && !(step === "error" && errorKind === "record_failed"))}
           className="btn-primary w-full flex items-center justify-center gap-2">
           {step === "building"   && <><Spinner />Building transaction...</>}
-          {step === "signing"    && <><Spinner />Sign in Freighter...</>}
+          {step === "signing"    && <><Spinner />{isStarterAccount ? "Signing..." : "Sign in Freighter..."}</>}
           {step === "submitting" && <><Spinner />Submitting &amp; confirming...</>}
           {step === "recording"  && <>Done</>}
           {step === "idle"       && <>🌱 Donate {amount ? (currency === "XLM" ? formatXLM(parseFloat(stroopsToXLM(amountStroops)), 2, localeTag) : `$${parseFloat(amount).toFixed(2)} ${currency}`) : currency}</>}
-          {step === "error"      && "Retry"}
+          {step === "error"      && (errorKind === "record_failed" ? "Retry Recording" : "Retry")}
         </button>
 
         {step === "signing" && (
           <p className="text-center text-xs text-[#4b654b] animate-pulse font-body">
-            Please confirm in your Freighter wallet...
+            {isStarterAccount
+              ? "Signing with the key saved in this browser..."
+              : "Please confirm in your Freighter wallet..."}
           </p>
         )}
       </div>

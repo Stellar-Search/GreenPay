@@ -118,7 +118,7 @@ http://localhost:3000
 - Go to: http://localhost:3000/dashboard
 - You should see:
     - A donation badge
-    - Your CO₂ offset contribution
+    - Project-level outcome claims, their ranges and provenance (never a donation-proportional personal outcome)
 
 ## 6. View on the Blockchain
 

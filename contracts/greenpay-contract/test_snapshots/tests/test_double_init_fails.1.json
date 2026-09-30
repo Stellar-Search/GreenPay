@@ -105,6 +105,18 @@
                         "val": {
                           "u32": 0
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Version"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
                       }
                     ]
                   }
@@ -228,7 +240,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'Contract already initialized' from contract function 'Symbol(obj#33)'"
+                  "string": "caught panic 'Contract already initialized' from contract function 'Symbol(obj#35)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
