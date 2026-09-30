@@ -5,7 +5,7 @@ import * as recurringDonations from '../utils/recurringDonations';
 
 jest.mock('expo-router', () => ({
   useFocusEffect: (cb: any) => {
-    React.useEffect(() => {
+    require('react').useEffect(() => {
       const cleanup = cb();
       return () => {
         if (cleanup) cleanup();

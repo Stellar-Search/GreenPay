@@ -3,10 +3,12 @@ name: Mobile Preview Build
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 
 jobs:
   build:
-    name: EAS Preview Build
+    name: Mobile Tests and EAS Preview Build
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -16,7 +18,10 @@ jobs:
       - uses: ./.github/actions/setup-node-install
         with:
           working-directory: mobile
+      - name: Run mobile tests
+        run: npm test -- --runInBand
       - name: Check EXPO_TOKEN is configured
+        if: github.event_name == 'push'
         id: check-token
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
@@ -28,9 +33,9 @@ jobs:
             echo "::warning::EXPO_TOKEN secret is not configured — skipping EAS preview build. Add an Expo access token as the EXPO_TOKEN repository secret to enable this workflow."
           fi
       - uses: expo/expo-github-action@v8
-        if: steps.check-token.outputs.configured == 'true'
+        if: github.event_name == 'push' && steps.check-token.outputs.configured == 'true'
         with:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
       - run: eas build --platform all --profile preview --non-interactive
-        if: steps.check-token.outputs.configured == 'true'
+        if: github.event_name == 'push' && steps.check-token.outputs.configured == 'true'
