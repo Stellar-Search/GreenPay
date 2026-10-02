@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "description": "Quickly donate to GreenPay projects via Chrome Extension",
   "scripts": {
-    "build": "esbuild src/popup.ts src/background.ts src/content-script.ts --bundle --outdir=dist --platform=browser --format=iife",
-    "build:firefox": "esbuild src/popup.ts src/background.ts src/content-script.ts --bundle --outdir=dist-firefox --platform=browser --format=iife",
-    "dev": "npm run build -- --watch",
+    "build": "node init && esbuild src/popup.ts src/background.ts src/content-script.ts --bundle --outdir=dist --platform=browser --format=iife",
+    "build:firefox": "node init && esbuild src/popup.ts src/background.ts src/content-script.ts --bundle --outdir=dist-firefox --platform=browser --format=iife",
+    "dev": "node init && npm run build -- --watch",
     "test": "vitest run"
   },
   "dependencies": {

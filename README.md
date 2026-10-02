@@ -131,3 +131,8 @@ See [ROADMAP.md](docs/ROADMAP.md) for planned features.
 
 MIT — see [LICENSE](LICENSE) 
 fixed
+
+
+## Contributing
+
+Please check [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines and development workflow.
