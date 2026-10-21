@@ -585,6 +585,14 @@ export function hashMessage(message: string): number {
 }
 
 /**
+ * Validates that a djb2 hash is a non-zero u32 correlation ID.
+ * Rejects 0 (which the contract treats as a missing/invalid hash).
+ */
+export function validateHash(hash: number): boolean {
+  return Number.isInteger(hash) && hash > 0 && hash <= 0xFFFFFFFF;
+}
+
+/**
  * A Horizon paging token (the opaque cursor Horizon's streaming endpoints
  * expect). Branded so it can't be confused with — or accidentally passed as
  * — an unrelated identifier such as a backend donation ID.

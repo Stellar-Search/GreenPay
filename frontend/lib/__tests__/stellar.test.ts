@@ -1,4 +1,4 @@
-import { isValidStellarAddress } from "../stellar";
+import { isValidStellarAddress, hashMessage, validateHash } from "../stellar";
 
 describe("isValidStellarAddress", () => {
     it("should return true for a valid Stellar public key with a correct checksum", () => {
@@ -21,5 +21,24 @@ describe("isValidStellarAddress", () => {
         expect(isValidStellarAddress("")).toBe(false);
         expect(isValidStellarAddress("invalid_address")).toBe(false);
         expect(isValidStellarAddress("G12345")).toBe(false);
+    });
+});
+
+describe("validateHash", () => {
+    it("returns true for non-zero u32 values", () => {
+        expect(validateHash(1)).toBe(true);
+        expect(validateHash(42)).toBe(true);
+        expect(validateHash(0xFFFFFFFF)).toBe(true);
+        expect(validateHash(hashMessage("hello"))).toBe(true);
+    });
+
+    it("rejects zero", () => {
+        expect(validateHash(0)).toBe(false);
+    });
+
+    it("rejects non-integer values", () => {
+        expect(validateHash(1.5)).toBe(false);
+        expect(validateHash(NaN)).toBe(false);
+        expect(validateHash(Infinity)).toBe(false);
     });
 });

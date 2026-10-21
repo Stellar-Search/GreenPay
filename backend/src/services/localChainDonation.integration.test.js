@@ -322,7 +322,7 @@ describeLocalChain("local-chain donation convergence", () => {
         address(donor.publicKey()),
         nativeToScVal(PROJECT_ID, { type: "string" }),
         nativeToScVal(AMOUNT_STROOPS, { type: "i128" }),
-        nativeToScVal(0, { type: "u32" }),
+        nativeToScVal(1, { type: "u32" }),
       ],
       source: donor,
       horizon,

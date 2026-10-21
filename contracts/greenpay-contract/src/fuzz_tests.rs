@@ -78,7 +78,7 @@ mod fuzz {
             let donor = Address::generate(&env);
             token_client.mint(&donor, &amount);
 
-            client.donate(&token, &donor, &project_id, &amount, &0u32);
+            client.donate(&token, &donor, &project_id, &amount, &1u32);
 
             prop_assert_eq!(client.get_global_total(), amount);
             prop_assert_eq!(client.get_global_co2(), 0);
@@ -96,7 +96,7 @@ mod fuzz {
             let donor = Address::generate(&env);
             token_client.mint(&donor, &amount);
 
-            client.donate(&token, &donor, &project_id, &amount, &0u32);
+            client.donate(&token, &donor, &project_id, &amount, &1u32);
 
             prop_assert_eq!(client.get_global_co2(), 0);
             prop_assert_eq!(client.get_donor_stats(&donor).co2_offset_grams, 0);
@@ -116,7 +116,7 @@ mod fuzz {
             for _ in 0..n {
                 let donor = Address::generate(&env);
                 token_client.mint(&donor, &amount);
-                client.donate(&token, &donor, &project_id, &amount, &0u32);
+                client.donate(&token, &donor, &project_id, &amount, &1u32);
                 expected_total = expected_total.checked_add(amount).unwrap();
             }
 
@@ -138,8 +138,8 @@ mod fuzz {
             token_client.mint(&donor_a, &a);
             token_client.mint(&donor_b, &b);
 
-            client.donate(&token, &donor_a, &project_id, &a, &0u32);
-            client.donate(&token, &donor_b, &project_id, &b, &0u32);
+            client.donate(&token, &donor_a, &project_id, &a, &1u32);
+            client.donate(&token, &donor_b, &project_id, &b, &1u32);
 
             let expected_total = a.checked_add(b).expect("test helper overflow");
             prop_assert_eq!(client.get_global_total(), expected_total);
@@ -161,7 +161,7 @@ mod fuzz {
             for amount in amounts {
                 let donor = Address::generate(&env);
                 token_client.mint(&donor, &amount);
-                client.donate(&token, &donor, &project_id, &amount, &0u32);
+                client.donate(&token, &donor, &project_id, &amount, &1u32);
                 expected_total = expected_total.checked_add(amount).unwrap();
                 donor_count += 1;
             }
@@ -185,7 +185,7 @@ mod fuzz {
             let donor = Address::generate(&env);
             token_client.mint(&donor, &amount);
 
-            client.donate(&token, &donor, &project_id, &amount, &0u32);
+            client.donate(&token, &donor, &project_id, &amount, &1u32);
 
             prop_assert_eq!(client.get_global_co2(), 0);
             prop_assert_eq!(client.get_donor_stats(&donor).co2_offset_grams, 0);
@@ -227,8 +227,8 @@ mod fuzz {
             let donor_b = Address::generate(&env);
             token_client.mint(&donor_a, &a);
             token_client.mint(&donor_b, &b);
-            client.donate(&token, &donor_a, &pid_a, &a, &0u32);
-            client.donate(&token, &donor_b, &pid_b, &b, &0u32);
+            client.donate(&token, &donor_a, &pid_a, &a, &1u32);
+            client.donate(&token, &donor_b, &pid_b, &b, &1u32);
 
             let sum = a.checked_add(b).unwrap();
             prop_assert_eq!(client.get_global_total(), sum);
@@ -252,7 +252,7 @@ mod fuzz {
             for amount in amounts {
                 total = total.checked_add(amount).unwrap();
                 token_client.mint(&donor, &amount);
-                client.donate(&token, &donor, &project_id, &amount, &0u32);
+                client.donate(&token, &donor, &project_id, &amount, &1u32);
                 let badge = client.get_badge(&donor);
                 let rank = badge_rank(badge);
                 prop_assert!(rank >= last_rank);
@@ -270,7 +270,7 @@ mod fuzz {
             let donor = Address::generate(&env);
             token_client.mint(&donor, &(100 * STROOP));
 
-            let result = client.try_donate(&token, &donor, &project_id, &i128::MAX, &0u32);
+            let result = client.try_donate(&token, &donor, &project_id, &i128::MAX, &1u32);
             prop_assert!(result.is_err());
             prop_assert_eq!(client.get_global_total(), 0);
             prop_assert_eq!(client.get_donation_count(), 0);
