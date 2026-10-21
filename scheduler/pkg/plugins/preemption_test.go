@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	informers "k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 
@@ -57,6 +58,7 @@ type mockHandle struct {
 	sharedLister    framework.SharedLister
 	informerFactory informers.SharedInformerFactory
 	filterFunc      func(ctx context.Context, state *framework.CycleState, pod *corev1.Pod, info *framework.NodeInfo) *framework.Status
+	client          *fake.Clientset
 }
 
 func (m *mockHandle) SnapshotSharedLister() framework.SharedLister {
@@ -65,6 +67,10 @@ func (m *mockHandle) SnapshotSharedLister() framework.SharedLister {
 
 func (m *mockHandle) SharedInformerFactory() informers.SharedInformerFactory {
 	return m.informerFactory
+}
+
+func (m *mockHandle) ClientSet() kubernetes.Interface {
+	return m.client
 }
 
 func (m *mockHandle) RunFilterPluginsWithNominatedPods(ctx context.Context, state *framework.CycleState, pod *corev1.Pod, info *framework.NodeInfo) *framework.Status {
@@ -96,6 +102,7 @@ func newPreemptionPluginWithFilterAndPDBs(
 		},
 		informerFactory: informerFactory,
 		filterFunc:      filterFunc,
+		client:          client,
 	}
 	p, err := plugins.NewMLWorkloadPreemption(context.Background(), nil, h)
 	if err != nil {
