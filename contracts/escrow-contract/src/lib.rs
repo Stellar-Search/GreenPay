@@ -86,6 +86,7 @@ pub enum DataKey {
     JobCount,
     Job(String),
     AllowedToken(Address),
+    Paused,
 }
 
 pub const CONTRACT_VERSION: u32 = 1;
@@ -101,23 +102,53 @@ impl EscrowContract {
             panic!("Contract already initialized");
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage()
-            .instance()
-            .set(&DataKey::Version, &CONTRACT_VERSION);
-        env.storage().instance().set(&DataKey::JobCount, &0u32);
+        env.storage().instance().set(&DataKey::Paused, &false);
     }
 
-    /// Exposes contract schema version.
-    pub fn get_version(env: Env) -> u32 {
-        env.storage()
+    /// Emergency pause — blocks all fund-moving operations.
+    pub fn pause(env: Env, admin: Address) {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
             .instance()
-            .get(&DataKey::Version)
-            .unwrap_or(1u32)
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if stored_admin != admin {
+            panic!("Only admin can pause");
+        }
+        env.storage().instance().set(&DataKey::Paused, &true);
     }
 
-    /// Alias for get_version.
-    pub fn version(env: Env) -> u32 {
-        Self::get_version(env)
+    /// Lift the emergency pause.
+    pub fn unpause(env: Env, admin: Address) {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if stored_admin != admin {
+            panic!("Only admin can unpause");
+        }
+        env.storage().instance().set(&DataKey::Paused, &false);
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+    }
+
+    fn require_not_paused(env: &Env) {
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
+        if paused {
+            panic!("Contract is paused");
+        }
     }
 
     /// Allows a specific token to be used for jobs.
@@ -166,6 +197,7 @@ impl EscrowContract {
         expiry_ledger: u32,
     ) {
         client.require_auth();
+        Self::require_not_paused(&env);
         if amount <= 0 {
             panic!("Amount must be positive");
         }
@@ -212,6 +244,7 @@ impl EscrowContract {
     /// Client authorizes full release of remaining locked funds to the freelancer.
     pub fn release_escrow(env: Env, client: Address, job_id: String) {
         client.require_auth();
+        Self::require_not_paused(&env);
         let mut job: Job = env
             .storage()
             .instance()
@@ -309,6 +342,7 @@ impl EscrowContract {
     /// Admin resolves a disputed job: releases remaining funds to freelancer or refunds remaining funds to client.
     pub fn resolve_dispute(env: Env, admin: Address, job_id: String, release_to_freelancer: bool) {
         admin.require_auth();
+        Self::require_not_paused(&env);
         let stored_admin: Address = env
             .storage()
             .instance()
@@ -364,6 +398,7 @@ impl EscrowContract {
     /// CEI ordering: all state writes happen before both token transfers.
     pub fn resolve_stale_dispute(env: Env, caller: Address, job_id: String) {
         caller.require_auth();
+        Self::require_not_paused(&env);
 
         let mut job: Job = env
             .storage()
@@ -416,6 +451,7 @@ impl EscrowContract {
     /// a full release or a dispute being raised.
     pub fn cancel_job(env: Env, client: Address, job_id: String) {
         client.require_auth();
+        Self::require_not_paused(&env);
         let mut job: Job = env
             .storage()
             .instance()
@@ -1404,31 +1440,50 @@ mod tests {
         assert_eq!(token.balance(&freelancer), 0);
     }
 
-    #[test]
-    fn test_version_exposed_and_default_v1() {
-        let env = Env::default();
-        let cid = env.register_contract(None, EscrowContract);
-        let escrow = EscrowContractClient::new(&env, &cid);
-        let admin = Address::generate(&env);
-        escrow.initialize(&admin);
+    // ─── Pause / emergency-stop tests ──────────────────────────────────────
 
-        assert_eq!(escrow.get_version(), 1);
-        assert_eq!(escrow.version(), 1);
+    #[test]
+    fn test_pause_and_unpause() {
+        let (_env, client, admin, _c, _f, _t, _j, _a, _e) = setup();
+        assert!(!client.is_paused());
+        client.pause(&admin);
+        assert!(client.is_paused());
+        client.unpause(&admin);
+        assert!(!client.is_paused());
     }
 
     #[test]
-    fn test_storage_lifetimes_and_version_key() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let cid = env.register_contract(None, EscrowContract);
-        let escrow = EscrowContractClient::new(&env, &cid);
-        let admin = Address::generate(&env);
-        escrow.initialize(&admin);
+    #[should_panic(expected = "Only admin can pause")]
+    fn test_pause_non_admin_fails() {
+        let (env, client, _admin, _c, _f, _t, _j, _a, _e) = setup();
+        let rando = Address::generate(&env);
+        client.pause(&rando);
+    }
 
-        assert_eq!(escrow.get_version(), 1);
+    #[test]
+    #[should_panic(expected = "Contract is paused")]
+    fn test_create_job_rejected_when_paused() {
+        let (env, client, admin, client_addr, freelancer, token, _j, amount, expiry) = setup();
+        let job_id = soroban_sdk::String::from_str(&env, "new-job");
+        client.pause(&admin);
+        client.create_job(&client_addr, &freelancer, &job_id, &token, &amount, &expiry);
+    }
 
-        env.as_contract(&cid, || {
-            assert!(env.storage().instance().has(&DataKey::Version));
-        });
+    #[test]
+    #[should_panic(expected = "Contract is paused")]
+    fn test_release_escrow_rejected_when_paused() {
+        let (_env, client, admin, client_addr, _f, _t, job_id, _a, _e) = setup();
+        client.pause(&admin);
+        client.release_escrow(&client_addr, &job_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "Contract is paused")]
+    fn test_cancel_job_rejected_when_paused() {
+        let (env, client, admin, client_addr, _f, _t, job_id, _a, _e) = setup();
+        // Advance past expiry so cancel is otherwise valid
+        env.ledger().set_sequence_number(1001);
+        client.pause(&admin);
+        client.cancel_job(&client_addr, &job_id);
     }
 }
