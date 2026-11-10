@@ -3,9 +3,9 @@
   "version": "1.0.0",
   "main": "src/server.js",
   "scripts": {
-    "dev": "nodemon src/server.js",
-    "dev:docker": "nodemon --legacy-watch --watch src src/server.js",
-    "start": "node src/server.js",
+    "dev": "node init && nodemon src/server.js",
+    "dev:docker": "node init && nodemon --legacy-watch --watch src src/server.js",
+    "start": "node init && node src/server.js",
     "lint": "eslint src",
     "docs": "typedoc --options typedoc.json",
     "test": "jest --runInBand",
